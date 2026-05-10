@@ -13,7 +13,11 @@
 - 링크 빈 행: skip (작업자가 글 쓰기 전)
 - 컬럼: 유형 / 노출영역 / L / M / 지식인탭 만 갱신. 그 외 (작업일/작업자/MB/PC/총합/작업아이디/카페게시판) 건드리지 X.
 """
+import json
+import os
 import sys
+import time
+from collections import Counter
 from typing import Optional
 
 from src.cache import CafeMappingCache
@@ -102,11 +106,14 @@ def run_cycle() -> dict:
 
     Returns:
         summary dict (테스트/외부 호출 용).
+        2026-05-11: 풍부한 summary (K 분포, 처리 시간, 행 수) — Telegram/이메일 알림용.
+        CI 환경 (GITHUB_ACTIONS=true) 에서는 cycle_summary.json 도 작성.
     """
     if not SPREADSHEET_ID or not SERVICE_ACCOUNT_JSON:
         print("❌ SPREADSHEET_ID 또는 SERVICE_ACCOUNT_JSON 환경변수 누락. 종료.")
         return {"error": "missing_env"}
 
+    cycle_start = time.time()
     print("=== naver-rank-checker cron 사이클 시작 ===")
     client = SheetsClient(spreadsheet_id=SPREADSHEET_ID, service_account_json=SERVICE_ACCOUNT_JSON)
     crawler = Crawler(slowdown=SlowdownController(base=NAVER_SLOWDOWN_BASE_SEC, max_=NAVER_SLOWDOWN_MAX_SEC))
@@ -167,12 +174,37 @@ def run_cycle() -> dict:
             total_cells += n
             print(f"  [{tab_name}] {len(updates)} 행 / {n} 셀 갱신")
 
-    # 5. health summary
+    # 5. K 분포 + 처리 시간 집계 (사장님 알림용 풍부 summary)
+    k_distribution: Counter = Counter()
+    total_rows_with_link = 0
+    for tab, updates in tab_updates.items():
+        for upd in updates:
+            total_rows_with_link += 1
+            k_val = upd.columns.get(HEADER_AREA, "") or "미노출"
+            k_distribution[k_val] += 1
+
+    cycle_seconds = int(time.time() - cycle_start)
+
+    # 6. health summary
     health.log_summary()
     summary = health.summary()
     summary["total_cells_written"] = total_cells
     summary["retry_queue_remaining"] = len(retry_queue)
-    print(f"\n=== cron 사이클 완료. 셀 갱신: {total_cells}, 재시도 큐 남음: {len(retry_queue)} ===")
+    summary["total_rows_processed"] = total_rows_with_link
+    summary["k_distribution"] = dict(k_distribution)
+    summary["cycle_seconds"] = cycle_seconds
+    summary["tabs_processed"] = list(tab_updates.keys())
+
+    # 7. CI 환경 — cycle_summary.json 작성 (workflow yml 의 issue comment step 에서 읽음)
+    if os.environ.get("GITHUB_ACTIONS") == "true":
+        try:
+            with open("cycle_summary.json", "w", encoding="utf-8") as f:
+                json.dump(summary, f, ensure_ascii=False, indent=2)
+            print("  [CI] cycle_summary.json 작성됨")
+        except Exception as e:
+            print(f"  [CI] cycle_summary.json 작성 실패: {e}")
+
+    print(f"\n=== cron 사이클 완료. 셀 갱신: {total_cells}, 재시도 큐 남음: {len(retry_queue)}, 시간: {cycle_seconds}s ===")
     return summary
 
 

@@ -36,6 +36,7 @@ jobs:
           pip install -r requirements.txt
 
       - name: Run cron cycle
+        id: run_cycle
         env:
           SPREADSHEET_ID: ${{ secrets.SPREADSHEET_ID }}
           SERVICE_ACCOUNT_JSON: ${{ secrets.SERVICE_ACCOUNT_JSON }}
@@ -43,6 +44,15 @@ jobs:
           NAVER_SLOWDOWN_MAX_SEC: '120'
           PYTHONIOENCODING: 'utf-8'
         run: python -u -m src.main
+
+      # 2026-05-11: 풍부한 사장님 알림 — issue #1 에 comment 추가 → GitHub 자동 이메일.
+      # if: always() = 성공/실패 모두 발송 (사장님 매 cron 인지 의무).
+      - name: Post summary to issue #1
+        if: always()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RUN_STATUS: ${{ steps.run_cycle.outcome }}
+        run: python -u scripts/post_summary_to_issue.py
 
       # exit code 1 = HealthMonitor.code_change_suspected (네이버 selector 변경 의심)
       # → GitHub Actions 빨강 → 사장님 알림 (이메일 / 대시보드)
