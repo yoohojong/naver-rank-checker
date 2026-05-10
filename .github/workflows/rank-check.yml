@@ -1,0 +1,48 @@
+name: naver-rank-check
+# 사장님 D-001: GitHub Actions 공개 저장소 (진짜 무료, 무제한).
+# 6시간 cron 4회/일. 사장님 시트 자동 갱신.
+
+on:
+  schedule:
+    # 매일 KST 00:00, 06:00, 12:00, 18:00 (UTC 기준 15/21/03/09)
+    - cron: '0 15,21,3,9 * * *'
+  workflow_dispatch:  # 사장님 수동 트리거 (Actions 탭 "Run workflow")
+
+# critic 2026-05-08 Critical 2: cron overlap 방지.
+# cron 지연 시 이전 사이클 미완료 + 다음 시작 = stale write + 네이버 double 차단 위험.
+# cancel-in-progress: false = 두 번째 cron 은 queue, 이전 cron 끝나면 실행.
+concurrency:
+  group: naver-rank-check
+  cancel-in-progress: false
+
+jobs:
+  run-cron:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90  # 832 행 × 5초 slowdown = ~70분 + 여유
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run cron cycle
+        env:
+          SPREADSHEET_ID: ${{ secrets.SPREADSHEET_ID }}
+          SERVICE_ACCOUNT_JSON: ${{ secrets.SERVICE_ACCOUNT_JSON }}
+          NAVER_SLOWDOWN_BASE_SEC: '5.0'
+          NAVER_SLOWDOWN_MAX_SEC: '120'
+          PYTHONIOENCODING: 'utf-8'
+        run: python -u -m src.main
+
+      # exit code 1 = HealthMonitor.code_change_suspected (네이버 selector 변경 의심)
+      # → GitHub Actions 빨강 → 사장님 알림 (이메일 / 대시보드)

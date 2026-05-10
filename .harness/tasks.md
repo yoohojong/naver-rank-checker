@@ -1,0 +1,147 @@
+# tasks: naver-rank-checker
+
+**Last updated**: 2026-05-11
+**Overall progress**: 95% ━━━━━━━━━━━━ (quality fix +1: J false positive 69건)
+**Protocol**: 멀티 Claude 안전 협업. claim 메커니즘 적용 (`.harness/PROTOCOL.md` 참고).
+
+## 마일스톤 가중치
+- M1 사양 확정 (10%) — ✅ 100%
+- M2 설계 (15%) — ✅ 100%
+- M3 인프라 셋업 (10%) — 🔄 67% (4/6 완료: T-M3.1, T-M3.2, T-M3.5, T-M3.6)
+- M4 Crawler 모듈 (20%) — ✅ 100% (10/10 완료: T-M4.1~T-M4.10)
+- M5 Sheets 연동 모듈 (15%) — ✅ 100% (4/4 완료 + T-M5.5 SKIP — D-015)
+- M6 Health/Retry 모듈 (10%) — ✅ 100% (3/3 완료: T-M6.1 cache, T-M6.2 retry, T-M6.3 health)
+- M7 통합 (10%) — ✅ 100% (2/2 완료: T-M7.1 transitions, T-M7.2 main.py)
+- M8 GitHub Actions 배포 (10%) — 🔄 50% (T-M8.1 + T-M8.4 완료, T-M8.2 사장님 + T-M8.3 사장님 GitHub repo 후)
+
+---
+
+## Task 상태 표 (단일 진실)
+
+상태 표시: `pending` / `claimed` / `completed` / `blocked`
+deps = 의존성 (선행 task), parallel = 동시 작업 안전한 다른 task
+
+### M1 ~ M2 (완료)
+| ID | Title | 상태 |
+|----|-------|------|
+| M1.* | 사양 확정 (전체) | ✅ completed |
+| M2.* | 설계 (전체) | ✅ completed |
+
+### M3 인프라 셋업
+| ID | Title | 담당 | deps | parallel | 상태 |
+|----|-------|------|------|----------|------|
+| T-M3.1 | GCP 프로젝트 + Sheets API 활성 + 서비스계정 | 👤 사장님 | — | T-M3.3 | ✅ completed (2026-05-08, 서비스계정 발급 + JSON 다운로드) |
+| T-M3.2 | 사장님 시트에 서비스계정 공유 | 👤 사장님 | T-M3.1 | T-M3.3 | ✅ completed (2026-05-08, 832행/3 카외 탭 인증 통과) |
+| T-M3.3 | GitHub 공개 저장소 생성 | 👤 사장님 | — | — | pending (가이드: `docs/사장님-가이드/T-M3-인프라-셋업.md` 3장) |
+| T-M3.4 | 로컬 git init + 원격 연결 + 첫 커밋 | 🤖 | T-M3.3 | — | pending |
+| T-M3.5 | Python venv + requirements 설치 | 🤖 | — | T-M3.4, T-M4.1 | ✅ completed (2026-05-05) |
+| T-M3.6 | 모듈 골격 + sanity 테스트 | 🤖 | T-M3.5 | T-M4.1 | ✅ completed (2026-05-05, 3 tests pass) |
+
+### M4 Crawler + Parser
+| ID | Title | 담당 | deps | parallel | 상태 |
+|----|-------|------|------|----------|------|
+| T-M4.1 | 네이버 fixture 수집 (실측) | 🤖 | T-M3.5 | T-M3.6 | ✅ completed (5 HTML fixtures saved, 40~115KB each) |
+| T-M4.2 | URL 정규화 (cafe URL parsing + naver.me) | 🤖 | T-M3.6 | — | ✅ completed (11 tests) |
+| T-M4.3 | SlowdownController + UA rotation | 🤖 | T-M3.6 | — | ✅ completed (7 tests) |
+| T-M4.4 | fetch_search() 메인 fetcher | 🤖 | T-M4.3 | — | ✅ completed (3 tests) |
+| T-M4.5 | fetch_cafe_url_status() | 🤖 | T-M4.4 | — | ✅ completed (3 tests) |
+| T-M4.6 | parser.py RankResult dataclass | 🤖 | T-M3.6 | — | ✅ completed (9 tests, placeholder selectors for M4.7~M4.10) |
+| T-M4.7 | AB 리스트 파싱 (실측 셀렉터) | 🤖 | T-M4.1, T-M4.6 | — | ✅ completed (2026-05-05, 8 tests, fixture 손상 brotli로 복구 + docs/naver-html-structure.md 작성) |
+| T-M4.8 | 스마트블록 파싱 | 🤖 | T-M4.7 | T-M4.9 (다른 함수, 같은 파일 주의) | ✅ completed (2026-05-05, 5 tests, mixed_blocks fixture 기반) |
+| T-M4.9 | 인기글 + 지식인 파싱 | 🤖 | T-M4.7 | T-M4.8 (같은 파일 주의) | ✅ completed (2026-05-06, 7 tests, popular_cafe + smart_block fixture 기반) |
+| T-M4.10 | block_order 추출 (C 컬럼) | 🤖 | T-M4.7 | — | ✅ completed (2026-05-06, 5 tests, fixture 5개 모두 검증) |
+
+### M5 Sheets 연동
+| ID | Title | 담당 | deps | parallel | 상태 |
+|----|-------|------|------|----------|------|
+| T-M5.1 | gspread 인증 | 🤖 | T-M3.6 | T-M6.* (다른 모듈) | ✅ completed (2026-05-06, 4 tests, mock 기반 — 실 인증은 T-M3.1 GCP 후) |
+| T-M5.2 | 헤더 매핑 함수 | 🤖 | T-M5.1 | T-M6.* | ✅ completed (2026-05-07, 8 tests, spec 4.2 전체 헤더 검증) |
+| T-M5.3 | 모든 탭 순회 read | 🤖 | T-M5.2 | T-M6.* | ✅ completed (2026-05-07, 6 tests, 사장님 3 탭 검증) |
+| T-M5.4 | Batch write per tab | 🤖 | T-M5.2 | T-M6.* | ✅ completed (2026-05-08, 10 tests, 사장님 컨벤션 정합) |
+| T-M5.5 | 카페매핑 시트 read/write | 🤖 | T-M5.2 | T-M6.* | ⏭️ skipped (2026-05-11, D-015 — 사장님 시트엔 카페매핑 탭 없고 메모리 캐시(M6.1)로 cron 사이클 충분) |
+
+### M6 Cache + Retry + Health
+| ID | Title | 담당 | deps | parallel | 상태 |
+|----|-------|------|------|----------|------|
+| T-M6.1 | cache.py — 카페매핑 캐시 | 🤖 | T-M3.6 | T-M5.*, T-M6.2, T-M6.3 | ✅ completed (2026-05-08, 12 tests, CafeMappingCache + ensure 패턴) |
+| T-M6.2 | retry.py — 재시도 큐 | 🤖 | T-M3.6 | T-M5.*, T-M6.1, T-M6.3 | ✅ completed (2026-05-08, 10 tests, slowdown_multiplier 강화 후 1회 재시도) |
+| T-M6.3 | health.py — 헬스 모니터 | 🤖 | T-M3.6 | T-M5.*, T-M6.1, T-M6.2 | ✅ completed (2026-05-08, 11 tests, 성공률 + avg confidence 기반 code_change_suspected) |
+
+### M7 통합
+| ID | Title | 담당 | deps | parallel | 상태 |
+|----|-------|------|------|----------|------|
+| T-M7.1 | transitions.py — 노출중지 자동 감지 | 🤖 | T-M3.6 | T-M5.*, T-M6.* | ✅ completed (2026-05-08, 13 tests, 사장님 D-009 차별화 — '삭제' 단일 단어로 통일) |
+| T-M7.2 | main.py — 한 사이클 흐름 통합 | 🤖 | T-M4.*, T-M5.*, T-M6.*, T-M7.1 | — | ✅ completed (2026-05-08, 7 component tests, run_cycle entry point) |
+
+### M8 배포
+| ID | Title | 담당 | deps | parallel | 상태 |
+|----|-------|------|------|----------|------|
+| T-M8.1 | .github/workflows YAML 작성 | 🤖 | T-M7.2 | — | ✅ completed (2026-05-08, concurrency 블록 포함, KST 6시간 cron, timeout 90분) |
+| T-M8.2 | GitHub Secrets 등록 | 👤 사장님 | T-M3.1, T-M3.3 | T-M8.1 | pending (README 안내 작성됨) |
+| T-M8.3 | 첫 수동 트리거 + 검증 | 🤖 | T-M8.1, T-M8.2 | — | pending |
+| T-M8.4 | README 운영 가이드 | 🤖 | T-M7.2 | T-M8.1, T-M8.3 | ✅ completed (2026-05-08, 사장님 페르소나 정합 한국어 가이드) |
+
+---
+
+## 다음 작업 (Next Up)
+
+🎯 **즉시 ready**:
+- 없음 (🤖 자동 가능한 task 모두 완료. 남은 건 사장님 작업 → 그 후 T-M3.4 / T-M8.3)
+
+👤 **사장님 작업 대기 (순서)**:
+1. **T-M3.3** — GitHub 공개 저장소 생성 (가이드: `docs/사장님-가이드/T-M3-인프라-셋업.md` 3장, 5분)
+2. **T-M8.2** — GitHub Secrets 2개 등록 (`SPREADSHEET_ID`, `SERVICE_ACCOUNT_JSON`) — README.md 안내, 5분
+
+⏭️ **차단 중 (사장님 작업 후 🤖 자동)**:
+- T-M3.4 ← T-M3.3 (git init + remote + 첫 커밋, 약 5분)
+- T-M8.3 ← T-M3.4 + T-M8.2 (수동 트리거 + 검증, 5~30분)
+
+## 차단 이슈 (Blockers)
+없음 (사장님 액션만 대기)
+
+## 변경 이력
+- 2026-05-05: 초기 생성 (brainstorming 단계 종료 시점)
+- 2026-05-05: spec 셀프 리뷰 통과 (7건 모순/모호성 정정)
+- 2026-05-05: D-013 — K 컬럼에 `노출중지` 추가, `비실계의심` 제거
+- 2026-05-05: writing-plans 완료, plan.md 작성됨
+- 2026-05-05: PROTOCOL.md 추가 + tasks.md에 task 의존성/병렬 표 추가 (멀티 Claude 안전)
+- 2026-05-05: T-M3.5 완료 (Python venv + requirements.txt/dev/pytest.ini + 모든 deps 설치 검증). 커밋은 T-M3.4 (git init) 완료 후 일괄 처리 예정.
+- 2026-05-05: T-M3.6 완료 (10개 모듈 골격 + tests/conftest.py + test_sanity.py 3 tests PASS). 커밋은 T-M3.4 후 일괄.
+- 2026-05-05: T-M4.1 완료 (5개 네이버 fixture 수집, 40~115KB).
+- 2026-05-05: T-M4.2 완료 (parse_cafe_url + resolve_short_url, 11 tests).
+- 2026-05-05: T-M4.3 완료 (SlowdownController + random_user_agent, 7 tests).
+- 2026-05-05: T-M4.4 완료 (Crawler.fetch_search with browser headers + slowdown integration, 3 tests).
+- 2026-05-05: T-M4.5 완료 (Crawler.fetch_cafe_url_status with CafeStatus enum, 3 tests).
+- 2026-05-05: T-M4.6 완료 (RankResult/ExposureArea + parse_search_result skeleton, 9 tests, placeholder _parse_* for M4.7~M4.10).
+- 2026-05-05: 글로벌 CLAUDE.md에 harness_auto_resume 규칙 추가 (어떤 단어든 .harness 자동 인식 + 다음 task 진행).
+- 2026-05-05: 프로젝트 루트에 CLAUDE.md 추가 (Claude 자동 진입 가이드).
+- 2026-05-05: T-M4.7 진행 중 fixture 5개 모두 손상 발견 (brotli 미설치로 디코딩 실패). requirements.txt 에 `brotli==1.1.0` 추가 + 설치 + collect_fixtures.py 재실행해서 정상 fixture 복구 (250KB~870KB).
+- 2026-05-05: T-M4.7 완료. AB 통합 리스트 파싱 (`div.api_subject_bx.desktop_mode` + h2 자손 없음 = AB 항목 규칙). _parse_ab_list + _extract_main_link + _classify_item_url + _urls_match 구현. 8 새 tests pass (전체 44 tests pass). docs/naver-html-structure.md 작성 (M4.8/M4.9/M4.10 참고용).
+- 2026-05-05: T-M4.8 완료. 스마트블록 파싱 (h2 자손 + h2 텍스트가 인기글/브랜드/이미지/AI브리핑/네이버클립/쇼핑 패턴 아닌 박스). _parse_smart_blocks + _extract_smart_block_items 구현 + smart_block_name = h2 텍스트. 5 새 tests pass (전체 48 tests pass). docs/naver-html-structure.md 8장 추가.
+- 2026-05-06: 글로벌 second-brain skill 만듦 (`~/.claude/skills/second-brain/`) — 모든 프로젝트의 기획·plan·마일스톤 종료 시점 자동 메타 검토. SPEC + PLAN + SKILL + checklist + retro-log + routing-reminder hook trigger + CLAUDE.md 7번 gate. critic agent 검토로 Major 2개 (regex narrow + Quick/Deep mode 분리) 적용. naver-rank-checker 진행 중 자동 발동 예정.
+- 2026-05-06: T-M4.9 완료. 인기글 + 지식인 파싱. _parse_popular (h2 텍스트 '인기글' 박스, 출처별 dedup → idx, cafe_slot_rank 매핑) + _extract_popular_items + _parse_jisikin (kin.naver.com 도메인 매칭 시 in_jisikin=True). 7 새 tests pass (전체 54 tests pass). docs/naver-html-structure.md 9장 (인기글) + 10장 (지식인) 추가.
+- 2026-05-06: second-brain 자기 진화 첫 적용 — Phase 2 의 response-validator.mjs Stop hook 추가를 Phase 1 으로 앞당김. 사장님 챌린지 "기획 끝났어 라는 말 없이도 발동" → 마일스톤/task 종료 시그널 (T-M\d+ 완료, Phase \d 완료, ✅ tests pass) 정규식 5개로 Claude 응답 매치 → 다음 턴 SECOND_BRAIN 자동 주입.
+- 2026-05-06: T-M4.10 완료. block_order 추출 (C 컬럼 용). _detect_block_order — 위→아래 박스 종류 unique list (AB / 스마트블록 / 인기글). 5 fixture 모두 예측 정확 (ab_cafe_top: ['AB'], mixed_blocks: ['AB', '스마트블록', '인기글'], popular_cafe: ['인기글', 'AB']). 5 새 tests pass (전체 58 tests pass). M4 100% 종료.
+- 2026-05-06: T-M5.1 완료. SheetsClient (gspread service_account_from_dict + open_by_key). 4 mock tests pass.
+- 2026-05-07: 누적 미해결 발견 일괄 해결: (1) ExposureArea enum 4개→8개 확장 (DELETED/PRIVATE/UNEXPOSURE_STOPPED/FAILED, spec 4.2 정합) — 63 tests pass. (2) 사장님 GCP/시트/GitHub 가이드 docs/사장님-가이드/T-M3-인프라-셋업.md 작성 (단계별 클릭, 30~40분 예상). (3) second-brain checklist.md 에 C-11 (phase-graduation-on-real-need) 정식 추가 (3회 누적 → 진화 트리거 첫 정식화).
+- 2026-05-07: T-M5.2 완료. map_headers_to_columns (헤더 이름 → 0-indexed 컬럼 매핑, D-004 정합). 8 새 tests pass (spec 4.2 전체 헤더 검증, 열 이동 강건성, 중복/공백 처리). 전체 71 tests pass. 진척도 48%→51%.
+- 2026-05-07: 사장님 실 시트 첫 행 텍스트 받음 (3개 탭: 샴푸 카외/바디워시카외/두드러기카외, 15개 헤더). spec 4.2 갱신 — L/M/N 헤더가 "노출여부(통합탭 순위)" / "노출여부(카페구좌순위)" / "노출여부(블로그구좌순위)" 형식 확정. test 도 사장님 실 헤더로 교체. 첫 번째 (L) 만 괄호 안 공백 있음 (사장님 컨벤션 그대로).
+- 2026-05-07: .gitignore + .env.example 작성. SPREADSHEET_ID = `1mGhsPHd-...` 사장님 시트. SERVICE_ACCOUNT_JSON 은 T-M3.1 후 사장님이 채움.
+- 2026-05-07: T-M5.3 완료. SheetsClient.load_all_data_tabs (모든 데이터 탭 순회 + 헤더 매핑 + dict 행 + _row/_tab 메타). SPECIAL_TABS frozenset (카페매핑/_meta/설정/config). 6 새 tests pass (사장님 3 탭 시뮬, special skip, 빈 시트, 짧은 행 padding). 전체 77 tests pass. 진척도 51%→54%.
+- 2026-05-08: 사장님 GCP/서비스계정 발급 ✅ + 시트 공유 ✅. SheetsClient 가 실 사장님 시트 (832 행 / 3 카외 탭) 인증 통과. 19 distinct cafe slug 발견 (pusanmommy 82건, cosmania 46 등).
+- 2026-05-08: 500 행 sample 사장님 수기 vs 파서 비교. 1차 fix 전 일치율 62.9%. **2 큰 selector 버그 발견 + fix**: (1) 네이버 DOM 클래스명 변경 `desktop_mode` → `fds-default-mode` (5/5~5/8 사이), (2) URL 매칭 `m.cafe.naver.com` 모바일 prefix 정규화. fix 후 79.4% (+16.5%).
+- 2026-05-08: 사장님 컨벤션 정정 (제가 spec 에 박은 단어가 사장님 비즈니스 용어였음 — C-10 메타 챌린지 큰 누락 사례): (1) 스마트블록 → 인기글 통합 (사장님 시트엔 '스마트블록' 단어 0건), (2) 노출 안 됨 모든 케이스 → '삭제' 단일 단어 (UNEXPOSURE_STOPPED/DELETED/PRIVATE 모두 alias), (3) 미노출 = 빈 칸, (4) 유형 (C) = block_order[0] 만 (최상단 1위, 사장님 컨벤션 변경).
+- 2026-05-08: T-M5.4 완료. RowUpdate + rank_result_to_columns + SheetsClient.write_results. 10 새 tests (사장님 컨벤션 매핑, batch_update 1회 호출, 시트 없는 컬럼 자동 skip). 전체 89 tests pass.
+- 2026-05-08: T-M6.1 완료. CafeMappingCache (메모리 + ensure 패턴). 12 새 tests. 사장님 시트엔 카페매핑 탭 없어서 메모리 캐시만 (cron 사이클 내).
+- 2026-05-08: T-M6.2 완료. RetryQueue (1차 실패 행 보존 + slowdown 강화 후 1회 재시도). 10 새 tests.
+- 2026-05-08: T-M6.3 완료. HealthMonitor (성공률 + avg parser confidence 기반 code_change_suspected). 11 새 tests. 5/8 네이버 DOM 변경 사례를 미래엔 자동 검출 가능.
+- 2026-05-08: T-M7.1 완료. transitions.compute_new_K (사장님 D-009 차별화 — 이전 노출 → 빠짐 = '삭제' 자동 표기). 13 새 tests. EXPOSED_VALUES = {'AB', '인기글'} 사장님 컨벤션.
+- 2026-05-08: T-M7.2 완료. main.py run_cycle (전체 흐름 통합 — sheets read → 검색 + parser → transitions → retry → batch write → health log). 7 component tests (mock crawler + 실 fixture). 전체 144 tests pass.
+- 2026-05-08: M6/M7 모두 100%. M3 33% (사장님 GCP/시트공유 ✅, GitHub repo 사장님 작업 대기). 전체 진척도 76%. T-M8 만 남음.
+- 2026-05-08: critic agent (opus background) 종합 검토. verdict = FIX-THEN-PROCEED. Critical 2건 + Major 3건 발견. **즉시 fix**: (1) main.py except Exception silent drop → "삭제" RowUpdate 추가, (2) retry 실패도 "삭제" RowUpdate, (3) transitions.EXPOSED_VALUES 에 "스마트블록" defensive 추가, (4) config slowdown 1.5 → 5.0 (사장님 발화 정합 + 차단 방지), (5) 사장님 수동 K 편집 보존 (SYSTEM_K_VALUES 외 값 시 그대로 유지). spec 4.2 N 컬럼 "skip 의도" 명시.
+- 2026-05-08: T-M8.1 + T-M8.4 완료. `.github/workflows/rank-check.yml` 작성 (KST 6시간 cron, concurrency: cancel-in-progress: false, timeout 90분, exit code 1 = HealthMonitor 의심 시). README.md 작성 (사장님 페르소나 한국어 가이드, 안전장치 7개 명시, 차별화 기능 4개 강조). 진척도 76%→88%.
+- 2026-05-08: navigation skill 별도 하네스 (`~/.claude/skills/navigation/`) 작성. 시각화: 매 응답 첫 줄 `🧭 [목적: ...] [도구: ...]`. 글로벌 모든 프로젝트 적용. 사장님 명시 "여러 skill 동시 OK + 직선 진행 + 꼬불꼬불 X" 반영. response-validator.mjs (g0) hook 가 자동 검증 + NAVIGATION_MISSING 정정 주입. CLAUDE.md 8번 critical_gate 추가.
+- 2026-05-11: tasks.md 정합 갱신. T-M3.1/T-M3.2 ✅ 표시 (5/8 시점 사장님 GCP+시트공유 완료한 사실 변경 이력에는 있는데 표는 pending 이었음). 진척도 88%→94%. Stale claim `T-M7.2/` 청소 (실 task 는 5/8 완료, 폴더만 남아있었음).
+- 2026-05-11: D-015 — T-M5.5 SKIP 결정. 근거: (1) 사장님 시트 (832행/3 카외 탭/15 헤더)에 "카페매핑" 탭 없음 (M5.3 검증), (2) D-012 시트 컨벤션 변경 후 카페명/게시판 컬럼 자체 없음 (K~O 만 갱신), (3) 메모리 캐시 (M6.1 CafeMappingCache) 가 cron 사이클 내 중복 fetch 방지 보장 → 영구 캐시 불필요. D-006 (카페매핑 자동 추출) 은 spec 초기 가정, 실 사장님 컨벤션과 drift 발견 (사장님 컨벤션 정정 2026-05-08 후 인식). 미래에 카페매핑 탭 필요해지면 plan.md 의 T-M5.5 코드 재활성화 가능. M5 80%→100% (effectively).
+- 2026-05-11: D-016 — J false positive fix (parser._parse_jisikin v2). 사장님 시트 500행 정밀 분석으로 J false positive 69건 발견 (전부 cafe.naver.com + h2 없는 박스의 부수 kin 링크). 원인 = v1 selector 가 "AB 박스 안 임의 kin 링크" 잡음. fix = h2 텍스트 = '지식iN'/'지식인' 박스 안 kin 링크만 True. M4.9 인기글 패턴 동일. test 2개 의미 변경 (smart_block.html h2 0개 사실 반영) + 새 test 4개 (h2 박스 True / 한글 True / 회귀 방지 False / target kin + h2 없음 False). 6/6 jisikin pass, 전체 **148/148 tests pass** (145→148). 나머지 mismatch 64건 = 시점 차이 의심 → T-M8.3 실 cron 후 같은 시점 비교까지 미룸.
+- 2026-05-11: navigation skill v2 (사장님 글로벌 인프라). 사장님 챌린지 "어떤 스킬 + 어떤 목적 + 왜 — 안 말하면 의미 없음. 한 번에 완벽하게" → 형식 2축 → 3축 (목적/도구/**이유**) 진화. SKILL.md ANTI-PATTERN 7케이스 일괄 카탈로그, response-validator g0 3축 검증 + INCOMPLETE 별도 violation + navigation-debug.log 진단 항목 3축 boolean, routing-reminder always-on 카드 3축 형식, CLAUDE.md critical_gate 8 v2, retro-log Case 3 누적. hook syntax `node --check` BOTH OK. Phase 4 (Case 6/7 자동 검출 + fast mode 신뢰도) 예약.

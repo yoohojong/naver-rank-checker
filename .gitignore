@@ -1,0 +1,32 @@
+# Environment
+.env
+.env.local
+*.env
+
+# Service account JSON keys (NEVER commit)
+service-account-*.json
+*-credentials.json
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+.pytest_cache/
+*.egg-info/
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# 사장님 임시 파일 (스크린샷 등)
+docs/사장님-가이드/screenshots/
+
+# 사장님 비즈니스 데이터 (public repo 노출 금지, 2026-05-11)
+# comparison json = 사장님 시트 500행 키워드/링크/순위 비교 데이터
+.harness/comparison-*.json
