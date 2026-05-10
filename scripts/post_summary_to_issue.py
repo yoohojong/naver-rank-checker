@@ -11,6 +11,7 @@ from datetime import datetime, timezone, timedelta
 
 ISSUE_NUMBER = "1"
 REPO = "yoohojong/naver-rank-checker"
+OWNER_MENTION = "@yoohojong"  # mention = GitHub 가 사장님에게 자동 이메일 (Settings 무관)
 
 
 def format_kst() -> str:
@@ -20,7 +21,7 @@ def format_kst() -> str:
 
 
 def build_failure_comment(reason: str) -> str:
-    return f"""## ❌ cron 실패 — {format_kst()}
+    return f"""{OWNER_MENTION} ## ❌ cron 실패 — {format_kst()}
 
 **원인**: {reason}
 
@@ -59,7 +60,7 @@ def build_success_comment(summary: dict) -> str:
 
     tabs_str = ", ".join(tabs) if tabs else "_(없음)_"
 
-    return f"""## ✅ cron 완료 — {format_kst()}
+    return f"""{OWNER_MENTION} ## ✅ cron 완료 — {format_kst()}
 
 **처리 시간**: {minutes}분 {sec_remain}초
 **대상 탭**: {tabs_str}
