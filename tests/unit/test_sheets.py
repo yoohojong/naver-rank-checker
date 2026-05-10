@@ -30,6 +30,21 @@ class TestSheetsClient:
         with pytest.raises(json.JSONDecodeError):
             SheetsClient(spreadsheet_id="abc", service_account_json="not json")
 
+    def test_bom_prefix_stripped(self):
+        """2026-05-11 defensive: UTF-8 BOM 가 secret 에 박혀도 인증 통과.
+        Reason: PowerShell pipe / 메모장 등이 BOM 추가 가능. GitHub Actions 첫 실행에서 발견된 케이스."""
+        fake_creds = "﻿" + json.dumps({
+            "type": "service_account",
+            "client_email": "test@example.iam.gserviceaccount.com",
+            "private_key": "-----BEGIN PRIVATE KEY-----\nFAKE\n-----END PRIVATE KEY-----\n",
+            "token_uri": "https://oauth2.googleapis.com/token",
+        })
+        with patch("src.sheets.gspread.service_account_from_dict") as mock_auth:
+            mock_gc = MagicMock()
+            mock_auth.return_value = mock_gc
+            client = SheetsClient(spreadsheet_id="abc", service_account_json=fake_creds)
+            mock_auth.assert_called_once()
+
     def test_empty_credentials_raises(self):
         import pytest
         with pytest.raises((json.JSONDecodeError, ValueError)):

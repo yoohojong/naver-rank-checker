@@ -24,6 +24,10 @@ class SheetsClient:
     """
 
     def __init__(self, spreadsheet_id: str, service_account_json: str):
+        # 2026-05-11 defensive: PowerShell pipe / Windows 메모장 등이 UTF-8 BOM 을 secret 에 박을 수 있음.
+        # json.loads 는 BOM 거부 ("Unexpected UTF-8 BOM"). 사장님이 어떻게 set 하든 강건하게 처리.
+        if service_account_json.startswith("﻿"):
+            service_account_json = service_account_json[1:]
         creds_dict = json.loads(service_account_json)
         self.gc = gspread.service_account_from_dict(creds_dict)
         self.spreadsheet = self.gc.open_by_key(spreadsheet_id)
