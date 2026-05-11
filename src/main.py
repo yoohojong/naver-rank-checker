@@ -75,11 +75,14 @@ def _process_row(
     html = crawler.fetch_search(keyword)
     result = parse_search_result(html, target_url)
 
-    # url_alive — link 있는 경우만 (link 없으면 살아있는지 검증 의미 X)
-    # 검색 결과 발견 못한 + 이전 노출이었던 경우만 (HTTP 호출 절약)
+    # url_alive — link 있는 경우만 (link 없으면 살아있는지 검증 의미 X).
+    # 2026-05-12 T-M10.1 사장님 요구: 게시글 조회 시 "삭제됐다" 뜨는 케이스 = 무조건 K=삭제.
+    # 이전: prev_K in {AB, 인기글} 조건 박혀서 첫 추적 (prev_K="") row 의 죽은 URL 못 잡음.
+    # 변경: link 있음 + 검색 미노출 = 무조건 url alive 검증. compute_new_K(url_alive=False) → K="삭제".
+    # 비용: HTTP 호출 832 × ~60% = ~500 추가. cron 시간 33분 → 50~75분 추정.
     url_alive = True
     search_found = result.exposure_area.value != "미노출"
-    if link and not search_found and prev_K in {"AB", "인기글"}:
+    if link and not search_found:
         status = crawler.fetch_cafe_url_status(link)
         url_alive = status == CafeStatus.ALIVE
 

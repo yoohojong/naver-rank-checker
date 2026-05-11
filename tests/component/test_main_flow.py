@@ -106,9 +106,9 @@ class TestProcessRow:
         assert cols[HEADER_AREA] == "삭제"
 
     def test_first_run_unexposed(self, load_fixture):
-        """첫 추적 (prev_K = '') + 검색 0 → 빈 칸 유지."""
+        """첫 추적 (prev_K = '') + 검색 0 + url 살아있음 → 빈 칸 유지."""
         html = load_fixture("naver/no_match.html")
-        crawler = self._make_crawler(html_to_return=html)
+        crawler = self._make_crawler(html_to_return=html, url_status=CafeStatus.ALIVE)
         h = HealthMonitor()
         row = {
             "키워드": "asdf",
@@ -117,7 +117,24 @@ class TestProcessRow:
             "_row": 2,
         }
         cols = _process_row(row, crawler, h)
-        assert cols[HEADER_AREA] == ""  # 미노출 = 빈 칸
+        assert cols[HEADER_AREA] == ""  # 미노출 + url 살아있음 = 빈 칸
+
+    def test_first_run_url_dead_returns_삭제(self, load_fixture):
+        """2026-05-12 T-M10.1: 첫 추적 (prev_K='') + 검색 0 + url 죽음 → '삭제'.
+        사장님 요구: 게시글 조회 시 "삭제됐다" 뜨는 거 = K=삭제. prev_K 조건 무관.
+        """
+        html = load_fixture("naver/no_match.html")
+        crawler = self._make_crawler(html_to_return=html, url_status=CafeStatus.DELETED)
+        h = HealthMonitor()
+        row = {
+            "키워드": "처음추적",
+            "링크": "https://cafe.naver.com/dead/999",
+            HEADER_AREA: "",  # 첫 추적 = 빈 칸
+            "_row": 7,
+        }
+        cols = _process_row(row, crawler, h)
+        assert cols[HEADER_AREA] == "삭제"
+        crawler.fetch_cafe_url_status.assert_called_once()  # url alive 검증 박힘 ✅
 
     def test_crawler_error_propagates(self):
         """차단 에러는 raise 되어 retry queue 로 흘러감."""
