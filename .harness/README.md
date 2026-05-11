@@ -24,6 +24,38 @@
 - 헬스체크: 네이버 코드 변경 자동 감지 → 시트 알림
 - 실패율: 99%+ 목표 (재시도 큐, 5회 연속 실패만 알림)
 
+## 🆕 다음 세션 핸드오프 (2026-05-11 컨텍스트 꽉 참)
+
+**현재 상태**:
+- commit `e7585a1` push 완료 (D-017 3 fix: retry "삭제" 제거 + random 1.5~4초 slowdown + random.shuffle)
+- 151/151 tests pass
+- workflow **disabled** (사장님 명시, 다음 자동 cron 안 돔)
+- 사장님 시트 = 이전 시점 복원 ✅
+- 사장님 PC self-hosted runner = online (PID 84176)
+
+**남은 fix (다음 세션 의무)**:
+1. **curl_cffi 도입** (TLS 지문 Chrome 131) — `pip install curl_cffi` + crawler.py 의 `requests.Session()` → `cffi_requests.Session(impersonate="chrome131")`
+2. **빈 결과 감지 + 재시도** (네이버 JS 렌더링 강화 대응, 2025-09~)
+3. **사장님 새 cron 트리거 + 결과 evidence 검증** — 진짜 사장님 시트 같은 시점 비교
+
+**사장님 다음 시그널 (다음 세션 첫 메시지)**:
+- "cron 다시 ㄱ" → workflow enable + 수동 트리거 → 70~90분 결과 evidence
+- "curl_cffi 먼저" → fix 1 진행 후 cron
+- "잠깐" → 사장님 추가 검토
+
+**진짜 root cause 정리 (이번 세션)**:
+- cron run 25647821456 손상 원인 = `main.py retry 실패 → K="삭제"` (critic 2026-05-08 결정 폐기)
+- 차단 회피 = random slowdown + Session + Accept-Language + random.shuffle (curl_cffi 다음 세션)
+
+**핵심 파일**:
+- `.harness/decisions.md` D-017 (최신 결정)
+- `.harness/tasks.md` 변경 이력 (이번 세션 모두 누적됨)
+- `~/.claude/skills/second-brain/retro-log.md` 글로벌 메타 회고
+
+**진척도**: 95% (운영 안정 검증 = 새 cron 결과 후)
+
+---
+
 ## 다음 할 일
 **T-M4.8 (스마트블록 파싱)** 또는 병렬로 **T-M5.1 (gspread 인증)** / **T-M6.* (cache/retry/health)**.
 T-M4.7 (AB 리스트 파싱) 완료 — 부산맘 카페 1등 케이스 검증 완료.
