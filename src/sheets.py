@@ -107,6 +107,27 @@ class SheetsClient:
                 lambda: ws.batch_update(cells, value_input_option="RAW"),
                 ctx=tab_name,
             )
+
+        # 2026-05-12 T-M14: K="삭제" 박힌 셀 = 노란색 배경 (사장님 시각 ↑)
+        # 사장님 명시: 마케터 시트 봤을 때 즉시 "삭제됐다" 인식.
+        # K = "AB"/"인기글"/빈 박힌 셀 = 흰색 (reset) — 이전 박힌 노란색 정리.
+        if HEADER_AREA in mapping:
+            k_col = mapping[HEADER_AREA] + 1  # 1-indexed
+            color_formats = []
+            yellow = {"red": 1.0, "green": 1.0, "blue": 0.0}
+            white = {"red": 1.0, "green": 1.0, "blue": 1.0}
+            for upd in updates:
+                if HEADER_AREA not in upd.columns:
+                    continue
+                k_value = upd.columns[HEADER_AREA]
+                cell_range = gspread.utils.rowcol_to_a1(upd.row, k_col)
+                bg = yellow if k_value == "삭제" else white
+                color_formats.append({"range": cell_range, "format": {"backgroundColor": bg}})
+            if color_formats:
+                _sheets_api_retry(
+                    lambda: ws.batch_format(color_formats),
+                    ctx=f"{tab_name} (색상)",
+                )
         return len(cells)
 
     def load_all_data_tabs(

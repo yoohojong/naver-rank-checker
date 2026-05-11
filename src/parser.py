@@ -38,12 +38,13 @@ class RankResult:
     parser_confidence: float = 0.0
 
 
-def parse_search_result(html: str, target_url: Optional[str]) -> RankResult:
-    """검색 결과 페이지 + 본인 URL → RankResult.
+def parse_search_result(html: str, target_url: Optional[str], link_set: Optional[set[str]] = None) -> RankResult:
+    """검색 결과 페이지 + target_url 또는 link_set → RankResult.
 
-    target_url=None: 사장님 컨벤션 2026-05-12 T-M10 — 링크 빈 row 도 검색.
-    첫 카페 (AB 박스 또는 인기글 박스의 cafe.naver.com 항목) 의 순위 박음.
-    마케터 시점: K=AB/인기글 박혀있으면 "이미 누가 노출 박힘" = 추가 작업 안 해도 OK.
+    target_url 박힘: 기존 동작 — target_url 매치 박은 link 의 순위 표시.
+    target_url=None + link_set 박힘 (T-M14, 2026-05-12): 사장님 시트의 다른 row link set
+    중 검색 결과에 박힌 link 의 순위 표시. 마케터 시점 = "내가 박은 카페글이
+    다른 키워드에도 노출 박혔으면" 즉시 인식.
 
     실측 셀렉터는 fixture 분석 후 _parse_* 함수에서 채워짐.
     """
@@ -53,14 +54,14 @@ def parse_search_result(html: str, target_url: Optional[str]) -> RankResult:
     result = RankResult()
     result.block_order = _detect_block_order(html)
 
-    if _parse_ab_list(html, target_url, result):
+    if _parse_ab_list(html, target_url, result, link_set):
         result.exposure_area = ExposureArea.AB
     elif _parse_smart_blocks(html, target_url, result):
         result.exposure_area = ExposureArea.SMART_BLOCK
-    elif _parse_popular(html, target_url, result):
+    elif _parse_popular(html, target_url, result, link_set):
         result.exposure_area = ExposureArea.POPULAR
 
-    _parse_jisikin(html, target_url, result)
+    _parse_jisikin(html, target_url or "", result)
     return result
 
 
@@ -96,8 +97,8 @@ def _detect_block_order(html: str) -> list[str]:
     return seen
 
 
-def _parse_ab_list(html: str, target_url: Optional[str], result: RankResult) -> bool:
-    """AB 통합 리스트 안에서 target_url 찾고 순위 계산.
+def _parse_ab_list(html: str, target_url: Optional[str], result: RankResult, link_set: Optional[set[str]] = None) -> bool:
+    """AB 통합 리스트 안에서 target_url 또는 link_set 매치 link 찾고 순위 계산.
 
     AB 항목 정의:
     - 외곽: div.api_subject_bx + .desktop_mode
@@ -105,7 +106,8 @@ def _parse_ab_list(html: str, target_url: Optional[str], result: RankResult) -> 
     - 메인 a[href] 가 있음
 
     매칭 시: integrated_rank, cafe_slot_rank/blog_slot_rank, parser_confidence 채움.
-    target_url=None (T-M10): AB 박스 첫 카페 = 1등 카페 정보. 마케터 = 추가 작업 안 해도 OK 신호.
+    target_url 박힘: 기존 동작.
+    target_url=None + link_set 박힘 (T-M14): 사장님 시트의 다른 row link 와 매치된 link 의 순위.
     매칭 실패 시 False (다음 분기로).
     """
     if not html:
@@ -130,13 +132,19 @@ def _parse_ab_list(html: str, target_url: Optional[str], result: RankResult) -> 
             cafe_count += 1
         elif kind == "blog":
             blog_count += 1
-        if target_url is None:
-            # 2026-05-12 T-M10: 링크 빈 row — 첫 카페 = 1등 카페 박음
-            if kind == "cafe":
+        # T-M14 (T-M10 revert): target_url=None + link_set 박힘 = 사장님 시트 link 매치
+        if target_url is None and link_set:
+            if _urls_match_any(url, link_set):
                 result.integrated_rank = idx
-                result.cafe_slot_rank = cafe_count
+                if kind == "cafe":
+                    result.cafe_slot_rank = cafe_count
+                elif kind == "blog":
+                    result.blog_slot_rank = blog_count
                 result.parser_confidence = 0.9
                 return True
+            continue
+        if target_url is None:
+            # link_set 없으면 매치 박지 X (T-M13 정신)
             continue
         if _urls_match(url, target_url):
             result.integrated_rank = idx
@@ -200,6 +208,17 @@ def _urls_match(a: str, b: str) -> bool:
     )
 
 
+def _urls_match_any(url: str, link_set: set[str]) -> bool:
+    """T-M14: url 박힌 거가 link_set 안 어떤 link 와 매치 박혀있나.
+
+    naver.me 단축 URL 박힌 link 박을 때 = 매치 X. main.py 에서 link_set 박을 때
+    resolve_short_url 박은 후 박는 것 정합. 여기는 raw _urls_match 박음.
+    """
+    if not url or not link_set:
+        return False
+    return any(_urls_match(url, link) for link in link_set)
+
+
 _SMART_BLOCK_SKIP_PATTERNS = (
     "인기글",
     "관련 브랜드 콘텐츠",
@@ -251,7 +270,7 @@ _POPULAR_SKIP_PATTERNS = (
 )
 
 
-def _parse_popular(html: str, target_url: Optional[str], result: RankResult) -> bool:
+def _parse_popular(html: str, target_url: Optional[str], result: RankResult, link_set: Optional[set[str]] = None) -> bool:
     """인기글 (사장님 컨벤션) — h2 자손 있는 박스 모두 (광고/이미지/AI/쇼핑 제외).
 
     사장님 컨벤션 (2026-05-08 확인): 검색 결과 박스에 h2 헤더 (키워드 변형 또는 '...인기글') 있고
@@ -278,28 +297,28 @@ def _parse_popular(html: str, target_url: Optional[str], result: RankResult) -> 
             continue
 
         items = _extract_popular_items(box)
-        # 2026-05-11 critic Major 2 fix: 사장님 실 데이터 분석 결과 L==M 만 34% (66% 다름).
-        # 진짜 사장님 컨벤션: L = 박스 안 모든 항목 순위 (블로그+카페 dedup), M = 카페만 카운트, 블로그면 M=None.
-        # AB 박스 로직과 동일 (cafe_count 분리).
+        # 2026-05-11 critic Major 2 fix: L = 박스 안 모든 항목 순위, M = 카페만 카운트.
         cafe_count = 0
         for idx, url in enumerate(items, start=1):
             is_cafe = "cafe.naver.com" in url
             if is_cafe:
                 cafe_count += 1
-            if target_url is None:
-                # 2026-05-12 T-M10: 링크 빈 row — 첫 카페 = 1등 카페 박음
-                if is_cafe:
+            # T-M14: target_url=None + link_set 박힘 = 사장님 시트 link 매치
+            if target_url is None and link_set:
+                if _urls_match_any(url, link_set):
                     result.integrated_rank = idx
-                    result.cafe_slot_rank = cafe_count
+                    if is_cafe:
+                        result.cafe_slot_rank = cafe_count
                     result.smart_block_name = h2_text
                     result.parser_confidence = 0.85
                     return True
                 continue
+            if target_url is None:
+                continue
             if _urls_match(url, target_url):
-                result.integrated_rank = idx  # L = 박스 안 모든 항목 절대 순위
+                result.integrated_rank = idx
                 if is_cafe:
-                    result.cafe_slot_rank = cafe_count  # M = 카페만 카운트한 순위
-                # 블로그 항목이면 cafe_slot_rank = None (AB 박스 로직 동일)
+                    result.cafe_slot_rank = cafe_count
                 result.smart_block_name = h2_text
                 result.parser_confidence = 0.85
                 return True

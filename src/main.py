@@ -44,11 +44,16 @@ def _process_row(
     row: dict,
     crawler: Crawler,
     health: HealthMonitor,
+    all_known_links: Optional[set] = None,
 ) -> Optional[dict]:
     """한 행 처리 → 새 컬럼 dict 또는 None (skip).
 
+    Args:
+        all_known_links: T-M14 (2026-05-12) — 사장님 시트의 모든 row 의 link set.
+            link 빈 row 박을 때 매치 검사용. None 박으면 = 빈칸 박음 (테스트용).
+
     Returns:
-        새 column dict (시트 write 용) 또는 None (link 빈 등으로 skip).
+        새 column dict (시트 write 용) 또는 None (skip).
 
     Raises:
         CrawlerError: 차단/네트워크 실패. retry queue 처리 대상.
@@ -57,20 +62,39 @@ def _process_row(
     link = (row.get("링크") or "").strip()
     prev_K = (row.get(HEADER_AREA) or "").strip()
 
-    # 키워드 빈 행 = skip (작업자가 키워드도 안 박은 row)
+    # 키워드 빈 행 = skip
     if not keyword:
         return None
 
-    # 2026-05-12 T-M13 (T-M10 revert): 사장님 명시 — 링크 빈 row = 박지 X (마케팅 예정).
-    # 이전 T-M10 박은 동작 (link 빈 + 검색 + 첫 카페 박음) = 사장님 의도 X.
-    # 사장님 시트 정리 의무: 이전 cron 박힌 K/L/M 도 빈칸 박음 (덮어쓰기).
+    # 2026-05-12 T-M14: 링크 빈 row + 시트 link_set 박힘 = 검색 + 매치 link 의 순위 박음.
+    # 사장님 의도: 다른 row 에 박힌 카페글이 이 키워드 검색에도 노출 박혀있으면 그 link 의 순위 표시.
+    # 마케터 시점: "내가 박은 카페글이 다른 키워드에도 노출 박혔으면" 즉시 인식.
     if not link:
-        return {
-            HEADER_AREA: "",
-            HEADER_L: "",
-            HEADER_M: "",
-            HEADER_JISIKIN: "",
-        }
+        if not all_known_links:
+            # 테스트 / 첫 cron — link_set 박지 X = 빈칸 박음
+            return {
+                HEADER_AREA: "",
+                HEADER_L: "",
+                HEADER_M: "",
+                HEADER_JISIKIN: "",
+            }
+        # 검색 + link_set 매치
+        html = crawler.fetch_search(keyword)
+        result = parse_search_result(html, target_url=None, link_set=all_known_links)
+        # link 빈 row = url alive 검증 박지 X (link 없음)
+        cols = rank_result_to_columns(
+            block_order=result.block_order,
+            exposure_area=result.exposure_area.value if result.exposure_area.value != "미노출" else "",
+            integrated_rank=result.integrated_rank,
+            cafe_slot_rank=result.cafe_slot_rank,
+            in_jisikin=result.in_jisikin,
+        )
+        health.record(
+            parser_confidence=result.parser_confidence,
+            success=True,
+            block_type=cols.get(HEADER_AREA) if cols.get(HEADER_AREA) in {"AB", "인기글"} else None,
+        )
+        return cols
 
     # 단축 URL 해석
     if "naver.me" in link:
@@ -141,6 +165,15 @@ def run_cycle() -> dict:
     data = client.load_all_data_tabs(tab_filter=_carea_filter)
     print(f"대상 탭 {len(data)}개: {list(data.keys())}")
 
+    # 1.5. T-M14: 사장님 시트 전체 link set 박음 (link 빈 row 의 매치 검사용)
+    all_known_links: set = set()
+    for tab_rows in data.values():
+        for row in tab_rows:
+            row_link = (row.get("링크") or "").strip()
+            if row_link:
+                all_known_links.add(row_link)
+    print(f"전체 link set: {len(all_known_links)}개 (T-M14 매치 검사용)")
+
     # 2. 각 탭 + 행 처리
     tab_updates: dict[str, list[RowUpdate]] = {}
     circuit_breaker_tripped = False  # 2026-05-11 architect Major 1 fix
@@ -157,7 +190,7 @@ def run_cycle() -> dict:
         print(f"\n[{tab_name}] {len(rows)} 행 처리 시작 (random shuffle)")
         for row in rows:
             try:
-                cols = _process_row(row, crawler, health)
+                cols = _process_row(row, crawler, health, all_known_links=all_known_links)
                 if cols is None:
                     continue  # link 빈 행 skip
                 updates.append(RowUpdate(row=row["_row"], columns=cols))
@@ -185,7 +218,7 @@ def run_cycle() -> dict:
     if len(retry_queue) > 0 and not circuit_breaker_tripped:
         print(f"\n=== retry queue 처리: {len(retry_queue)} 행 ===")
         def retry_processor(row):
-            cols = _process_row(row, crawler, health)
+            cols = _process_row(row, crawler, health, all_known_links=all_known_links)
             return cols
         retry_results = retry_queue.process(retry_processor, slowdown_multiplier=2.0)
         for r in retry_results:
