@@ -24,23 +24,22 @@
 - 헬스체크: 네이버 코드 변경 자동 감지 → 시트 알림
 - 실패율: 99%+ 목표 (재시도 큐, 5회 연속 실패만 알림)
 
-## 🆕 다음 세션 핸드오프 (2026-05-11 컨텍스트 꽉 참)
+## 🆕 다음 세션 핸드오프 (2026-05-11 T-M9.1 완료 시점)
 
 **현재 상태**:
-- commit `e7585a1` push 완료 (D-017 3 fix: retry "삭제" 제거 + random 1.5~4초 slowdown + random.shuffle)
-- 151/151 tests pass
-- workflow **disabled** (사장님 명시, 다음 자동 cron 안 돔)
+- T-M9.1 (curl_cffi 도입) ✅ 151/151 tests pass (23s)
+- workflow **disabled** 유지 (사장님 시그널 후 enable)
 - 사장님 시트 = 이전 시점 복원 ✅
-- 사장님 PC self-hosted runner = online (PID 84176)
+- 사장님 PC self-hosted runner = online
 
-**남은 fix (다음 세션 의무)**:
-1. **curl_cffi 도입** (TLS 지문 Chrome 131) — `pip install curl_cffi` + crawler.py 의 `requests.Session()` → `cffi_requests.Session(impersonate="chrome131")`
-2. **빈 결과 감지 + 재시도** (네이버 JS 렌더링 강화 대응, 2025-09~)
-3. **사장님 새 cron 트리거 + 결과 evidence 검증** — 진짜 사장님 시트 같은 시점 비교
+**남은 fix**:
+1. ~~curl_cffi 도입~~ ✅ **2026-05-11 T-M9.1** (requests → curl_cffi==0.15.0, Session impersonate="chrome131", RequestsError catch, test responses→mock 마이그레이션 동반)
+2. **빈 결과 감지 + 재시도** (네이버 JS 렌더링 강화 대응, 2025-09~) — fix 1 cron evidence 후 결정
+3. **사장님 새 cron 트리거 + 결과 evidence** — fix 1 효과 측정. workflow enable + 수동 dispatch → 70~90분 → 시트 같은 시점 비교
 
-**사장님 다음 시그널 (다음 세션 첫 메시지)**:
-- "cron 다시 ㄱ" → workflow enable + 수동 트리거 → 70~90분 결과 evidence
-- "curl_cffi 먼저" → fix 1 진행 후 cron
+**사장님 다음 시그널 (객관적 최선 순)**:
+- **"cron ㄱ"** → fix 1 효과 evidence 우선 (workflow enable + 수동 트리거). 사장님 시트 손상 위험 = D-017 retry 폐지 + circuit breaker 5회 차단 적용으로 ↓
+- "fix 2 ㄱ" → 빈 결과 감지 먼저 (cron 안전성 ↑, 다만 evidence 없이 추측 fix 위험)
 - "잠깐" → 사장님 추가 검토
 
 **진짜 root cause 정리 (이번 세션)**:

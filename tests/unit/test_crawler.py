@@ -1,6 +1,6 @@
 """crawler 단위 테스트."""
 import pytest
-import responses
+from unittest.mock import patch, MagicMock
 
 from src.crawler import (
     CafeStatus,
@@ -46,16 +46,14 @@ class TestParseCafeUrl:
 
 
 class TestResolveShortUrl:
-    @responses.activate
     def test_redirects_to_full_cafe(self):
-        responses.add(
-            responses.HEAD,
-            "https://naver.me/abc",
-            status=302,
-            headers={"Location": "https://cafe.naver.com/cosmania/38373348"},
-        )
-        result = resolve_short_url("https://naver.me/abc")
-        assert result == "https://cafe.naver.com/cosmania/38373348"
+        with patch("src.crawler.requests.head") as mock_head:
+            mock_head.return_value = MagicMock(
+                status_code=302,
+                headers={"Location": "https://cafe.naver.com/cosmania/38373348"},
+            )
+            result = resolve_short_url("https://naver.me/abc")
+            assert result == "https://cafe.naver.com/cosmania/38373348"
 
     def test_full_url_returned_unchanged(self):
         full = "https://cafe.naver.com/cosmania/38373348"
@@ -64,11 +62,12 @@ class TestResolveShortUrl:
     def test_empty_returned_empty(self):
         assert resolve_short_url("") == ""
 
-    @responses.activate
     def test_network_error_returns_original(self):
-        # responses 미등록 URL → ConnectionError → 원본 반환
-        result = resolve_short_url("https://naver.me/xyz")
-        assert result == "https://naver.me/xyz"
+        from curl_cffi.requests import RequestsError
+        with patch("src.crawler.requests.head") as mock_head:
+            mock_head.side_effect = RequestsError("conn failed")
+            result = resolve_short_url("https://naver.me/xyz")
+            assert result == "https://naver.me/xyz"
 
 
 class TestSlowdownController:
@@ -144,43 +143,32 @@ class TestRandomUserAgent:
 
 
 class TestCrawlerFetchSearch:
-    @responses.activate
     def test_returns_html_on_200(self):
-        responses.add(
-            responses.GET,
-            "https://search.naver.com/search.naver",
-            body="<html><body>" + ("샴푸 " * 200) + "</body></html>",
-            status=200,
-        )
         c = Crawler()
-        c.slowdown.base = 0  # 테스트 빠르게
+        c.session = MagicMock()
+        c.session.get.return_value = MagicMock(
+            status_code=200,
+            text="<html><body>" + ("샴푸 " * 200) + "</body></html>",
+        )
+        c.slowdown.base = 0
         c.slowdown.current_interval = 0
         html = c.fetch_search("샴푸")
         assert "샴푸" in html
 
-    @responses.activate
     def test_429_triggers_slowdown_and_raises(self):
-        responses.add(
-            responses.GET,
-            "https://search.naver.com/search.naver",
-            status=429,
-        )
         c = Crawler()
+        c.session = MagicMock()
+        c.session.get.return_value = MagicMock(status_code=429, text="")
         c.slowdown.base = 0
         c.slowdown.current_interval = 0
         with pytest.raises(CrawlerError):
             c.fetch_search("샴푸")
         assert c.slowdown.consecutive_blocks >= 1
 
-    @responses.activate
     def test_short_response_treated_as_blocked(self):
-        responses.add(
-            responses.GET,
-            "https://search.naver.com/search.naver",
-            body="too short",
-            status=200,
-        )
         c = Crawler()
+        c.session = MagicMock()
+        c.session.get.return_value = MagicMock(status_code=200, text="too short")
         c.slowdown.base = 0
         c.slowdown.current_interval = 0
         with pytest.raises(CrawlerError):
@@ -188,40 +176,32 @@ class TestCrawlerFetchSearch:
 
 
 class TestCrawlerFetchCafeUrlStatus:
-    @responses.activate
     def test_alive_on_normal_200(self):
-        responses.add(
-            responses.GET,
-            "https://cafe.naver.com/foo/123",
-            body="<html>" + ("정상 글 내용" * 100) + "</html>",
-            status=200,
-        )
         c = Crawler()
+        c.session = MagicMock()
+        c.session.get.return_value = MagicMock(
+            status_code=200,
+            text="<html>" + ("정상 글 내용" * 100) + "</html>",
+        )
         c.slowdown.base = 0
         c.slowdown.current_interval = 0
         assert c.fetch_cafe_url_status("https://cafe.naver.com/foo/123") == CafeStatus.ALIVE
 
-    @responses.activate
     def test_404_treated_as_deleted(self):
-        responses.add(
-            responses.GET,
-            "https://cafe.naver.com/foo/9999",
-            status=404,
-        )
         c = Crawler()
+        c.session = MagicMock()
+        c.session.get.return_value = MagicMock(status_code=404, text="")
         c.slowdown.base = 0
         c.slowdown.current_interval = 0
         assert c.fetch_cafe_url_status("https://cafe.naver.com/foo/9999") == CafeStatus.DELETED
 
-    @responses.activate
     def test_login_wall_treated_as_private(self):
-        responses.add(
-            responses.GET,
-            "https://cafe.naver.com/private/1",
-            body='<html>nid.naver.com/nidlogin.login redirect</html>',
-            status=200,
-        )
         c = Crawler()
+        c.session = MagicMock()
+        c.session.get.return_value = MagicMock(
+            status_code=200,
+            text='<html>nid.naver.com/nidlogin.login redirect</html>',
+        )
         c.slowdown.base = 0
         c.slowdown.current_interval = 0
         assert c.fetch_cafe_url_status("https://cafe.naver.com/private/1") == CafeStatus.PRIVATE

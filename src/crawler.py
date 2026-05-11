@@ -1,12 +1,18 @@
-"""crawler: 네이버 검색 페이지 fetch (slowdown, UA rotation) + URL 정규화."""
+"""crawler: 네이버 검색 페이지 fetch (slowdown, UA rotation) + URL 정규화.
+
+2026-05-11 T-M9.1: requests → curl_cffi 마이그레이션. impersonate="chrome131" 로
+TLS/JA3 지문 위장 → 네이버 봇 차단 회피 (cron run 25647821456 손상 root cause 중 하나).
+"""
 import random
 import re
 import time
 from typing import Optional
 
-import requests
+from curl_cffi import requests
 
 from src.config import USER_AGENTS
+
+IMPERSONATE = "chrome131"
 
 CAFE_URL_RE = re.compile(r"https?://cafe\.naver\.com/([^/?#]+)/(\d+)")
 
@@ -26,10 +32,10 @@ def resolve_short_url(url: str) -> str:
     if not url or "naver.me" not in url:
         return url
     try:
-        r = requests.head(url, allow_redirects=False, timeout=10)
+        r = requests.head(url, impersonate=IMPERSONATE, allow_redirects=False, timeout=10)
         if 300 <= r.status_code < 400 and "Location" in r.headers:
             return r.headers["Location"]
-    except requests.RequestException:
+    except requests.RequestsError:
         pass
     return url
 
@@ -124,7 +130,7 @@ class Crawler:
 
     def __init__(self, slowdown: Optional[SlowdownController] = None):
         self.slowdown = slowdown or SlowdownController()
-        self.session = requests.Session()
+        self.session = requests.Session(impersonate=IMPERSONATE)
 
     def _headers(self) -> dict:
         return {**_BROWSER_HEADERS, "User-Agent": random_user_agent()}
@@ -139,7 +145,7 @@ class Crawler:
                 headers=self._headers(),
                 timeout=15,
             )
-        except requests.RequestException as e:
+        except requests.RequestsError as e:
             self.slowdown.on_block_detected()
             raise CrawlerError(f"network error: {e}") from e
 
@@ -163,7 +169,7 @@ class Crawler:
                 allow_redirects=True,
                 timeout=15,
             )
-        except requests.RequestException:
+        except requests.RequestsError:
             return CafeStatus.UNKNOWN
 
         if r.status_code == 404:
