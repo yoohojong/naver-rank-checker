@@ -24,23 +24,37 @@
 - 헬스체크: 네이버 코드 변경 자동 감지 → 시트 알림
 - 실패율: 99%+ 목표 (재시도 큐, 5회 연속 실패만 알림)
 
-## 🆕 다음 세션 핸드오프 (2026-05-11 T-M9.1 완료 시점)
+## 🆕 다음 세션 핸드오프 (2026-05-11 T-M9.2 완료 + 진단 종료)
 
 **현재 상태**:
-- T-M9.1 (curl_cffi 도입) ✅ 151/151 tests pass (23s)
+- T-M9.1 ✅ (curl_cffi 도입)
+- T-M9.2 ✅ (HealthMonitor false positive fix)
+- **153/153 tests pass**
 - workflow **disabled** 유지 (사장님 시그널 후 enable)
-- 사장님 시트 = 이전 시점 복원 ✅
 - 사장님 PC self-hosted runner = online
 
-**남은 fix**:
-1. ~~curl_cffi 도입~~ ✅ **2026-05-11 T-M9.1** (requests → curl_cffi==0.15.0, Session impersonate="chrome131", RequestsError catch, test responses→mock 마이그레이션 동반)
-2. **빈 결과 감지 + 재시도** (네이버 JS 렌더링 강화 대응, 2025-09~) — fix 1 cron evidence 후 결정
-3. **사장님 새 cron 트리거 + 결과 evidence** — fix 1 효과 측정. workflow enable + 수동 dispatch → 70~90분 → 시트 같은 시점 비교
+**T-M9.1/9.2 진단 결과 (4 turn 협업)**:
+- cron run 25662967605: curl_cffi 적용된 eb7d472 진짜 실행 ✅ (headSha 검증)
+- 차단 0/508, 33분 완주, Avg conf 0.36
+- 실증 probe (probe_v1~v4, 5 keyword): **parser 5/5 정확** ✅
+- 진짜 root cause = HealthMonitor avg_conf 계산식 false positive (UNEXPOSED record 평균에 박혀서 미노출 우세 시트 시 자연 ↓ → false alert)
+- fix = 노출 record (conf > 0) 만 평균. UNEXPOSED 는 의도된 정상 분류
+- **사장님 시트 = 정확 갱신 가능성 ↑↑↑** (parser 5/5 정확 검증)
 
-**사장님 다음 시그널 (객관적 최선 순)**:
-- **"cron ㄱ"** → fix 1 효과 evidence 우선 (workflow enable + 수동 트리거). 사장님 시트 손상 위험 = D-017 retry 폐지 + circuit breaker 5회 차단 적용으로 ↓
-- "fix 2 ㄱ" → 빈 결과 감지 먼저 (cron 안전성 ↑, 다만 evidence 없이 추측 fix 위험)
-- "잠깐" → 사장님 추가 검토
+**사장님 직접 액션 (가능)**:
+- Google Sheets `파일 → 버전 기록` 에서 진짜 갱신 정상인지 1분 확인 가능 (필수 X)
+
+**남은 fix**:
+1. ~~curl_cffi 도입~~ ✅ T-M9.1
+2. ~~HealthMonitor false positive~~ ✅ T-M9.2
+3. **빈 결과 감지 + 재시도** (네이버 JS 렌더링 강화 대응) — 필요성 ↓ (진단 결과 parser 정확)
+4. **다음 cron evidence** — fix 효과 측정 위해 workflow enable + dispatch 또는 schedule 자동
+
+**사장님 다음 시그널**:
+- **"cron ㄱ"** → push 됨 + workflow enable + `--ref <sha>` 명시 dispatch (race 회피 안전 procedure)
+- "schedule 기다림" → workflow enable + 다음 schedule (KST 18:00) 자동
+- "fix 3 ㄱ" → 빈 결과 감지 (필요성 ↓ 다만 안전 강화)
+- "잠깐" → 사장님 검토
 
 **진짜 root cause 정리 (이번 세션)**:
 - cron run 25647821456 손상 원인 = `main.py retry 실패 → K="삭제"` (critic 2026-05-08 결정 폐기)

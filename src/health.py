@@ -51,14 +51,24 @@ class HealthMonitor:
 
         success_count = sum(1 for r in self.records if r["success"])
         rate = success_count / total
-        avg_conf = sum(r["confidence"] for r in self.records) / total
+
+        # 2026-05-11 T-M9.2 fix: 노출된 record (conf > 0) 만 평균에 박음.
+        # UNEXPOSED record (conf = 0 + success=True) = 의도된 정상 상태 = noise 아님.
+        # 옛 식 (all records 평균) = 미노출 우세 시트 (832 행 중 다수) 시 평균 자연스럽게 ↓ → false positive 알림.
+        # 진단: probe v4 2026-05-11 — 5/5 keyword parser 정확 (4 미노출 + 1 노출), conf 평균 0.18.
+        # 노출 keyword 만 평균 = 0.9 = 정상.
+        exposed_records = [r for r in self.records if r["confidence"] > 0]
+        if exposed_records:
+            avg_conf = sum(r["confidence"] for r in exposed_records) / len(exposed_records)
+        else:
+            avg_conf = 0.0  # 노출 0건 = 진짜 회귀 신호 (모든 keyword 미노출 = 차단/DOM 변경 의심)
 
         # 코드 변경 의심 조건:
-        # 1) 성공률 < 90% (네이버 차단 + selector 변경 둘 다 포함)
-        # 2) avg confidence < 0.5 + 표본 ≥ 10 (검색은 성공하는데 매칭 거의 X)
+        # 1) 성공률 < 90% (네이버 차단 + 예외 누적)
+        # 2) avg confidence < 0.5 + 노출 표본 ≥ 10 (노출 keyword 의 매칭 정확도 회귀)
         suspected = (
             (total >= self.MIN_SAMPLES_FOR_DETECTION and rate < self.SUCCESS_RATE_THRESHOLD)
-            or (total >= self.MIN_SAMPLES_FOR_DETECTION and avg_conf < self.LOW_CONFIDENCE_THRESHOLD)
+            or (len(exposed_records) >= self.MIN_SAMPLES_FOR_DETECTION and avg_conf < self.LOW_CONFIDENCE_THRESHOLD)
         )
 
         return {
