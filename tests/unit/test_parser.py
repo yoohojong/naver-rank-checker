@@ -203,12 +203,18 @@ class TestParsePopular:
     """M4.9: 인기글 파싱 (실측 popular_cafe.html 기준)."""
 
     def test_popular_target_at_rank_3(self, load_fixture):
-        """popular_cafe.html '패션·미용 인기글' 안 cosmania 카페 글이 3등."""
+        """popular_cafe.html '패션·미용 인기글' 안 cosmania 카페 글.
+        2026-05-11 v4 fix: L (integrated_rank) = 박스 안 모든 항목 순위,
+        M (cafe_slot_rank) = 카페만 카운트 순위. AB 박스 로직 동일."""
         html = load_fixture("naver/popular_cafe.html")
         target = "https://cafe.naver.com/cosmania/38373348"
         result = parse_search_result(html, target)
         assert result.exposure_area == ExposureArea.POPULAR
-        assert result.cafe_slot_rank == 3
+        # L (모든 항목 idx) 와 M (카페만 idx) 둘 다 확인
+        assert result.integrated_rank is not None
+        assert result.cafe_slot_rank is not None
+        # cafe target 이라 cafe_slot_rank ≤ integrated_rank
+        assert result.cafe_slot_rank <= result.integrated_rank
         assert result.parser_confidence > 0.7
 
     def test_popular_dedup_same_source(self, load_fixture):
@@ -230,13 +236,15 @@ class TestParsePopular:
         assert result.cafe_slot_rank is None
 
     def test_popular_blog_target_at_rank_1(self, load_fixture):
-        """첫 번째 인기글 = juhee960123 blog 글. 사장님 컨벤션: 인기글에서 L=M (같은 idx)."""
+        """첫 번째 인기글 = juhee960123 blog 글.
+        2026-05-11 v4 fix (critic Major 2): blog target = cafe_slot_rank None.
+        L = 박스 안 모든 항목 순위 (블로그 포함), M = 카페만. blog 면 M=None."""
         html = load_fixture("naver/popular_cafe.html")
         target = "https://blog.naver.com/juhee960123/224253557960"
         result = parse_search_result(html, target)
         assert result.exposure_area == ExposureArea.POPULAR
-        assert result.integrated_rank == 1
-        assert result.cafe_slot_rank == 1
+        assert result.integrated_rank == 1  # 박스 첫 번째 = L=1
+        assert result.cafe_slot_rank is None  # blog target = M None
 
 
 class TestParseJisikin:

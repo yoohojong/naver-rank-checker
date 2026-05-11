@@ -31,53 +31,32 @@ Claude 에게 보고 권장."""
 
 
 def build_success_comment(summary: dict) -> str:
-    total = summary.get("total", 0)
+    """2026-05-11 CRITICAL fix: K 분포 + 탭 이름 제거 (사장님 비즈니스 데이터 노출 방지).
+    단순 메타 (시간/행수/셀수/성공률/상태) 만 박음. 자세한 내용 = Actions log 링크 클릭."""
     success_rate = summary.get("success_rate", 0)
     success_pct = f"{success_rate * 100:.1f}%"
-    avg_conf = summary.get("avg_confidence", 0)
-    avg_conf_str = f"{avg_conf:.2f}"
     cells = summary.get("total_cells_written", 0)
     rows = summary.get("total_rows_processed", 0)
     seconds = summary.get("cycle_seconds", 0)
     minutes = seconds // 60
     sec_remain = seconds % 60
     retry_left = summary.get("retry_queue_remaining", 0)
-    tabs = summary.get("tabs_processed", [])
-    k_dist = summary.get("k_distribution", {})
     code_change = summary.get("code_change_suspected", False)
 
     health_status = "🚨 code_change_suspected" if code_change else "✅ 정상"
 
-    k_lines = []
-    k_order = ["AB", "인기글", "삭제", "미노출"]
-    for k in k_order:
-        if k in k_dist:
-            k_lines.append(f"- {k}: {k_dist[k]} 행")
-    for k, v in k_dist.items():
-        if k not in k_order:
-            k_lines.append(f"- {k}: {v} 행")
-    k_block = "\n".join(k_lines) if k_lines else "_(데이터 없음)_"
-
-    tabs_str = ", ".join(tabs) if tabs else "_(없음)_"
-
     return f"""{OWNER_MENTION} ## ✅ cron 완료 — {format_kst()}
 
 **처리 시간**: {minutes}분 {sec_remain}초
-**대상 탭**: {tabs_str}
-**처리 행**: {rows} 행 (네이버 검색 + parser)
+**처리 행**: {rows} 행
 **시트 갱신**: {cells} 셀
-
-### Health
-- 성공률: **{success_pct}** ({summary.get('success_count', 0)}/{total})
-- avg parser confidence: {avg_conf_str}
-- 재시도 큐 남음: {retry_left}
-- 상태: {health_status}
-
-### K 컬럼 분포 (이번 갱신)
-{k_block}
+**성공률**: {success_pct}
+**재시도 큐 남음**: {retry_left}
+**상태**: {health_status}
 
 ---
-실 로그: [GitHub Actions Run](https://github.com/{REPO}/actions/runs/{os.environ.get('GITHUB_RUN_ID', 'unknown')})
+자세한 내역 (탭별 / K 분포 등) = Actions log 링크 클릭:
+[GitHub Actions Run](https://github.com/{REPO}/actions/runs/{os.environ.get('GITHUB_RUN_ID', 'unknown')})
 """
 
 

@@ -22,7 +22,7 @@ from typing import Optional
 
 from src.cache import CafeMappingCache
 from src.config import SPREADSHEET_ID, SERVICE_ACCOUNT_JSON, NAVER_SLOWDOWN_BASE_SEC, NAVER_SLOWDOWN_MAX_SEC
-from src.crawler import Crawler, SlowdownController, CafeStatus, CrawlerError, resolve_short_url
+from src.crawler import Crawler, SlowdownController, CafeStatus, CrawlerError, CircuitBreakerOpen, resolve_short_url
 from src.health import HealthMonitor
 from src.parser import parse_search_result
 from src.retry import RetryQueue
@@ -127,7 +127,12 @@ def run_cycle() -> dict:
 
     # 2. 각 탭 + 행 처리
     tab_updates: dict[str, list[RowUpdate]] = {}
+    circuit_breaker_tripped = False  # 2026-05-11 architect Major 1 fix
     for tab_name, rows in data.items():
+        if circuit_breaker_tripped:
+            print(f"[{tab_name}] circuit breaker open — skip")
+            tab_updates[tab_name] = []
+            continue
         updates: list[RowUpdate] = []
         print(f"\n[{tab_name}] {len(rows)} 행 처리 시작")
         for row in rows:
@@ -136,6 +141,11 @@ def run_cycle() -> dict:
                 if cols is None:
                     continue  # link 빈 행 skip
                 updates.append(RowUpdate(row=row["_row"], columns=cols))
+            except CircuitBreakerOpen as e:
+                # 5 차단 연속 — cron 조기 종료 + 지금까지 결과 시트 반영
+                print(f"❌ [{tab_name}] {e}")
+                circuit_breaker_tripped = True
+                break
             except CrawlerError as e:
                 # 차단/네트워크 실패 → retry queue (성공 시 정상 갱신, 재시도도 실패 시 '삭제')
                 retry_queue.add(row, error=str(e))
@@ -149,8 +159,8 @@ def run_cycle() -> dict:
         tab_updates[tab_name] = updates
         print(f"  → 1차 처리: {len(updates)} 갱신, {len(retry_queue)} 재시도 대기")
 
-    # 3. retry queue 처리 (slowdown 강화)
-    if len(retry_queue) > 0:
+    # 3. retry queue 처리 (slowdown 강화) — circuit breaker 시 skip
+    if len(retry_queue) > 0 and not circuit_breaker_tripped:
         print(f"\n=== retry queue 처리: {len(retry_queue)} 행 ===")
         def retry_processor(row):
             cols = _process_row(row, crawler, health)
@@ -194,6 +204,9 @@ def run_cycle() -> dict:
     summary["k_distribution"] = dict(k_distribution)
     summary["cycle_seconds"] = cycle_seconds
     summary["tabs_processed"] = list(tab_updates.keys())
+    summary["circuit_breaker_tripped"] = circuit_breaker_tripped  # 2026-05-11 architect Major 1
+    if circuit_breaker_tripped:
+        summary["code_change_suspected"] = True  # cron 조기 종료 = 알림 trigger
 
     # 7. CI 환경 — cycle_summary.json 작성 (workflow yml 의 issue comment step 에서 읽음)
     if os.environ.get("GITHUB_ACTIONS") == "true":

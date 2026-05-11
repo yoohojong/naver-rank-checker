@@ -265,11 +265,19 @@ def _parse_popular(html: str, target_url: str, result: RankResult) -> bool:
             continue
 
         items = _extract_popular_items(box)
-        # 사장님 컨벤션 (2026-05-08 확인): 인기글에서는 L (통합탭) = M (카페구좌) = 같은 idx (박스 안 출처 dedup, cafe/blog 무관).
+        # 2026-05-11 critic Major 2 fix: 사장님 실 데이터 분석 결과 L==M 만 34% (66% 다름).
+        # 진짜 사장님 컨벤션: L = 박스 안 모든 항목 순위 (블로그+카페 dedup), M = 카페만 카운트, 블로그면 M=None.
+        # AB 박스 로직과 동일 (cafe_count 분리).
+        cafe_count = 0
         for idx, url in enumerate(items, start=1):
+            is_cafe = "cafe.naver.com" in url
+            if is_cafe:
+                cafe_count += 1
             if _urls_match(url, target_url):
-                result.integrated_rank = idx
-                result.cafe_slot_rank = idx
+                result.integrated_rank = idx  # L = 박스 안 모든 항목 절대 순위
+                if is_cafe:
+                    result.cafe_slot_rank = cafe_count  # M = 카페만 카운트한 순위
+                # 블로그 항목이면 cafe_slot_rank = None (AB 박스 로직 동일)
                 result.smart_block_name = h2_text
                 result.parser_confidence = 0.85
                 return True

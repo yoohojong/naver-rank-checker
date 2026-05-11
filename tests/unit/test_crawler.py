@@ -84,10 +84,37 @@ class TestSlowdownController:
         assert s.current_interval == 6.0
 
     def test_caps_at_max(self):
+        """2026-05-11 v4 fix: 5 차단 연속 시 CircuitBreakerOpen. max 도달 검증 = 4까지."""
+        from src.crawler import CircuitBreakerOpen
+        import pytest
         s = SlowdownController(base=1.5, max_=10)
-        for _ in range(20):
-            s.on_block_detected()
+        s.on_block_detected()  # 3.0
+        s.on_block_detected()  # 6.0
+        s.on_block_detected()  # 10.0 max
+        s.on_block_detected()  # 10.0 cap
         assert s.current_interval == 10.0
+        with pytest.raises(CircuitBreakerOpen):
+            s.on_block_detected()  # 5번째 = raise
+
+    def test_circuit_breaker_opens_at_5_blocks(self):
+        """architect Major 1 fix: 5 차단 연속 = CircuitBreakerOpen raise."""
+        from src.crawler import CircuitBreakerOpen
+        import pytest
+        s = SlowdownController(base=5.0, max_=120)
+        for _ in range(4):
+            s.on_block_detected()
+        with pytest.raises(CircuitBreakerOpen):
+            s.on_block_detected()
+
+    def test_circuit_breaker_resets_on_success(self):
+        """on_success → consecutive_blocks reset → 다음 차단 누적 0부터."""
+        s = SlowdownController(base=5.0, max_=120)
+        s.on_block_detected()
+        s.on_block_detected()
+        s.on_success()
+        assert s.consecutive_blocks == 0
+        for _ in range(4):
+            s.on_block_detected()  # 4 차단 — raise 안 됨
 
     def test_recovers_on_success(self):
         s = SlowdownController(base=1.5, max_=60)

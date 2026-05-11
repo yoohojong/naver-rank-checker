@@ -39,8 +39,21 @@ def random_user_agent() -> str:
     return random.choice(USER_AGENTS)
 
 
+class CircuitBreakerOpen(Exception):
+    """5 차단 연속 시 발동. main.py 가 잡아서 cron 조기 종료."""
+    pass
+
+
 class SlowdownController:
-    """차단 의심 시 자동 슬로우다운 (지수 backoff). 성공 시 천천히 회복."""
+    """차단 의심 시 자동 슬로우다운 (지수 backoff). 성공 시 천천히 회복.
+
+    2026-05-11 architect Major 1 fix: 비대칭 회복 (×2 vs ×0.9) 이 1 차단 → 60s max → 30+ 성공 필요 회복.
+    832 행 매 cron 무력화 위험. 두 가지 fix:
+    1. 회복 가속: on_success × 0.5 (×0.9 대신) — 1 성공 만에 절반 감소
+    2. Circuit breaker: 5 차단 연속 시 CircuitBreakerOpen raise → main.py 가 조기 종료
+    """
+
+    CONSECUTIVE_BLOCKS_THRESHOLD = 5  # 5 차단 연속 시 circuit breaker open
 
     def __init__(self, base: float = 1.5, max_: float = 60.0):
         self.base = base
@@ -51,10 +64,16 @@ class SlowdownController:
     def on_block_detected(self):
         self.consecutive_blocks += 1
         self.current_interval = min(self.max_, self.current_interval * 2)
+        if self.consecutive_blocks >= self.CONSECUTIVE_BLOCKS_THRESHOLD:
+            raise CircuitBreakerOpen(
+                f"네이버 차단 {self.consecutive_blocks}회 연속. cron 조기 종료. "
+                f"current_interval={self.current_interval:.1f}s."
+            )
 
     def on_success(self):
         self.consecutive_blocks = 0
-        self.current_interval = max(self.base, self.current_interval * 0.9)
+        # 2026-05-11 fix: ×0.9 (회복 30+ 성공) → ×0.5 (회복 1~7 성공). 사장님 가정용 IP 차단 위험 ↓
+        self.current_interval = max(self.base, self.current_interval * 0.5)
 
     def wait(self):
         """현재 간격 + jitter 만큼 대기."""
