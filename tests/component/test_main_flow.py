@@ -34,13 +34,23 @@ class TestProcessRow:
         c.fetch_cafe_url_status = MagicMock(return_value=url_status)
         return c
 
-    def test_skips_row_with_empty_link(self):
-        crawler = self._make_crawler()
+    def test_link_empty_with_keyword_searches_and_returns_first_cafe(self, load_fixture):
+        """2026-05-12 T-M10: link 빈 + keyword 있는 row 도 검색 박음.
+        target_url=None → 첫 카페 = 1등 카페 정보 (AB / 인기글 박스).
+        마케터 시점 = K=AB 박혀있으면 "이미 노출 박힘" → 추가 작업 X.
+        """
+        html = load_fixture("naver/ab_cafe_top.html")
+        crawler = self._make_crawler(html_to_return=html)
         h = HealthMonitor()
-        row = {"키워드": "test", "링크": "", "_row": 5}
+        row = {"키워드": "등드름해초필링", "링크": "", "_row": 5}
         result = _process_row(row, crawler, h)
-        assert result is None
-        crawler.fetch_search.assert_not_called()
+        # 검색 박힘 ✅
+        crawler.fetch_search.assert_called_once()
+        # 첫 카페 정보 박음
+        assert result is not None
+        assert result[HEADER_AREA] == "AB"
+        assert result[HEADER_L] == "1"
+        assert result[HEADER_M] == "1"
 
     def test_skips_row_with_empty_keyword(self):
         crawler = self._make_crawler()

@@ -38,8 +38,12 @@ class RankResult:
     parser_confidence: float = 0.0
 
 
-def parse_search_result(html: str, target_url: str) -> RankResult:
+def parse_search_result(html: str, target_url: Optional[str]) -> RankResult:
     """검색 결과 페이지 + 본인 URL → RankResult.
+
+    target_url=None: 사장님 컨벤션 2026-05-12 T-M10 — 링크 빈 row 도 검색.
+    첫 카페 (AB 박스 또는 인기글 박스의 cafe.naver.com 항목) 의 순위 박음.
+    마케터 시점: K=AB/인기글 박혀있으면 "이미 누가 노출 박힘" = 추가 작업 안 해도 OK.
 
     실측 셀렉터는 fixture 분석 후 _parse_* 함수에서 채워짐.
     """
@@ -92,7 +96,7 @@ def _detect_block_order(html: str) -> list[str]:
     return seen
 
 
-def _parse_ab_list(html: str, target_url: str, result: RankResult) -> bool:
+def _parse_ab_list(html: str, target_url: Optional[str], result: RankResult) -> bool:
     """AB 통합 리스트 안에서 target_url 찾고 순위 계산.
 
     AB 항목 정의:
@@ -101,6 +105,7 @@ def _parse_ab_list(html: str, target_url: str, result: RankResult) -> bool:
     - 메인 a[href] 가 있음
 
     매칭 시: integrated_rank, cafe_slot_rank/blog_slot_rank, parser_confidence 채움.
+    target_url=None (T-M10): AB 박스 첫 카페 = 1등 카페 정보. 마케터 = 추가 작업 안 해도 OK 신호.
     매칭 실패 시 False (다음 분기로).
     """
     if not html:
@@ -125,6 +130,14 @@ def _parse_ab_list(html: str, target_url: str, result: RankResult) -> bool:
             cafe_count += 1
         elif kind == "blog":
             blog_count += 1
+        if target_url is None:
+            # 2026-05-12 T-M10: 링크 빈 row — 첫 카페 = 1등 카페 박음
+            if kind == "cafe":
+                result.integrated_rank = idx
+                result.cafe_slot_rank = cafe_count
+                result.parser_confidence = 0.9
+                return True
+            continue
         if _urls_match(url, target_url):
             result.integrated_rank = idx
             if kind == "cafe":
@@ -238,7 +251,7 @@ _POPULAR_SKIP_PATTERNS = (
 )
 
 
-def _parse_popular(html: str, target_url: str, result: RankResult) -> bool:
+def _parse_popular(html: str, target_url: Optional[str], result: RankResult) -> bool:
     """인기글 (사장님 컨벤션) — h2 자손 있는 박스 모두 (광고/이미지/AI/쇼핑 제외).
 
     사장님 컨벤션 (2026-05-08 확인): 검색 결과 박스에 h2 헤더 (키워드 변형 또는 '...인기글') 있고
@@ -273,6 +286,15 @@ def _parse_popular(html: str, target_url: str, result: RankResult) -> bool:
             is_cafe = "cafe.naver.com" in url
             if is_cafe:
                 cafe_count += 1
+            if target_url is None:
+                # 2026-05-12 T-M10: 링크 빈 row — 첫 카페 = 1등 카페 박음
+                if is_cafe:
+                    result.integrated_rank = idx
+                    result.cafe_slot_rank = cafe_count
+                    result.smart_block_name = h2_text
+                    result.parser_confidence = 0.85
+                    return True
+                continue
             if _urls_match(url, target_url):
                 result.integrated_rank = idx  # L = 박스 안 모든 항목 절대 순위
                 if is_cafe:

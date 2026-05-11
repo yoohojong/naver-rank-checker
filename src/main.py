@@ -57,22 +57,29 @@ def _process_row(
     link = (row.get("링크") or "").strip()
     prev_K = (row.get(HEADER_AREA) or "").strip()
 
-    # 링크 빈 행 = 작업자가 글 쓰기 전 — skip
-    if not keyword or not link:
+    # 키워드 빈 행 = skip (작업자가 키워드도 안 박은 row)
+    if not keyword:
         return None
 
-    # 단축 URL 해석
-    if "naver.me" in link:
+    # 2026-05-12 T-M10: 링크 빈 row 도 검색 박음 (사장님 컨벤션).
+    # 마케터 시점: K=AB/인기글 박혀있으면 "이미 누가 노출 박힘" = 추가 작업 X.
+    # 링크 컬럼 = 안 건드림 (마케터 작업 영역). K/L/M/O 만 박음.
+    target_url: Optional[str] = link if link else None
+
+    # 단축 URL 해석 (link 있는 경우만)
+    if link and "naver.me" in link:
         link = resolve_short_url(link)
+        target_url = link
 
     # 검색 + parser
     html = crawler.fetch_search(keyword)
-    result = parse_search_result(html, link)
+    result = parse_search_result(html, target_url)
 
-    # url_alive — 검색 결과 발견 못한 + 이전 노출이었던 경우만 (HTTP 호출 절약)
+    # url_alive — link 있는 경우만 (link 없으면 살아있는지 검증 의미 X)
+    # 검색 결과 발견 못한 + 이전 노출이었던 경우만 (HTTP 호출 절약)
     url_alive = True
     search_found = result.exposure_area.value != "미노출"
-    if not search_found and prev_K in {"AB", "인기글"}:
+    if link and not search_found and prev_K in {"AB", "인기글"}:
         status = crawler.fetch_cafe_url_status(link)
         url_alive = status == CafeStatus.ALIVE
 
