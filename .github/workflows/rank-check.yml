@@ -17,8 +17,8 @@ concurrency:
 
 jobs:
   run-cron:
-    runs-on: ubuntu-latest
-    timeout-minutes: 90  # 832 행 × 5초 slowdown = ~70분 + 여유
+    runs-on: self-hosted  # 2026-05-11: 사장님 PC self-hosted (가정용 IP, 차단 회피). 이전 ubuntu-latest 는 Azure IP 차단으로 timeout.
+    timeout-minutes: 180  # backoff 발생 안 한다는 가정 = 70분이지만 안전 buffer 180분
 
     steps:
       - name: Checkout
