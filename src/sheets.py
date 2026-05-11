@@ -1,9 +1,50 @@
 """sheets: Google Sheets I/O, 헤더 기반 매핑, 분야별 탭 순회."""
 import json
+import random
+import time
 from dataclasses import dataclass
 from typing import Optional
 
 import gspread
+
+
+# 2026-05-12 T-M11: Google Sheets API 503 retry (document-specialist 외부 사실).
+# gspread 6.1.4 default = retry X. 503 = Google 일시 장애 (quota X). cron 25683405754 fail 후 추가.
+SHEETS_RETRY_MAX_ATTEMPTS = 3
+SHEETS_RETRY_BASE_SEC = 5  # 5s, 10s, 20s + jitter
+SHEETS_RETRY_STATUS_CODES = {429, 500, 502, 503, 504}  # transient errors
+
+
+def _sheets_api_retry(func, *, ctx: str = ""):
+    """Google Sheets API call wrapper — 503/5xx retry (exponential backoff + jitter).
+
+    cron 25683405754 (2026-05-12) 의 batch_update 503 fail 분석 결과 = gspread default
+    retry 박지 X. 한 번 fail 박으면 데이터 손실 (사장님 시트 안 박힘).
+    fix = 5s/10s/20s backoff + jitter. 총 마진 ~35초. 진짜 장기 장애면 cron 다음 schedule 박힘.
+    """
+    last_error = None
+    for attempt in range(SHEETS_RETRY_MAX_ATTEMPTS):
+        try:
+            return func()
+        except gspread.exceptions.APIError as e:
+            last_error = e
+            # 503/5xx/429 만 retry. 그 외 (4xx 사용자 잘못) 즉시 raise
+            status = None
+            try:
+                status = e.response.status_code
+            except Exception:
+                pass
+            if status not in SHEETS_RETRY_STATUS_CODES:
+                raise
+            if attempt < SHEETS_RETRY_MAX_ATTEMPTS - 1:
+                backoff = SHEETS_RETRY_BASE_SEC * (2 ** attempt)
+                jitter = random.uniform(-0.5, 0.5) * backoff * 0.2
+                wait = max(0.5, backoff + jitter)
+                print(f"  [SHEETS-RETRY {ctx}] HTTP {status}, {wait:.1f}s 후 재시도 (attempt {attempt+1}/{SHEETS_RETRY_MAX_ATTEMPTS}): {e}")
+                time.sleep(wait)
+            else:
+                raise
+    raise last_error
 
 # 사장님 시트 헤더 명 (2026-05-08 확인 — 정확 매칭 필수)
 HEADER_TYPE = "유형"  # C — block_order[0] 만 (최상단 1위)
@@ -61,7 +102,11 @@ class SheetsClient:
                     "values": [[new_val]],
                 })
         if cells:
-            ws.batch_update(cells, value_input_option="RAW")
+            # 2026-05-12 T-M11: 503/5xx retry (document-specialist gspread default retry X).
+            _sheets_api_retry(
+                lambda: ws.batch_update(cells, value_input_option="RAW"),
+                ctx=tab_name,
+            )
         return len(cells)
 
     def load_all_data_tabs(

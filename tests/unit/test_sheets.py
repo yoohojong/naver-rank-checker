@@ -436,3 +436,82 @@ class TestWriteResults:
         n = client.write_results("샴푸 카외", [upd])
         # 5개 컬럼 (유형/노출영역/L/M/지식인탭) write
         assert n == 5
+
+
+class TestSheetsApiRetry:
+    """T-M11 (2026-05-12): Google Sheets API 503/5xx retry.
+    cron 25683405754 fail 분석 결과 = gspread default retry X. document-specialist 검증.
+    """
+
+    def _make_client_with_ws(self, headers):
+        # TestWriteResults 와 동일 헬퍼 (분리 위해 복제)
+        fake_creds = json.dumps({
+            "type": "service_account",
+            "client_email": "x@example.iam.gserviceaccount.com",
+            "private_key": "-----BEGIN PRIVATE KEY-----\nFAKE\n-----END PRIVATE KEY-----\n",
+            "token_uri": "https://oauth2.googleapis.com/token",
+        })
+        with patch("src.sheets.gspread.service_account_from_dict") as mock_auth:
+            mock_gc = MagicMock()
+            mock_sheet = MagicMock()
+            mock_ws = MagicMock()
+            mock_ws.row_values.return_value = headers
+            mock_sheet.worksheet.return_value = mock_ws
+            mock_gc.open_by_key.return_value = mock_sheet
+            mock_auth.return_value = mock_gc
+            client = SheetsClient(spreadsheet_id="abc", service_account_json=fake_creds)
+        return client, mock_ws
+
+    def _make_api_error(self, status_code):
+        import gspread as _gs
+        resp = MagicMock()
+        resp.status_code = status_code
+        return _gs.exceptions.APIError(resp)
+
+    def test_retry_503_then_success(self):
+        """503 2회 fail → 3회차 성공 = 결과 박힘."""
+        headers = ["키워드", "노출영역"]
+        client, ws = self._make_client_with_ws(headers)
+        err = self._make_api_error(503)
+        ws.batch_update.side_effect = [err, err, None]  # 2 fail + 1 success
+        with patch("src.sheets.time.sleep") as mock_sleep:
+            n = client.write_results("샴푸 카외", [RowUpdate(row=2, columns={"노출영역": "AB"})])
+        assert n == 1
+        assert ws.batch_update.call_count == 3
+        assert mock_sleep.call_count == 2  # 2회 sleep 박힘 (5s, 10s)
+
+    def test_retry_503_3_times_then_raise(self):
+        """503 3회 연속 fail → 마지막 attempt 후 APIError raise."""
+        import gspread as _gs
+        headers = ["키워드", "노출영역"]
+        client, ws = self._make_client_with_ws(headers)
+        err = self._make_api_error(503)
+        ws.batch_update.side_effect = [err, err, err]  # 3 fail
+        with patch("src.sheets.time.sleep"):
+            with pytest.raises(_gs.exceptions.APIError):
+                client.write_results("샴푸 카외", [RowUpdate(row=2, columns={"노출영역": "AB"})])
+        assert ws.batch_update.call_count == 3
+
+    def test_no_retry_on_4xx_user_error(self):
+        """403/404 등 4xx 사용자 잘못 = retry X (즉시 raise). 차단 회피 + 디버깅 ↑."""
+        import gspread as _gs
+        headers = ["키워드", "노출영역"]
+        client, ws = self._make_client_with_ws(headers)
+        err = self._make_api_error(403)
+        ws.batch_update.side_effect = err
+        with patch("src.sheets.time.sleep") as mock_sleep:
+            with pytest.raises(_gs.exceptions.APIError):
+                client.write_results("샴푸 카외", [RowUpdate(row=2, columns={"노출영역": "AB"})])
+        assert ws.batch_update.call_count == 1  # retry X
+        assert mock_sleep.call_count == 0
+
+    def test_retry_429_quota_also(self):
+        """429 (quota) 도 retry — Google API 일반 권장."""
+        headers = ["키워드", "노출영역"]
+        client, ws = self._make_client_with_ws(headers)
+        err = self._make_api_error(429)
+        ws.batch_update.side_effect = [err, None]  # 1 fail + 1 success
+        with patch("src.sheets.time.sleep"):
+            n = client.write_results("샴푸 카외", [RowUpdate(row=2, columns={"노출영역": "AB"})])
+        assert n == 1
+        assert ws.batch_update.call_count == 2
