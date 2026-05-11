@@ -157,3 +157,16 @@ deps = 의존성 (선행 task), parallel = 동시 작업 안전한 다른 task
 - 2026-05-11: **T-M9.2 (HealthMonitor exposed-only avg) 완료**. health.py:summary() 의 avg_conf 계산식 변경 — 노출 record (conf > 0) 만 평균. UNEXPOSED + success=True 는 의도된 정상 상태로 분류, noise 아님. 또 suspected 조건의 표본 카운트도 노출 표본 기준으로 변경. test_health.py 새 test 2개 (test_unexposed_dominant_no_false_alert + test_all_unexposed_triggers_alert). 11/11 → 13/13 health tests pass. workflow disable 박혀있음 (사장님 시트 추가 손상 위험 0). 사장님 시트는 진단 결과 = 정확 갱신 가능성 ↑↑↑ (5/5 keyword parser 정확).
 
 - 2026-05-12: **T-M13 (T-M10 revert) 박음** — 사장님 명시 ("링크 없는데 무슨 순위가 다 들었다고") = T-M10 박은 게 사장님 의도 정합 X. main._process_row 의 link 빈 row 처리 변경 (검색 X + K/L/M 빈칸 박음 = 시트 자동 정리). 158/158 tests pass. commit `42d66bb` push + dispatch `25700263842`. **메타 학습** = CLAUDE.md 영구 룰 추가 (모호 OR 시그널 박힐 때 = 단호 결정 박지 X) + D-018 박음.
+
+- 2026-05-12: **T-M9.1~T-M14 일괄 진행** (4 commit + 4 사장님 지적 fix):
+  - T-M9.1 (eb7d472) curl_cffi==0.15.0 도입 — TLS 위장 Chrome131, 네이버 차단 회피
+  - T-M9.2 (f77e4de) HealthMonitor.summary() 의 avg_conf 계산식 = exposed-only (UNEXPOSED noise 제거, false alert 방지)
+  - T-M10 (d838a34) → T-M13 (42d66bb) revert: 사장님 의도 정합 X 발견 후 link 빈 row = 빈칸 처리로 정정
+  - T-M10.1 (e9fcfb1) main._process_row 의 URL alive 검증 조건 완화 — link 있는 모든 row 의 검색 미노출 시 url 검증 → 죽었으면 K="삭제"
+  - T-M11 (8585d47) gspread Google Sheets API 503/5xx retry (5/10/20초 exponential backoff)
+  - T-M14 (bf24479) link_set 매치 (사장님 시트 다른 row link 와 검색 결과 교집합) + K="삭제" 셀 노란색 배경 (gspread batch_format)
+  - 160/160 tests pass
+- 2026-05-12: **D-018 추가** — 사장님 의도 모호 OR 시그널 시 우리 결정 단호 진행 X. 1줄 confirm 받은 후 진행 의무. T-M10/T-M13 두 번 미스 후 영구 룰.
+- 2026-05-12: **D-019 추가 + CLAUDE.md 영구 룰 추가** — 한국어 표준어 사용 강제 + 사장님 지적 후 메타 학습 의무. 사장님 강한 짜증 신호 ("박음이라는 말투는 왜 쓰는거임?") 후 즉시 graduate.
+- 2026-05-12: **second-brain skill Deep mode 발동** — C-13 후보 (claude-response-korean-standard) + self-hosted-runner-SPOF (사장님 PC 의존성) + meta-learning-on-user-anger 세 라벨 누적. retro-log entry 추가.
+- 2026-05-12: **사장님 PC self-hosted runner offline 발견** — T-M14 cron 25700783310 = 실행 도중 runner 끊김 = job timeout = failure. 사장님 시트에 T-M11/T-M13/T-M14 적용 X 상태. 사장님 PC 깨우거나 Plan B (ubuntu-latest + curl_cffi 차단 회피 시도) 결정 의무.
