@@ -116,6 +116,39 @@
 
 ## 2026-05-11
 
+### D-017: GitHub Actions self-hosted runner on 사장님 PC + 4 fix push + 결과 손상 발견 + 차단 회피 재검토
+**결정**:
+1. **인프라 이전**: GitHub Actions ubuntu-latest (Azure IP 차단) → **self-hosted runner on 사장님 PC** (Windows 11 Home, 가정용 ISP IP). repo Public→Private. workflow yml self-hosted 정합 (setup-python 제거 / shell powershell / PATH 갱신).
+2. **4 fix push (commit 73e7dca)**:
+   - CRITICAL: post_summary_to_issue.py 의 K 분포 + 탭 이름 (사장님 비즈니스 데이터) 제거 → 메타만
+   - Major 1: SlowdownController CircuitBreakerOpen + on_success ×0.5 (27시간 폭주 위험 fix)
+   - Major 2: _parse_popular L/M 분리 (AB 동일 로직, blog target → M=None)
+   - tests 4 갱신 + 신규 → 151/151 pass
+3. **cron run 25647821456 결과 = 사장님 시트 손상 발견 + workflow disable + 사장님 복원**.
+
+**근거**:
+- document-specialist (외부 사실): GitHub Actions Azure IP = anti-bot 표준 트리거. residential IP > datacenter IP base trust.
+- critic (메타 챌린지): self-hosted 결정 ACCEPT-WITH-RESERVATIONS (PC 24/7 부담 ≠ critical).
+- architect (구현 결함): 4 fix push 후 진짜 evidence (실 cron log) 확인 — 차단 누적 + retry "삭제" 박힘 + L/M 분리 부작용.
+
+**진짜 root cause (log evidence + tracer)**:
+1. main.py 의 retry 실패 → K="삭제" 박음 logic = critic 2026-05-08 권장이었으나 **차단 ≠ 삭제** 의미 충돌. 사장님 작업자 혼란.
+2. _parse_popular L/M 분리 → blog target M=None 박힘 (이전 L=M 컨벤션과 다름).
+3. _parse_smart_blocks deprecated (항상 False) → 이전 스마트블록 행 UNEXPOSED.
+
+**미래 fix 의무 (사장님 결정 대기)**:
+- main.py 의 retry 실패 → K 보존 (시트 안 박음, 다음 cron 자연 재처리)
+- L/M 분리 fix 진짜 효과 검증 (사장님 실 데이터 정합)
+- _parse_smart_blocks 진짜 다시 활성 or popular 정합 검증
+
+**대안 안 고른 이유 (사장님 절대 제약)**:
+- Oracle Cloud Always Free: 데이터센터 IP = anti-bot 트리거 (GitHub Actions 와 같은 카테고리). Seoul capacity 부족. 가입 영문 + 카드 verification.
+- 외주본 program88 33만원 재구매: D-001 사장님 자체 제작 결정 위반.
+- 행 수 줄이기 (832 → 200): 사장님 명시 거절 ("832 다 필요").
+- 유료 프록시: D-002 0원 운영 위반.
+
+---
+
 ### D-016: J false positive fix (parser._parse_jisikin h2 narrow) + 나머지 mismatch 시점 차이 미루기
 **결정**:
 1. **J false positive 69건 즉시 fix** — _parse_jisikin 을 "h2 텍스트 = '지식iN'/'지식인' 박스 안 kin 링크" 로 narrow (M4.9 인기글 패턴 동일).

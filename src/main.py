@@ -15,6 +15,7 @@
 """
 import json
 import os
+import random
 import sys
 import time
 from collections import Counter
@@ -134,7 +135,11 @@ def run_cycle() -> dict:
             tab_updates[tab_name] = []
             continue
         updates: list[RowUpdate] = []
-        print(f"\n[{tab_name}] {len(rows)} 행 처리 시작")
+        # 2026-05-11 D-017 fix: 행 순서 random.shuffle = 자연 패턴 (document-specialist HIGH).
+        # 832 행 항상 동일 순서 = 시계열 봇 패턴 = 차단 위험. 시드 X = 매 cron 다른 순서.
+        rows = list(rows)
+        random.shuffle(rows)
+        print(f"\n[{tab_name}] {len(rows)} 행 처리 시작 (random shuffle)")
         for row in rows:
             try:
                 cols = _process_row(row, crawler, health)
@@ -147,7 +152,9 @@ def run_cycle() -> dict:
                 circuit_breaker_tripped = True
                 break
             except CrawlerError as e:
-                # 차단/네트워크 실패 → retry queue (성공 시 정상 갱신, 재시도도 실패 시 '삭제')
+                # 2026-05-11 D-017 fix: 차단/네트워크 실패 → retry queue. 실패 시 K 보존 (시트 안 박음).
+                # 이전 (critic 2026-05-08): 재시도 실패 → "삭제" 박음 — 사장님 작업자 혼란 (차단≠삭제).
+                # 사장님 시트 손상 사례 (cron 25647821456) 후 폐기.
                 retry_queue.add(row, error=str(e))
                 health.record(parser_confidence=0.0, success=False)
             except Exception as e:
@@ -173,8 +180,10 @@ def run_cycle() -> dict:
             if r["ok"] and r["update"] is not None:
                 tab_updates[tab].append(RowUpdate(row=r["row"]["_row"], columns=r["update"]))
             else:
-                # 재시도도 실패 — 시트에 "삭제" (critic 2026-05-08 Major 5, silent drop 방지)
-                tab_updates[tab].append(RowUpdate(row=r["row"]["_row"], columns={HEADER_AREA: "삭제"}))
+                # 2026-05-11 D-017 fix: 재시도도 실패 = K 보존 (시트 안 박음).
+                # 이전 (critic 2026-05-08): "삭제" 박음 — 사장님 작업자 혼란 (차단≠진짜 삭제).
+                # 사장님 시트 손상 사례 후 폐기. 다음 cron 자연 재처리.
+                print(f"  [SKIP-PRESERVE] row={r['row'].get('_row')} kw={r['row'].get('키워드')!r}: retry 실패, K 보존")
 
     # 4. 시트 batch_update (탭별 1 호출)
     total_cells = 0

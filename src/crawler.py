@@ -76,9 +76,17 @@ class SlowdownController:
         self.current_interval = max(self.base, self.current_interval * 0.5)
 
     def wait(self):
-        """현재 간격 + jitter 만큼 대기."""
-        jitter = random.uniform(-0.3, 0.3)
-        time.sleep(max(0.1, self.current_interval + jitter))
+        """2026-05-11 D-017 fix: 5초 고정 → random 1.5~4초 (document-specialist 검증).
+        고정 slowdown = 봇 패턴 ↑ 오히려 차단 위험. 진짜 자연 패턴 = random 1.5~4초 + backoff.
+        backoff 발생 시 (current_interval > base) 그 값 + jitter, 정상 시 random 1.5~4초.
+        """
+        if self.current_interval > self.base:
+            # backoff 발생 — 그 간격 사용 (차단 누적 위험 ↓)
+            jitter = random.uniform(-0.3, 0.3)
+            time.sleep(max(0.1, self.current_interval + jitter))
+        else:
+            # 정상 — random 1.5~4초 (봇 패턴 회피)
+            time.sleep(random.uniform(1.5, 4.0))
 
 
 from enum import Enum
