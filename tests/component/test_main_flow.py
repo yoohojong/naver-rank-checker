@@ -34,23 +34,22 @@ class TestProcessRow:
         c.fetch_cafe_url_status = MagicMock(return_value=url_status)
         return c
 
-    def test_link_empty_with_keyword_searches_and_returns_first_cafe(self, load_fixture):
-        """2026-05-12 T-M10: link 빈 + keyword 있는 row 도 검색 박음.
-        target_url=None → 첫 카페 = 1등 카페 정보 (AB / 인기글 박스).
-        마케터 시점 = K=AB 박혀있으면 "이미 노출 박힘" → 추가 작업 X.
+    def test_link_empty_returns_empty_K_L_M_no_search(self):
+        """2026-05-12 T-M13 (T-M10 revert): 사장님 명시 — link 빈 row = 검색 X + K/L/M 빈칸 박음.
+        이전 T-M10 박은 결과 (link 빈 row K/L/M 박힘) 정리 의무 — 빈칸으로 덮어쓰기.
+        사장님 의도 = 마케팅 예정 row 박지 X.
         """
-        html = load_fixture("naver/ab_cafe_top.html")
-        crawler = self._make_crawler(html_to_return=html)
+        crawler = self._make_crawler()
         h = HealthMonitor()
-        row = {"키워드": "등드름해초필링", "링크": "", "_row": 5}
+        row = {"키워드": "test", "링크": "", "_row": 5}
         result = _process_row(row, crawler, h)
-        # 검색 박힘 ✅
-        crawler.fetch_search.assert_called_once()
-        # 첫 카페 정보 박음
+        # 검색 박지 X ✅
+        crawler.fetch_search.assert_not_called()
+        # K/L/M 빈칸 박음 (이전 박힌 데이터 정리)
         assert result is not None
-        assert result[HEADER_AREA] == "AB"
-        assert result[HEADER_L] == "1"
-        assert result[HEADER_M] == "1"
+        assert result[HEADER_AREA] == ""
+        assert result[HEADER_L] == ""
+        assert result[HEADER_M] == ""
 
     def test_skips_row_with_empty_keyword(self):
         crawler = self._make_crawler()

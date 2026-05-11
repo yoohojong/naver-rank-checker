@@ -30,7 +30,7 @@ from src.retry import RetryQueue
 from src.sheets import (
     SheetsClient, RowUpdate,
     rank_result_to_columns,
-    HEADER_AREA,
+    HEADER_AREA, HEADER_L, HEADER_M, HEADER_JISIKIN,
 )
 from src.transitions import compute_new_K
 
@@ -61,19 +61,24 @@ def _process_row(
     if not keyword:
         return None
 
-    # 2026-05-12 T-M10: 링크 빈 row 도 검색 박음 (사장님 컨벤션).
-    # 마케터 시점: K=AB/인기글 박혀있으면 "이미 누가 노출 박힘" = 추가 작업 X.
-    # 링크 컬럼 = 안 건드림 (마케터 작업 영역). K/L/M/O 만 박음.
-    target_url: Optional[str] = link if link else None
+    # 2026-05-12 T-M13 (T-M10 revert): 사장님 명시 — 링크 빈 row = 박지 X (마케팅 예정).
+    # 이전 T-M10 박은 동작 (link 빈 + 검색 + 첫 카페 박음) = 사장님 의도 X.
+    # 사장님 시트 정리 의무: 이전 cron 박힌 K/L/M 도 빈칸 박음 (덮어쓰기).
+    if not link:
+        return {
+            HEADER_AREA: "",
+            HEADER_L: "",
+            HEADER_M: "",
+            HEADER_JISIKIN: "",
+        }
 
-    # 단축 URL 해석 (link 있는 경우만)
-    if link and "naver.me" in link:
+    # 단축 URL 해석
+    if "naver.me" in link:
         link = resolve_short_url(link)
-        target_url = link
 
     # 검색 + parser
     html = crawler.fetch_search(keyword)
-    result = parse_search_result(html, target_url)
+    result = parse_search_result(html, link)
 
     # url_alive — link 있는 경우만 (link 없으면 살아있는지 검증 의미 X).
     # 2026-05-12 T-M10.1 사장님 요구: 게시글 조회 시 "삭제됐다" 뜨는 케이스 = 무조건 K=삭제.
