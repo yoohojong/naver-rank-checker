@@ -1,7 +1,8 @@
 name: naver-rank-check
 # 사장님 D-001: 공개→Private 저장소 + self-hosted runner (가정용 ISP IP, 차단 회피).
 # 6시간 cron 4회/일. 사장님 시트 자동 갱신.
-# 2026-05-11: ubuntu-latest → self-hosted (Azure IP 차단) + setup-python action 제거 (사장님 PC 자체 Python 3.13).
+# 2026-05-12 T-M15: 사장님 PC self-hosted runner offline 시 fallback = ubuntu-latest 임시 변경.
+# curl_cffi (T-M9.1) 적용으로 Azure IP 차단 회피 시도. 사장님 PC 복구 시 self-hosted 복원 의무.
 
 on:
   schedule:
@@ -16,26 +17,28 @@ concurrency:
 
 jobs:
   run-cron:
-    runs-on: self-hosted  # 사장님 PC (Windows 11 Home, 가정용 ISP IP).
+    runs-on: ubuntu-latest  # T-M15 임시 (self-hosted offline 시 fallback). curl_cffi 차단 회피 시도.
     timeout-minutes: 180
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      # 2026-05-11: setup-python action 제거. 사장님 PC 의 Python 3.13 직접 사용.
-      # 매 run 마다 venv 신규 생성 = 환경 격리 + 사장님 system Python 안 건드림.
+      - name: Setup Python 3.13
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+
       - name: Setup venv + install deps
-        shell: powershell
+        shell: bash
         run: |
-          $env:Path = [System.Environment]::GetEnvironmentVariable("Path","Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path","User")
           python -m venv .venv
-          .\.venv\Scripts\python -m pip install --upgrade pip
-          .\.venv\Scripts\python -m pip install -r requirements.txt
+          ./.venv/bin/python -m pip install --upgrade pip
+          ./.venv/bin/python -m pip install -r requirements.txt
 
       - name: Run cron cycle
         id: run_cycle
-        shell: powershell
+        shell: bash
         env:
           SPREADSHEET_ID: ${{ secrets.SPREADSHEET_ID }}
           SERVICE_ACCOUNT_JSON: ${{ secrets.SERVICE_ACCOUNT_JSON }}
@@ -43,18 +46,16 @@ jobs:
           NAVER_SLOWDOWN_MAX_SEC: '120'
           PYTHONIOENCODING: 'utf-8'
         run: |
-          $env:Path = [System.Environment]::GetEnvironmentVariable("Path","Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path","User")
-          .\.venv\Scripts\python -u -m src.main
+          ./.venv/bin/python -u -m src.main
 
       # 2026-05-11: 사장님 매 cron 풍부한 이메일 알림 (issue #1 mention comment).
       - name: Post summary to issue #1
         if: always()
-        shell: powershell
+        shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           RUN_STATUS: ${{ steps.run_cycle.outcome }}
         run: |
-          $env:Path = [System.Environment]::GetEnvironmentVariable("Path","Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path","User")
-          .\.venv\Scripts\python -u scripts/post_summary_to_issue.py
+          ./.venv/bin/python -u scripts/post_summary_to_issue.py
 
       # exit code 1 = HealthMonitor.code_change_suspected → 사장님 이메일 알림
