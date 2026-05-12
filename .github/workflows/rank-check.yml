@@ -58,4 +58,25 @@ jobs:
         run: |
           ./.venv/bin/python -u scripts/post_summary_to_issue.py
 
+      # 2026-05-12 T-M17: 사장님 명시 — 매 cron 후 yoongu777@gmail.com 직접 이메일 알림
+      - name: Send email to 사장님 (yoongu777@gmail.com)
+        if: always()
+        uses: dawidd6/action-send-mail@v3
+        with:
+          server_address: smtp.gmail.com
+          server_port: 465
+          secure: true
+          username: ${{ secrets.GMAIL_USER }}
+          password: ${{ secrets.GMAIL_APP_PASSWORD }}
+          subject: "[naver-rank-checker] cron 결과 = ${{ steps.run_cycle.outcome }} (${{ github.run_id }})"
+          from: naver-rank-checker <${{ secrets.GMAIL_USER }}>
+          to: yoongu777@gmail.com
+          body: |
+            cron 실행 결과: ${{ steps.run_cycle.outcome }}
+
+            Run URL: https://github.com/yoohojong/naver-rank-checker/actions/runs/${{ github.run_id }}
+
+            상세 결과 + 셀 갱신 통계는 위 URL 또는 사장님 시트 확인.
+            (issue #1 댓글에도 자동 알림 추가됨)
+
       # exit code 1 = HealthMonitor.code_change_suspected → 사장님 이메일 알림
