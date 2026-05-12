@@ -133,15 +133,15 @@ def _parse_ab_list(html: str, target_url: Optional[str], result: RankResult, lin
         elif kind == "blog":
             blog_count += 1
         # T-M14 (T-M10 revert): target_url=None + link_set 박힘 = 사장님 시트 link 매치
+        # T-M16 (2026-05-12): 사장님 의도 = "내 카페 글이 노출되었나" — 카페 link 만 매치.
+        # 사장님 시트의 어떤 row 에 blog link 박혀있어도 매치 시도 X (마케터 = 카페만 작업).
         if target_url is None and link_set:
+            if kind != "cafe":
+                continue  # T-M16: blog/web 매치 시도 X
             if _urls_match_any(url, link_set):
                 result.integrated_rank = idx
-                if kind == "cafe":
-                    result.cafe_slot_rank = cafe_count
-                elif kind == "blog":
-                    result.blog_slot_rank = blog_count
+                result.cafe_slot_rank = cafe_count
                 result.parser_confidence = 0.9
-                # T-M14.1 진단 log — 매치된 link 명시
                 print(f"    [AB_MATCH] idx={idx} kind={kind} matched_url={url[:90]}")
                 return True
             continue
@@ -306,15 +306,16 @@ def _parse_popular(html: str, target_url: Optional[str], result: RankResult, lin
             if is_cafe:
                 cafe_count += 1
             # T-M14: target_url=None + link_set 박힘 = 사장님 시트 link 매치
+            # T-M16 (2026-05-12): 카페 link 만 매치 (사장님 의도 = 카페만 작업)
             if target_url is None and link_set:
+                if not is_cafe:
+                    continue  # T-M16: blog/web 매치 시도 X
                 if _urls_match_any(url, link_set):
                     result.integrated_rank = idx
-                    if is_cafe:
-                        result.cafe_slot_rank = cafe_count
+                    result.cafe_slot_rank = cafe_count
                     result.smart_block_name = h2_text
                     result.parser_confidence = 0.85
-                    # T-M14.1 진단 log — 매치된 link 명시
-                    print(f"    [POPULAR_MATCH] idx={idx} is_cafe={is_cafe} h2={h2_text!r} matched_url={url[:90]}")
+                    print(f"    [POPULAR_MATCH] idx={idx} h2={h2_text!r} matched_url={url[:90]}")
                     return True
                 continue
             if target_url is None:
