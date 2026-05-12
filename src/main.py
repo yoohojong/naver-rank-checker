@@ -45,12 +45,15 @@ def _process_row(
     crawler: Crawler,
     health: HealthMonitor,
     all_known_links: Optional[set] = None,
+    url_alive_cache: Optional[dict] = None,
 ) -> Optional[dict]:
     """한 행 처리 → 새 컬럼 dict 또는 None (skip).
 
     Args:
         all_known_links: T-M14 (2026-05-12) — 사장님 시트의 모든 row 의 link set.
-            link 빈 row 박을 때 매치 검사용. None 박으면 = 빈칸 박음 (테스트용).
+            link 빈 row 처리 시 매치 검사용. None 이면 빈칸 반환 (테스트용).
+        url_alive_cache: T-M10.2 (2026-05-13) — cron 1회 안에서 같은 link 중복 호출 방지.
+            None 이면 캐시 미사용 (테스트용).
 
     Returns:
         새 column dict (시트 write 용) 또는 None (skip).
@@ -115,8 +118,14 @@ def _process_row(
     url_alive = True
     search_found = result.exposure_area.value != "미노출"
     if link and not search_found:
-        status = crawler.fetch_cafe_url_status(link)
-        url_alive = status == CafeStatus.ALIVE
+        # 2026-05-13 T-M10.2: cron 1회 안에서 같은 link 중복 호출 방지 (캐시 활용)
+        if url_alive_cache is not None and link in url_alive_cache:
+            url_alive = url_alive_cache[link]
+        else:
+            status = crawler.fetch_cafe_url_status(link)
+            url_alive = status == CafeStatus.ALIVE
+            if url_alive_cache is not None:
+                url_alive_cache[link] = url_alive
 
     # 사장님 컨벤션 K 결정
     new_K = compute_new_K(
@@ -190,6 +199,8 @@ def run_cycle() -> dict:
     print(f"전체 link set: {len(all_known_links)}개 (T-M25 화이트리스트 필터 적용)")
 
     # 2. 각 탭 + 행 처리
+    # 2026-05-13 T-M10.2: cron 1회 안 같은 link 중복 호출 방지 캐시
+    url_alive_cache: dict[str, bool] = {}
     tab_updates: dict[str, list[RowUpdate]] = {}
     circuit_breaker_tripped = False  # 2026-05-11 architect Major 1 fix
     for tab_name, rows in data.items():
@@ -205,7 +216,7 @@ def run_cycle() -> dict:
         print(f"\n[{tab_name}] {len(rows)} 행 처리 시작 (random shuffle)")
         for row in rows:
             try:
-                cols = _process_row(row, crawler, health, all_known_links=all_known_links)
+                cols = _process_row(row, crawler, health, all_known_links=all_known_links, url_alive_cache=url_alive_cache)
                 if cols is None:
                     continue  # link 빈 행 skip
                 updates.append(RowUpdate(row=row["_row"], columns=cols))
@@ -233,7 +244,7 @@ def run_cycle() -> dict:
     if len(retry_queue) > 0 and not circuit_breaker_tripped:
         print(f"\n=== retry queue 처리: {len(retry_queue)} 행 ===")
         def retry_processor(row):
-            cols = _process_row(row, crawler, health, all_known_links=all_known_links)
+            cols = _process_row(row, crawler, health, all_known_links=all_known_links, url_alive_cache=url_alive_cache)
             return cols
         retry_results = retry_queue.process(retry_processor, slowdown_multiplier=2.0)
         for r in retry_results:

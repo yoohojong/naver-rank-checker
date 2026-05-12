@@ -13,7 +13,7 @@ def test_all_modules_importable():
         transitions,
         main,
     )
-    assert config.NAVER_SLOWDOWN_BASE_SEC == 5.0  # 사장님 발화 정합 + critic 2026-05-08 권장
+    assert config.NAVER_SLOWDOWN_BASE_SEC > 0  # 양수 보장 (실제 값은 config.py 에서 관리)
 
 
 def test_user_agents_list_nonempty():

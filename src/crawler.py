@@ -64,18 +64,29 @@ class SlowdownController:
     832 행 매 cron 무력화 위험. 두 가지 fix:
     1. 회복 가속: on_success × 0.5 (×0.9 대신) — 1 성공 만에 절반 감소
     2. Circuit breaker: 5 차단 연속 시 CircuitBreakerOpen raise → main.py 가 조기 종료
+
+    2026-05-13 T-M10.2 adaptive 가속:
+    - 10회 연속 성공 시 adaptive_base 자동 단축 (×0.7, 하한 = base × 0.5)
+    - 차단 발생 시 adaptive_base 즉시 base 복귀 — 안전 자동 보장
     """
 
     CONSECUTIVE_BLOCKS_THRESHOLD = 5  # 5 차단 연속 시 circuit breaker open
+    CONSECUTIVE_SUCCESSES_FOR_ACCELERATION = 10  # 10회 연속 성공 시 adaptive_base 가속
+    ACCELERATION_FACTOR = 0.7  # adaptive_base × 0.7
+    ACCELERATION_FLOOR = 0.5  # base 의 50% 가 하한
 
     def __init__(self, base: float = 1.5, max_: float = 60.0):
         self.base = base
         self.max_ = max_
         self.current_interval = base
         self.consecutive_blocks = 0
+        self.consecutive_successes = 0  # 연속 성공 카운터
+        self.adaptive_base = base  # 가속 가능한 base (차단 시 원래 base 복귀)
 
     def on_block_detected(self):
         self.consecutive_blocks += 1
+        self.consecutive_successes = 0  # 성공 카운터 초기화
+        self.adaptive_base = self.base  # 차단 시 adaptive_base = 원래 base 복귀
         self.current_interval = min(self.max_, self.current_interval * 2)
         if self.consecutive_blocks >= self.CONSECUTIVE_BLOCKS_THRESHOLD:
             raise CircuitBreakerOpen(
@@ -86,20 +97,28 @@ class SlowdownController:
     def on_success(self):
         self.consecutive_blocks = 0
         # 2026-05-11 fix: ×0.9 (회복 30+ 성공) → ×0.5 (회복 1~7 성공). 사장님 가정용 IP 차단 위험 ↓
-        self.current_interval = max(self.base, self.current_interval * 0.5)
+        self.current_interval = max(self.adaptive_base, self.current_interval * 0.5)
+        # 2026-05-13 adaptive 가속: 10회 연속 성공 시 adaptive_base 자동 단축
+        self.consecutive_successes += 1
+        if self.consecutive_successes >= self.CONSECUTIVE_SUCCESSES_FOR_ACCELERATION:
+            self.adaptive_base = max(
+                self.base * self.ACCELERATION_FLOOR,
+                self.adaptive_base * self.ACCELERATION_FACTOR,
+            )
+            self.consecutive_successes = 0  # 다음 가속 사이클 카운트 재시작
 
     def wait(self):
         """2026-05-12 T-M26 fix: 정상 분기 = config NAVER_SLOWDOWN_BASE_SEC 정합.
         기존 하드코딩 random.uniform(1.5, 4.0) → self.base * 1.5 (5~7.5초 at base=5.0).
-        backoff 발생 시 (current_interval > base) 그 값 + jitter, 정상 시 base~base×1.5초.
+        backoff 발생 시 (current_interval > adaptive_base) 그 값 + jitter, 정상 시 adaptive_base~adaptive_base×1.5초.
         """
-        if self.current_interval > self.base:
+        if self.current_interval > self.adaptive_base:
             # backoff 발생 — 그 간격 사용 (차단 누적 위험 ↓)
             jitter = random.uniform(-0.3, 0.3)
             time.sleep(max(0.1, self.current_interval + jitter))
         else:
-            # 정상 — config base 정합 (5~7.5초 at base=5.0, 봇 패턴 회피)
-            time.sleep(random.uniform(self.base, self.base * 1.5))
+            # 정상 — adaptive_base 정합 (가속 후에는 더 짧은 구간 사용)
+            time.sleep(random.uniform(self.adaptive_base, self.adaptive_base * 1.5))
 
 
 from enum import Enum
@@ -182,7 +201,12 @@ class Crawler:
         return r.text
 
     def fetch_cafe_url_status(self, url: str) -> CafeStatus:
-        """카페 URL이 살아있는지 / 삭제됐는지 / 비공개인지 판정."""
+        """카페 URL이 살아있는지 / 삭제됐는지 / 비공개인지 판정.
+
+        2026-05-13 T-M10.3 (D-021 정합): HEAD 1차 fallback 폐기.
+        근거: document-specialist 실측 = 네이버 카페 = 404 미반환 (200 + body 키워드) = HEAD 효과 0.
+        GET 단독 + body 파싱 = 진짜 판정 방식.
+        """
         self.slowdown.wait()
         try:
             r = self.session.get(
@@ -201,6 +225,9 @@ class Crawler:
             text_lower = r.text.lower()
             if "nidlogin.login" in text_lower or "로그인이 필요합니다" in r.text:
                 return CafeStatus.PRIVATE
+            # 2026-05-13: document-specialist 실측 = 네이버 카페 404 페이지 = 200 + 키워드 반환
+            if any(k in r.text for k in ["존재하지 않", "삭제된", "없는 게시물"]):
+                return CafeStatus.DELETED
             if "삭제" in r.text and "게시글" in r.text and len(r.text) < 5000:
                 return CafeStatus.DELETED
             return CafeStatus.ALIVE

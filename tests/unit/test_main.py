@@ -1,11 +1,14 @@
 """main 단위 테스트.
 
 T-M25 (2026-05-12): CAFE_WHITELIST 필터 검증.
+T-M10.2 (2026-05-13): url_alive_cache 중복 호출 방지 검증.
 run_cycle() 전체 흐름 테스트는 외부 의존성(Sheets, Crawler) 이 많아 integration 으로 분리.
-여기서는 화이트리스트 필터 로직만 격리 검증.
+여기서는 화이트리스트 필터 로직 및 캐시 로직만 격리 검증.
 """
+from unittest.mock import MagicMock, patch
+
 from src.config import CAFE_WHITELIST
-from src.crawler import parse_cafe_url
+from src.crawler import parse_cafe_url, CafeStatus
 
 
 def _build_known_links(rows: list[dict]) -> set:
@@ -75,3 +78,98 @@ class TestCafeWhitelistFilter:
             extracted_slug, post_id = parse_cafe_url(url)
             assert extracted_slug == slug, f"slug {slug!r} parse 실패"
             assert post_id == "12345"
+
+
+class TestUrlAliveCache:
+    """T-M10.2 (2026-05-13): url_alive_cache 중복 호출 방지 검증."""
+
+    def _make_row(self, keyword: str, link: str) -> dict:
+        """테스트용 행 dict 생성."""
+        return {"키워드": keyword, "링크": link, "유형": "", "_row": 2}
+
+    def test_same_link_fetched_only_once_with_cache(self):
+        """같은 link 2회 _process_row 호출 시 fetch_cafe_url_status 1회만 호출 확인."""
+        from src.main import _process_row
+        from src.health import HealthMonitor
+
+        crawler = MagicMock()
+        health = HealthMonitor()
+        url_alive_cache: dict = {}
+        link = "https://cafe.naver.com/cosmania/12345"
+
+        # 검색 결과 = 미노출 (url_alive 검증 진행되도록)
+        mock_result = MagicMock()
+        mock_result.exposure_area.value = "미노출"
+        mock_result.parser_confidence = 1.0
+        mock_result.block_order = []
+        mock_result.integrated_rank = None
+        mock_result.cafe_slot_rank = None
+        mock_result.in_jisikin = False
+
+        crawler.fetch_search.return_value = "<html>검색결과</html>"
+        crawler.fetch_cafe_url_status.return_value = CafeStatus.ALIVE
+
+        with patch("src.main.parse_search_result", return_value=mock_result):
+            row = self._make_row("샴푸", link)
+            _process_row(row, crawler, health, url_alive_cache=url_alive_cache)
+            # 두 번째 호출 — 캐시 적중해야 함
+            _process_row(row, crawler, health, url_alive_cache=url_alive_cache)
+
+        # fetch_cafe_url_status 는 캐시로 인해 1회만 호출되어야 함
+        assert crawler.fetch_cafe_url_status.call_count == 1
+
+    def test_cache_stores_result_correctly(self):
+        """캐시에 fetch_cafe_url_status 결과가 올바르게 저장되는지 확인."""
+        from src.main import _process_row
+        from src.health import HealthMonitor
+
+        crawler = MagicMock()
+        health = HealthMonitor()
+        url_alive_cache: dict = {}
+        link = "https://cafe.naver.com/cosmania/99999"
+
+        mock_result = MagicMock()
+        mock_result.exposure_area.value = "미노출"
+        mock_result.parser_confidence = 1.0
+        mock_result.block_order = []
+        mock_result.integrated_rank = None
+        mock_result.cafe_slot_rank = None
+        mock_result.in_jisikin = False
+
+        crawler.fetch_search.return_value = "<html>검색결과</html>"
+        crawler.fetch_cafe_url_status.return_value = CafeStatus.ALIVE
+
+        with patch("src.main.parse_search_result", return_value=mock_result):
+            _process_row(self._make_row("샴푸", link), crawler, health, url_alive_cache=url_alive_cache)
+
+        # 캐시에 결과 저장 확인
+        assert link in url_alive_cache
+        assert url_alive_cache[link] is True  # ALIVE → True
+
+    def test_no_cache_calls_fetch_each_time(self):
+        """url_alive_cache=None 시 매 호출마다 fetch_cafe_url_status 호출 확인."""
+        from src.main import _process_row
+        from src.health import HealthMonitor
+
+        crawler = MagicMock()
+        health = HealthMonitor()
+        link = "https://cafe.naver.com/cosmania/12345"
+
+        mock_result = MagicMock()
+        mock_result.exposure_area.value = "미노출"
+        mock_result.parser_confidence = 1.0
+        mock_result.block_order = []
+        mock_result.integrated_rank = None
+        mock_result.cafe_slot_rank = None
+        mock_result.in_jisikin = False
+
+        crawler.fetch_search.return_value = "<html>검색결과</html>"
+        crawler.fetch_cafe_url_status.return_value = CafeStatus.ALIVE
+
+        with patch("src.main.parse_search_result", return_value=mock_result):
+            row = self._make_row("샴푸", link)
+            _process_row(row, crawler, health, url_alive_cache=None)
+            _process_row(row, crawler, health, url_alive_cache=None)
+
+        # 캐시 없음 = 2회 모두 호출
+        assert crawler.fetch_cafe_url_status.call_count == 2

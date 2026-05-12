@@ -124,11 +124,18 @@ class TestSlowdownController:
         assert s.current_interval < prev
         assert s.consecutive_blocks == 0
 
-    def test_recovery_floor_is_base(self):
+    def test_recovery_floor_is_adaptive_base(self):
+        """2026-05-13 T-M10.2: 연속 성공 시 current_interval 하한 = adaptive_base (base 가 아님).
+        adaptive_base 가속 후에는 current_interval 도 adaptive_base 까지 내려갈 수 있음.
+        하한 = base * ACCELERATION_FLOOR (0.5) 보장.
+        """
         s = SlowdownController(base=1.5, max_=60)
-        for _ in range(50):
+        for _ in range(200):
             s.on_success()
-        assert s.current_interval == 1.5
+        # current_interval >= adaptive_base 보장
+        assert s.current_interval >= s.adaptive_base
+        # adaptive_base >= base * ACCELERATION_FLOOR 보장
+        assert s.adaptive_base >= s.base * SlowdownController.ACCELERATION_FLOOR
 
 
 class TestRandomUserAgent:
@@ -177,6 +184,7 @@ class TestCrawlerFetchSearch:
 
 class TestCrawlerFetchCafeUrlStatus:
     def test_alive_on_normal_200(self):
+        """GET 200 (정상 글) = ALIVE."""
         c = Crawler()
         c.session = MagicMock()
         c.session.get.return_value = MagicMock(
@@ -185,17 +193,21 @@ class TestCrawlerFetchCafeUrlStatus:
         )
         c.slowdown.base = 0
         c.slowdown.current_interval = 0
+        c.slowdown.adaptive_base = 0
         assert c.fetch_cafe_url_status("https://cafe.naver.com/foo/123") == CafeStatus.ALIVE
 
     def test_404_treated_as_deleted(self):
+        """GET 404 = DELETED."""
         c = Crawler()
         c.session = MagicMock()
         c.session.get.return_value = MagicMock(status_code=404, text="")
         c.slowdown.base = 0
         c.slowdown.current_interval = 0
+        c.slowdown.adaptive_base = 0
         assert c.fetch_cafe_url_status("https://cafe.naver.com/foo/9999") == CafeStatus.DELETED
 
     def test_login_wall_treated_as_private(self):
+        """GET 200 (로그인 필요) = PRIVATE."""
         c = Crawler()
         c.session = MagicMock()
         c.session.get.return_value = MagicMock(
@@ -204,7 +216,47 @@ class TestCrawlerFetchCafeUrlStatus:
         )
         c.slowdown.base = 0
         c.slowdown.current_interval = 0
+        c.slowdown.adaptive_base = 0
         assert c.fetch_cafe_url_status("https://cafe.naver.com/private/1") == CafeStatus.PRIVATE
+
+    def test_status_200_with_존재하지않_returns_deleted(self):
+        """GET 200 + '존재하지 않' 키워드 = DELETED (document-specialist 실측 추가)."""
+        c = Crawler()
+        c.session = MagicMock()
+        c.session.get.return_value = MagicMock(
+            status_code=200,
+            text="<html>존재하지 않는 게시물입니다.</html>",
+        )
+        c.slowdown.base = 0
+        c.slowdown.current_interval = 0
+        c.slowdown.adaptive_base = 0
+        assert c.fetch_cafe_url_status("https://cafe.naver.com/foo/1") == CafeStatus.DELETED
+
+    def test_status_200_with_삭제된_returns_deleted(self):
+        """GET 200 + '삭제된' 키워드 = DELETED (document-specialist 실측 추가)."""
+        c = Crawler()
+        c.session = MagicMock()
+        c.session.get.return_value = MagicMock(
+            status_code=200,
+            text="<html>삭제된 게시물입니다.</html>",
+        )
+        c.slowdown.base = 0
+        c.slowdown.current_interval = 0
+        c.slowdown.adaptive_base = 0
+        assert c.fetch_cafe_url_status("https://cafe.naver.com/foo/2") == CafeStatus.DELETED
+
+    def test_status_200_with_없는게시물_returns_deleted(self):
+        """GET 200 + '없는 게시물' 키워드 = DELETED (document-specialist 실측 추가)."""
+        c = Crawler()
+        c.session = MagicMock()
+        c.session.get.return_value = MagicMock(
+            status_code=200,
+            text="<html>없는 게시물입니다.</html>",
+        )
+        c.slowdown.base = 0
+        c.slowdown.current_interval = 0
+        c.slowdown.adaptive_base = 0
+        assert c.fetch_cafe_url_status("https://cafe.naver.com/foo/3") == CafeStatus.DELETED
 
 
 class TestCrawlerImpersonatePool:
@@ -276,3 +328,54 @@ class TestSlowdownWaitBase:
         assert len(slept) == 1
         # 4.0 ± 0.3 범위 (jitter)
         assert 3.7 <= slept[0] <= 4.3
+
+
+class TestSlowdownAdaptiveAcceleration:
+    """T-M10.2 (2026-05-13): adaptive_base 가속 로직 검증."""
+
+    def test_consecutive_successes_accelerate_adaptive_base(self):
+        """10회 연속 성공 시 adaptive_base 단축 확인."""
+        s = SlowdownController(base=2.0, max_=60.0)
+        initial_adaptive_base = s.adaptive_base
+        for _ in range(10):
+            s.on_success()
+        # 10회 후 adaptive_base = 2.0 * 0.7 = 1.4
+        assert s.adaptive_base < initial_adaptive_base
+        assert abs(s.adaptive_base - 2.0 * 0.7) < 1e-9
+
+    def test_adaptive_base_floor_is_half_of_base(self):
+        """adaptive_base 하한 = base * 0.5 초과 불가."""
+        s = SlowdownController(base=2.0, max_=60.0)
+        # 매우 많은 성공 반복 → 하한 수렴 확인
+        for _ in range(500):
+            s.on_success()
+        assert s.adaptive_base >= 2.0 * 0.5
+
+    def test_on_block_detected_resets_adaptive_base_to_base(self):
+        """차단 발생 시 adaptive_base = 원래 base 즉시 복귀."""
+        s = SlowdownController(base=2.0, max_=60.0)
+        # 가속 적용
+        for _ in range(10):
+            s.on_success()
+        assert s.adaptive_base < s.base  # 가속 확인
+        # 차단 발생
+        s.on_block_detected()
+        assert s.adaptive_base == s.base  # base 복귀 확인
+
+    def test_consecutive_successes_counter_resets_after_acceleration(self):
+        """가속 이벤트 후 consecutive_successes 카운터 0으로 재시작."""
+        s = SlowdownController(base=2.0, max_=60.0)
+        for _ in range(10):
+            s.on_success()
+        assert s.consecutive_successes == 0  # 가속 후 카운터 초기화
+
+    def test_block_resets_consecutive_successes(self):
+        """차단 발생 시 consecutive_successes 카운터 초기화."""
+        s = SlowdownController(base=2.0, max_=60.0)
+        for _ in range(5):
+            s.on_success()
+        assert s.consecutive_successes == 5
+        s.on_block_detected()
+        assert s.consecutive_successes == 0
+
+
