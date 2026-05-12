@@ -170,3 +170,11 @@ deps = 의존성 (선행 task), parallel = 동시 작업 안전한 다른 task
 - 2026-05-12: **D-019 추가 + CLAUDE.md 영구 룰 추가** — 한국어 표준어 사용 강제 + 사장님 지적 후 메타 학습 의무. 사장님 강한 짜증 신호 ("박음이라는 말투는 왜 쓰는거임?") 후 즉시 graduate.
 - 2026-05-12: **second-brain skill Deep mode 발동** — C-13 후보 (claude-response-korean-standard) + self-hosted-runner-SPOF (사장님 PC 의존성) + meta-learning-on-user-anger 세 라벨 누적. retro-log entry 추가.
 - 2026-05-12: **사장님 PC self-hosted runner offline 발견** — T-M14 cron 25700783310 = 실행 도중 runner 끊김 = job timeout = failure. 사장님 시트에 T-M11/T-M13/T-M14 적용 X 상태. 사장님 PC 깨우거나 Plan B (ubuntu-latest + curl_cffi 차단 회피 시도) 결정 의무.
+
+- 2026-05-12: **T-M14 commit `bf24479`** — parser_main_sheets link_set 매치 + 노란색 색상. 160 tests pass.
+- 2026-05-12: **D-019 commit `b71f607`** — CLAUDE.md 한국어 표준어 강제 룰 + 사장님 지적 후 메타 학습 의무 영구 룰. 사장님 강한 짜증 후 즉시 graduate.
+- 2026-05-12: **T-M15 commit `9b4ecbc`** — workflow yml ubuntu-latest 임시 fallback (사장님 PC self-hosted runner offline). curl_cffi 차단 회피 시도. cron run 25704391715 = 71분 success, 3911 셀 갱신, Avg conf 0.88. Azure IP + curl_cffi 차단 회피 성공 검증.
+- 2026-05-12: **T-M14.1 commit `3615e23`** — link_set 매치 시 매치 link 명시 log ([AB_MATCH] / [POPULAR_MATCH]). 진단용.
+- 2026-05-12: **T-M16 commit `d25d040`** — parser link_set 매치 = 카페만 허용. 사장님 진단 "청소년바디워시 인기글인데 K=AB" root cause 확정 (probe v8): _parse_ab_list 가 박스 4 (h2 X + blog 만) 의 blog 매치 시 AB 잘못 분류 → 사장님 의도 = 카페만 추적. kind == "cafe" / is_cafe 만 매치 시도. blog/web 매치 = skip. probe 검증 = 박스 4 blog 매치 → 미노출 (이전 = AB 잘못). 160 tests pass.
+- 2026-05-12: **사장님 지적 4 fix 진행**: 말투 (D-019 한국어 표준어), 노란색 (T-M14 적용), 삭제 (T-M10.1), 순위 분류 (T-M16). 진행 중 cron 25709732732 = T-M16 박은 결과 ~KST 12:38~48 완료 예상.
+- 2026-05-12: **마일스톤 표 갱신 의무** — M9~M16 quality fix 추가 박힘. 공식 진척도 표 박지 X 다만 실 상태 = 사실상 완료 + 운영 중 quality fix.
