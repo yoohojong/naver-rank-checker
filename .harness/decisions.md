@@ -244,3 +244,57 @@
 - second-brain skill checklist.md 에 C-13 정식 등재 권장 (사장님 직접 강한 지적 = 즉시 graduate, C-11 정합)
 - response-validator.mjs hook 에 "박" 어근 검출 정규식 추가 권장 (다음 turn 정정 주입)
 - retro-log.md 에 누적 (2026-05-12 entry)
+
+
+### D-020: T-M16 후 잔존 문제 2 case 발견 — 디벨롭 사항 종합
+
+**결정**: T-M14/T-M16 fix 후도 사장님 검증 결과 = 2 case 잔존. 차후 디벨롭 사항 명시.
+
+**발견된 잔존 문제** (2026-05-12 KST 13:00):
+
+**Case A — link 빈 row 의 false 매치** (예: '민감성샴푸' → 인기글 L=2 M=1):
+- probe v9 결과 = 박스 3 ("패션·미용 인기글") 에 다른 카페 link (baby8/fox5282 등) 들어있음
+- 사장님 시트 link_set 안 다른 row 의 link = 우리 parser 매치 → K=인기글 표시
+- 사장님 시점 = "내 카페 노출 X" → 매치된 카페 = 사장님 회사 카페 아님 (외주/타 마케터 카페 글)
+- **root cause = link_set 의미 잘못. 사장님 시트의 모든 link = 사장님 회사 카페 가정 X. 다른 회사 카페도 들어있음**
+
+**Case B — link 있는 row 의 박스 분류 잘못** (예: '닥터포헤어토닉' link=culturebloom/3171706 → AB L=7 M=3, 사장님 = 인기글):
+- probe v9 시점 = culturebloom/3171706 = 박스 어디에도 없음 (시점 차이)
+- 사장님 시점 = 인기글 박스에 들어있음. 우리 cron 시점 = AB 박스에 들어있음 (또는 우리가 잘못 분류)
+- **root cause = parser 의 "h2 X = AB" 가정 + 사장님 컨벤션 차이 + 시점 변동**
+
+### 디벨롭 사항 (T-M18 ~ T-M22)
+
+**T-M18: 사장님 카페 화이트리스트 도입**
+- link_set = 사장님 회사 카페 slug 화이트리스트만 매치 (예: pusanmommy, cosmania, iroid, mindy7857, multiroader 등 사장님 작업 cafe slug)
+- 다른 카페 slug = 매치 X
+- 또는 = `_carea_filter` 식 박는 사장님 작업 cafe slug 정의 의무
+- 우선순위 ↑
+
+**T-M19: parser 박스 분류 사장님 컨벤션 동기화**
+- "h2 X = AB" 가정 = 잘못 검증됨 (블로그 모음 / 광고 박스도 h2 X)
+- 진짜 AB 박스 = 사장님 시점 정의 의무 (사장님 직접 화면 보고 "이 박스 = AB", "이 박스 = 인기글" 명시)
+- 또는 = AB = 카페 link 들어있는 h2 X 박스 만
+- 또는 = 네이버 특정 css class (예: fds-root-overflow-reset 등) 기반 분류
+
+**T-M20: 시점 차이 동기화 + timestamp 시트 표시**
+- cron 시점 ≠ 사장님 검증 시점 = 네이버 결과 변동 (1시간 단위)
+- 시트 어딘가 (예: 메모 컬럼) 에 cron timestamp 박음 = 사장님 = "이 시점 결과" 인지 가능
+- 사장님 검증 시점 = timestamp 확인 → "지금과 다른 시점" 정합 가능
+
+**T-M21: link_set 매치 시 매치 row 번호 시트 표시**
+- link 빈 row 매치 시 = K 컬럼에 "AB (행 47)" 식 박음
+- 사장님 = 행 47 확인 → 그 link 확인 → 우리 카페 글인지 검증
+- 다만 K 컬럼 형식 변경 = 다른 도구 영향 ↑
+
+**T-M22: 사장님 시점 박스 종류 정확 정의 의무**
+- 사장님 직접 네이버 결과 화면 보고 박스 종류 명시 (5개 박스 각각 = AB / 인기글 / 광고 / 기타)
+- 사장님 컨벤션 정확 정의 → parser 동기화
+
+**대안 안 고른 이유**:
+- 단순 T-M14/T-M16 fix = 잔존 문제 (Case A/B) 해결 X
+- link_set 매치 자체 비활성화 = 사장님 의도 "다른 키워드 노출 추적" 박지 X
+
+**근거**:
+- probe v9 직접 검증 (2026-05-12 KST 13:00)
+- 사장님 명시 2 case (민감성샴푸 / 닥터포헤어토닉)

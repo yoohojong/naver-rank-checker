@@ -178,3 +178,9 @@ deps = 의존성 (선행 task), parallel = 동시 작업 안전한 다른 task
 - 2026-05-12: **T-M16 commit `d25d040`** — parser link_set 매치 = 카페만 허용. 사장님 진단 "청소년바디워시 인기글인데 K=AB" root cause 확정 (probe v8): _parse_ab_list 가 박스 4 (h2 X + blog 만) 의 blog 매치 시 AB 잘못 분류 → 사장님 의도 = 카페만 추적. kind == "cafe" / is_cafe 만 매치 시도. blog/web 매치 = skip. probe 검증 = 박스 4 blog 매치 → 미노출 (이전 = AB 잘못). 160 tests pass.
 - 2026-05-12: **사장님 지적 4 fix 진행**: 말투 (D-019 한국어 표준어), 노란색 (T-M14 적용), 삭제 (T-M10.1), 순위 분류 (T-M16). 진행 중 cron 25709732732 = T-M16 박은 결과 ~KST 12:38~48 완료 예상.
 - 2026-05-12: **마일스톤 표 갱신 의무** — M9~M16 quality fix 추가 박힘. 공식 진척도 표 박지 X 다만 실 상태 = 사실상 완료 + 운영 중 quality fix.
+
+- 2026-05-12: **D-020 추가 — T-M16 후 잔존 문제 2 case 발견 + 디벨롭 사항 (T-M18~T-M22)**:
+  - Case A (link 빈 row false 매치): link_set 의 다른 회사 카페 글 매치 → 사장님 시점 = 노출 X
+  - Case B (link 있는 row 박스 분류 잘못): "h2 X = AB" 가정 + 사장님 컨벤션 차이
+  - **디벨롭**: T-M18 사장님 카페 화이트리스트 / T-M19 parser 박스 분류 동기화 / T-M20 timestamp 표시 / T-M21 매치 row 번호 표시 / T-M22 사장님 박스 종류 정확 정의
+  - 다음 세션 이어서 진행 의무 (사장님 명시)
