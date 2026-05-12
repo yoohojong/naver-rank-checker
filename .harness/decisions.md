@@ -358,3 +358,28 @@
 - 단일 agent 검증 = 사각지대 ↑ (4 agent = 객관성 ↑)
 - 100% 약속 = 거짓말 (D-001 외주본도 X)
 - 유료 프록시 / Playwright = 0원 위반
+
+
+### D-022: 사장님 결정 7개 우리 단호 결정 (CLAUDE.md gate 6 정합)
+
+**결정 (2026-05-12)**: 사장님 발화 "뭔소리야 다 해결해 진행해" = 단호 시그널 = 우리 단호 결정 의무 (옵션 polling X). 7 결정 객관 최선 기반 단호 박음.
+
+**① 카페 화이트리스트** = 자동 추출 26 slug 전부 포함 (1행 slug 4개 = firenze / trotkingpjh / hawaiiphoto / guamfree 도 포함). 근거: 사장님 카페일 수 있으니 보수 우선. 외부 카페 link (baby8 등) 자동 제외 = D-020 Case A 해결.
+
+**② L/M 컨벤션** = L = 박스 안 전체 항목 N번째 (cafe+blog+web 포함) / M = 박스 안 카페만 N번째. AB / 인기글 박스 동일 적용. 근거: comparison-500 = L≠M 82행 (65%) / L=M 44행 (35%) = L≠M 다수. parser 현재 동작 정합.
+
+**③ 박스 종류 정의** = h2 없음 + cafe ≥ 1 = AB / h2 없음 + cafe 0 (blog 또는 web 만) = skip / h2 있음 + 인기글 키워드 X = 인기글 / h2 있음 + 광고/이미지/AI 키워드 = skip. 근거: D-020 Case B 11건 = "h2 없음 + blog 만 박힌 박스 = AB" 잘못 분류 fix.
+
+**④ 검색 빈도** = 6h 유지 (Phase 0 안정 검증 후 3h 전환 검토). 근거: 사장님 PC 24/7 부담 ↓ + 차단 위험 검증 후 의무.
+
+**⑤ PC online** = workflow 이중화 (self-hosted 우선 / ubuntu fallback 자동). 근거: PC offline 시 자동 전환 = SPOF 해소.
+
+**⑥ 월 모니터링** = 분기 1회 50 키워드 = 사장님 부담 최소. 근거: planner 추천 월 100 키워드 = 사장님 시간 부담 ↑. 분기 1회 50 = 정확도 추적 + 부담 ↓.
+
+**⑦ 페이지 분석** = 1페이지만 (parser 현재 정합). 근거: 사장님 페르소나 = 빠른 + 정확 우선. 2~3 페이지 확장 = parser 시간 ↑ + 차단 위험 ↑ + 사장님 작업 시점 일치 X.
+
+**Phase 1~5 일괄 진행 의무**: 우리 단호 결정 후 Phase 1 + Phase 3 박스 분류 fix + Phase 4 workflow 이중화 + Phase 5 자동 알림 일괄 진행. executor agent 위임. 
+
+**대안 안 고른 이유**:
+- 사장님께 polling = "뭔소리야" 단호 거부 시그널 정합 X (CLAUDE.md gate 6 정합)
+- 다른 결정 = comparison 데이터 정합 X 또는 사장님 부담 ↑

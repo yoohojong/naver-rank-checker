@@ -80,6 +80,32 @@ class HealthMonitor:
             "code_change_suspected": suspected,
         }
 
+    def detect_k_anomaly(
+        self,
+        prev_k_distribution: dict,
+        current_k_distribution: dict,
+        threshold: float = 0.20,
+    ) -> bool:
+        """이전 cron K 분포 vs 현재 비교 — threshold 이상 변동 시 anomaly 의심.
+
+        T-M38 (2026-05-12): AB 30% → 5% 같은 급변 = 네이버 DOM 변경 / 차단 신호.
+        threshold 기본값 = 20% (절대 비율 차이). 빈 분포 입력 시 False (판단 불가).
+
+        예: prev={"AB": 30, "미노출": 70}, curr={"AB": 5, "미노출": 95}
+            AB 비율 30%→5% = -25% 변동 → threshold 20% 초과 → True
+        """
+        if not prev_k_distribution or not current_k_distribution:
+            return False
+        total_prev = sum(prev_k_distribution.values()) or 1
+        total_curr = sum(current_k_distribution.values()) or 1
+        keys = set(prev_k_distribution.keys()) | set(current_k_distribution.keys())
+        for k in keys:
+            prev_pct = prev_k_distribution.get(k, 0) / total_prev
+            curr_pct = current_k_distribution.get(k, 0) / total_curr
+            if abs(prev_pct - curr_pct) > threshold:
+                return True
+        return False
+
     def log_summary(self) -> None:
         """GitHub Actions logs 출력."""
         s = self.summary()

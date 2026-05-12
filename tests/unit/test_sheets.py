@@ -438,6 +438,47 @@ class TestWriteResults:
         assert n == 5
 
 
+class TestWriteTimestamp:
+    """T-M37 (2026-05-12): 탭 1행 16번째 컬럼에 cron 갱신 timestamp 기록."""
+
+    def _make_client_with_ws(self):
+        fake_creds = json.dumps({
+            "type": "service_account",
+            "client_email": "x@example.iam.gserviceaccount.com",
+            "private_key": "-----BEGIN PRIVATE KEY-----\nFAKE\n-----END PRIVATE KEY-----\n",
+            "token_uri": "https://oauth2.googleapis.com/token",
+        })
+        with patch("src.sheets.gspread.service_account_from_dict") as mock_auth:
+            mock_gc = MagicMock()
+            mock_sheet = MagicMock()
+            mock_ws = MagicMock()
+            mock_sheet.worksheet.return_value = mock_ws
+            mock_gc.open_by_key.return_value = mock_sheet
+            mock_auth.return_value = mock_gc
+            client = SheetsClient(spreadsheet_id="abc", service_account_json=fake_creds)
+        return client, mock_ws
+
+    def test_write_timestamp_calls_update_cell(self):
+        """write_timestamp 호출 시 1행 16열에 값 기록."""
+        client, ws = self._make_client_with_ws()
+        client.write_timestamp("샴푸 카외", "2026-05-12 06:00 KST")
+        ws.update_cell.assert_called_once_with(1, 16, "cron 갱신: 2026-05-12 06:00 KST")
+
+    def test_write_timestamp_failure_is_silenced(self):
+        """update_cell 예외 발생 시 무시 (log warn 후 통과). 시트 보호 등 상황."""
+        client, ws = self._make_client_with_ws()
+        ws.update_cell.side_effect = Exception("시트 보호됨")
+        # 예외가 밖으로 나오지 않아야 함
+        client.write_timestamp("샴푸 카외", "2026-05-12 06:00 KST")  # 예외 없이 통과
+
+    def test_write_timestamp_correct_tab(self):
+        """올바른 탭 이름으로 worksheet 접근."""
+        client, ws = self._make_client_with_ws()
+        client.write_timestamp("바디워시카외", "2026-05-12 12:00 KST")
+        # spreadsheet.worksheet 가 올바른 탭 이름으로 호출됐는지 확인
+        client.spreadsheet.worksheet.assert_called_with("바디워시카외")
+
+
 class TestSheetsApiRetry:
     """T-M11 (2026-05-12): Google Sheets API 503/5xx retry.
     cron 25683405754 fail 분석 결과 = gspread default retry X. document-specialist 검증.

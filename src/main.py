@@ -256,6 +256,13 @@ def run_cycle() -> dict:
             total_cells += n
             print(f"  [{tab_name}] {len(updates)} 행 / {n} 셀 갱신")
 
+    # 4.5. T-M37: 매 탭에 cron 갱신 timestamp 기록 (사장님 시점 차이 인지)
+    from datetime import datetime, timezone, timedelta
+    kst = timezone(timedelta(hours=9))
+    kst_iso = datetime.now(kst).strftime("%Y-%m-%d %H:%M KST")
+    for tab_name in tab_updates.keys():
+        client.write_timestamp(tab_name, kst_iso)
+
     # 5. K 분포 + 처리 시간 집계 (사장님 알림용 풍부 summary)
     k_distribution: Counter = Counter()
     total_rows_with_link = 0
@@ -279,6 +286,17 @@ def run_cycle() -> dict:
     summary["circuit_breaker_tripped"] = circuit_breaker_tripped  # 2026-05-11 architect Major 1
     if circuit_breaker_tripped:
         summary["code_change_suspected"] = True  # cron 조기 종료 = 알림 trigger
+
+    # 6.5. T-M38: 이전 cron K 분포 vs 현재 anomaly 감지
+    try:
+        with open("cycle_summary.json", "r", encoding="utf-8") as f:
+            prev_summary = json.load(f)
+        prev_k = prev_summary.get("k_distribution", {})
+        if health.detect_k_anomaly(prev_k, dict(k_distribution)):
+            print("⚠️ K_DISTRIBUTION_ANOMALY — 이전 대비 K 분포 20% 이상 변동. 네이버 변경 또는 차단 의심.")
+            summary["code_change_suspected"] = True
+    except (FileNotFoundError, json.JSONDecodeError):
+        pass  # 첫 cron 또는 파일 없음 = 비교 불가, 무시
 
     # 7. CI 환경 — cycle_summary.json 작성 (workflow yml 의 issue comment step 에서 읽음)
     if os.environ.get("GITHUB_ACTIONS") == "true":

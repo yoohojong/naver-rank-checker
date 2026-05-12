@@ -91,3 +91,99 @@ class TestRetryQueueProcess:
         with patch("src.retry.time.sleep"):
             q.process(lambda r: {})
         assert len(q) == 1  # 여전히 있음
+
+
+class TestRetryQueueTwoAttempts:
+    """T-M39 (2026-05-12): 2회 retry — 1차(×2.0) + 2차(×4.0) 강화."""
+
+    def test_two_attempts_on_first_failure(self):
+        """1차 실패 → 2차 재시도 → 성공 = ok=True."""
+        q = RetryQueue()
+        q.add({"_row": 1, "키워드": "test"}, "err")
+
+        call_count = 0
+        def processor(row):
+            nonlocal call_count
+            call_count += 1
+            if call_count < 2:
+                raise RuntimeError("1차 실패")
+            return {"K": "AB"}
+
+        with patch("src.retry.time.sleep"):
+            results = q.process(processor, slowdown_multiplier=2.0)
+
+        assert results[0]["ok"] is True
+        assert call_count == 2  # 2회 시도
+
+    def test_both_attempts_fail_returns_false(self):
+        """1차 + 2차 모두 실패 = ok=False, error 기록."""
+        q = RetryQueue()
+        q.add({"_row": 2, "키워드": "bad"}, "err")
+
+        def always_fail(row):
+            raise RuntimeError("계속 실패")
+
+        with patch("src.retry.time.sleep"):
+            results = q.process(always_fail, slowdown_multiplier=2.0)
+
+        assert results[0]["ok"] is False
+        assert "계속 실패" in results[0]["error"]
+
+    def test_sleep_called_twice_per_item(self):
+        """항목 1개당 sleep 2회 (1차 + 2차) 호출."""
+        q = RetryQueue()
+        q.add({"_row": 1}, "err")
+
+        def always_fail(row):
+            raise RuntimeError("fail")
+
+        with patch("src.retry.time.sleep") as mock_sleep:
+            q.process(always_fail, slowdown_multiplier=2.0)
+
+        assert mock_sleep.call_count == 2
+
+    def test_sleep_multipliers_correct(self):
+        """1차 sleep = base×2.0, 2차 sleep = base×4.0."""
+        import unittest.mock as mock_mod
+        q = RetryQueue()
+        q.add({"_row": 1}, "err")
+
+        sleep_calls = []
+
+        def always_fail(row):
+            raise RuntimeError("fail")
+
+        with patch("src.retry.time.sleep", side_effect=lambda s: sleep_calls.append(s)):
+            q.process(always_fail, slowdown_multiplier=2.0)
+
+        assert len(sleep_calls) == 2
+        assert sleep_calls[0] == pytest.approx(2.0)   # base(1.0) × 2.0
+        assert sleep_calls[1] == pytest.approx(4.0)   # base(1.0) × 4.0
+
+    def test_two_items_each_gets_two_attempts(self):
+        """항목 2개 모두 실패 → 총 sleep 4회 (항목당 2회)."""
+        q = RetryQueue()
+        q.add({"_row": 1}, "err")
+        q.add({"_row": 2}, "err")
+
+        with patch("src.retry.time.sleep") as mock_sleep:
+            q.process(lambda r: (_ for _ in ()).throw(RuntimeError("fail")), slowdown_multiplier=1.0)
+
+        assert mock_sleep.call_count == 4
+
+    def test_first_item_success_second_fails(self):
+        """항목1 1차 성공, 항목2 2차도 실패 = 각각 ok/fail."""
+        q = RetryQueue()
+        q.add({"_row": 1, "키워드": "good"}, "err")
+        q.add({"_row": 2, "키워드": "bad"}, "err")
+
+        def processor(row):
+            if row["키워드"] == "bad":
+                raise RuntimeError("bad row")
+            return {"K": "AB"}
+
+        with patch("src.retry.time.sleep"):
+            results = q.process(processor, slowdown_multiplier=1.0)
+
+        assert results[0]["ok"] is True
+        assert results[1]["ok"] is False

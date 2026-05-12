@@ -113,6 +113,58 @@ class TestHealthMonitorAlerts:
         assert s["code_change_suspected"] is False
 
 
+class TestDetectKAnomaly:
+    """T-M38 (2026-05-12): K 분포 anomaly 감지 — 이전 cron 대비 20% 이상 변동."""
+
+    def test_no_anomaly_stable_distribution(self):
+        """분포 변동 없음 = anomaly False."""
+        h = HealthMonitor()
+        prev = {"AB": 30, "미노출": 70}
+        curr = {"AB": 28, "미노출": 72}
+        assert h.detect_k_anomaly(prev, curr) is False
+
+    def test_anomaly_ab_drops_drastically(self):
+        """AB 30% → 5% = -25% 변동 → threshold 20% 초과 = anomaly True."""
+        h = HealthMonitor()
+        prev = {"AB": 30, "미노출": 70}
+        curr = {"AB": 5, "미노출": 95}
+        assert h.detect_k_anomaly(prev, curr) is True
+
+    def test_anomaly_new_key_appears(self):
+        """이전에 없던 K 값이 대거 등장 = anomaly True."""
+        h = HealthMonitor()
+        prev = {"AB": 50, "미노출": 50}
+        curr = {"AB": 25, "미노출": 25, "삭제": 50}
+        assert h.detect_k_anomaly(prev, curr) is True
+
+    def test_no_anomaly_within_threshold(self):
+        """10% 변동 = threshold 20% 이하 = anomaly False."""
+        h = HealthMonitor()
+        prev = {"AB": 40, "미노출": 60}
+        curr = {"AB": 30, "미노출": 70}
+        assert h.detect_k_anomaly(prev, curr) is False
+
+    def test_empty_prev_returns_false(self):
+        """이전 분포 없음 (첫 cron) = 비교 불가 = False."""
+        h = HealthMonitor()
+        assert h.detect_k_anomaly({}, {"AB": 10}) is False
+
+    def test_empty_curr_returns_false(self):
+        """현재 분포 없음 = False."""
+        h = HealthMonitor()
+        assert h.detect_k_anomaly({"AB": 10}, {}) is False
+
+    def test_custom_threshold(self):
+        """threshold 파라미터 커스텀 — 10% 임계치 설정."""
+        h = HealthMonitor()
+        prev = {"AB": 40, "미노출": 60}
+        curr = {"AB": 28, "미노출": 72}
+        # 12% 변동 > threshold=0.10 → True
+        assert h.detect_k_anomaly(prev, curr, threshold=0.10) is True
+        # 12% 변동 < threshold=0.20 → False
+        assert h.detect_k_anomaly(prev, curr, threshold=0.20) is False
+
+
 class TestHealthMonitorLogOutput:
     def test_log_summary_prints_warning_when_suspected(self, capsys):
         h = HealthMonitor()

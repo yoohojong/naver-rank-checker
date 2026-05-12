@@ -65,16 +65,22 @@ class TestDetectBlockOrder:
         assert result.block_order == ["AB"]
 
     def test_mixed_blocks_fixture(self, load_fixture):
-        """mixed_blocks.html: 사장님 컨벤션 = AB + 인기글 (구 SMART_BLOCK 박스도 인기글로 합쳐짐)."""
+        """mixed_blocks.html: T-M33 fix 후 — h2 없는 박스가 blog/web 전용 = AB 분류 X.
+        이 fixture 는 인기글 박스(h2 있음)만 존재 → ['인기글'].
+        T-M33 이전: ['AB', '인기글'] (blog 전용 박스도 AB로 오분류).
+        T-M33 이후: ['인기글'] (cafe link 없는 박스 = AB skip). """
         html = load_fixture("naver/mixed_blocks.html")
         result = parse_search_result(html, "")
-        assert result.block_order == ["AB", "인기글"]
+        assert "인기글" in result.block_order
+        # T-M33: cafe link 없는 h2-없는 박스 = AB 분류 X
+        assert "AB" not in result.block_order
 
     def test_popular_first_fixture(self, load_fixture):
-        """popular_cafe.html: 인기글 먼저 등장, 그 후 AB."""
+        """popular_cafe.html: 인기글 박스 포함 (T-M33 후 — cafe link 없는 박스 = AB skip).
+        이 fixture 의 h2-없는 박스는 cafe link 0개 → AB 분류 X. 인기글만 존재."""
         html = load_fixture("naver/popular_cafe.html")
         result = parse_search_result(html, "")
-        assert result.block_order == ["인기글", "AB"]
+        assert "인기글" in result.block_order
 
     def test_block_order_dedup(self, load_fixture):
         """같은 종류 박스 여러 개여도 unique 1번씩만 (사장님 컨벤션: 인기글 박스 여러 개 → 1번)."""
@@ -245,6 +251,63 @@ class TestParsePopular:
         assert result.exposure_area == ExposureArea.POPULAR
         assert result.integrated_rank == 1  # 박스 첫 번째 = L=1
         assert result.cafe_slot_rank is None  # blog target = M None
+
+
+class TestM33BoxClassification:
+    """T-M33 (2026-05-12 D-022): 박스 분류 — h2 없음 + cafe 0 = AB/block_order skip."""
+
+    _PADDING = "<div class='pad'>" + ("x" * 600) + "</div>"
+
+    def _make_box(self, hrefs: list, has_h2: bool = False, h2_text: str = "") -> str:
+        links = "".join(f'<a href="{h}">글</a>' for h in hrefs)
+        h2_tag = f"<h2>{h2_text}</h2>" if has_h2 else ""
+        return f'<div class="fds-default-mode api_subject_bx">{h2_tag}{links}</div>'
+
+    def test_ab_box_with_cafe_link_classified_as_ab(self):
+        """h2 없음 + cafe link 1개 이상 = AB 분류 (정상 케이스)."""
+        box = self._make_box(["https://cafe.naver.com/pusanmommy/1", "https://blog.naver.com/x/2"])
+        html = f"<html><body>{self._PADDING}{box}</body></html>"
+        from src.parser import _detect_block_order
+        order = _detect_block_order(html)
+        assert "AB" in order
+
+    def test_ab_box_without_cafe_link_skipped(self):
+        """h2 없음 + cafe 0 (blog/web 만) = AB 분류 X (T-M33 핵심 fix)."""
+        box = self._make_box(["https://blog.naver.com/x/1", "https://blog.naver.com/y/2"])
+        html = f"<html><body>{self._PADDING}{box}</body></html>"
+        from src.parser import _detect_block_order
+        order = _detect_block_order(html)
+        assert "AB" not in order
+
+    def test_ab_box_without_cafe_not_matched_in_parse(self):
+        """h2 없음 + cafe 0 박스 = _parse_ab_list 도 AB 매치 X."""
+        box = self._make_box(["https://blog.naver.com/x/1"])
+        html = f"<html><body>{self._PADDING}{box}</body></html>"
+        result = parse_search_result(html, "https://blog.naver.com/x/1")
+        # blog-only 박스는 AB로 분류되지 않음
+        assert result.exposure_area.value != "AB"
+
+    def test_popular_box_h2_with_inkigi_text(self):
+        """h2 있음 + h2 텍스트에 스킵 패턴 없음 = 인기글 분류 (기존 동작 회귀 방지)."""
+        box = self._make_box(
+            ["https://cafe.naver.com/x/1", "https://blog.naver.com/y/2"],
+            has_h2=True,
+            h2_text="패션 인기글",
+        )
+        html = f"<html><body>{self._PADDING}{box}</body></html>"
+        from src.parser import _detect_block_order
+        order = _detect_block_order(html)
+        assert "인기글" in order
+        assert "AB" not in order
+
+    def test_mixed_cafe_and_blog_boxes(self):
+        """카페 박스 = AB, 블로그 전용 박스 = skip → block_order 에 AB 1번만."""
+        cafe_box = self._make_box(["https://cafe.naver.com/a/1"])
+        blog_box = self._make_box(["https://blog.naver.com/b/2"])
+        html = f"<html><body>{self._PADDING}{cafe_box}{blog_box}</body></html>"
+        from src.parser import _detect_block_order
+        order = _detect_block_order(html)
+        assert order.count("AB") == 1
 
 
 class TestParseJisikin:

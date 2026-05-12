@@ -130,6 +130,23 @@ class SheetsClient:
                 )
         return len(cells)
 
+    def write_timestamp(self, tab_name: str, kst_iso: str) -> None:
+        """탭의 1행 16번째 컬럼(P열)에 'cron 갱신: YYYY-MM-DD HH:MM KST' 기록.
+
+        T-M37 (2026-05-12): 사장님 시트 컨벤션 보존 — 헤더 행 직접 침범 X.
+        1행 16번째 컬럼(P열, 헤더 영역 밖)에 기록.
+        실패 시 log warn 후 무시 (시트 protected 등 방어).
+        """
+        import logging
+        try:
+            ws = self.spreadsheet.worksheet(tab_name)
+            _sheets_api_retry(
+                lambda: ws.update_cell(1, 16, f"cron 갱신: {kst_iso}"),
+                ctx=f"{tab_name} (timestamp)",
+            )
+        except Exception as e:
+            logging.warning(f"[{tab_name}] timestamp 기록 실패: {e}")
+
     def load_all_data_tabs(
         self,
         tab_filter: Optional[callable] = None,

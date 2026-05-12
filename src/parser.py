@@ -68,11 +68,11 @@ def parse_search_result(html: str, target_url: Optional[str], link_set: Optional
 def _detect_block_order(html: str) -> list[str]:
     """페이지 위→아래로 등장하는 블록 종류 unique list (C 컬럼 용).
 
-    분류 규칙:
-    - h2 자손 없음 + main_link 있음 → 'AB'
-    - h2 자손 있음 + h2 텍스트 '인기글' 포함 → '인기글'
-    - h2 자손 있음 + h2 텍스트 SMART_BLOCK_SKIP (광고/이미지/AI 브리핑/쇼핑/네이버 클립/브랜드) → skip
-    - h2 자손 있음 + 그 외 → '스마트블록'
+    분류 규칙 (T-M33 2026-05-12 D-022 갱신):
+    - h2 자손 없음 + 박스 안 cafe link ≥ 1 → 'AB'
+    - h2 자손 없음 + cafe link 0 (blog/web 만) → skip (AB 아님)
+    - h2 자손 있음 + h2 텍스트 POPULAR_SKIP (광고/이미지/AI 브리핑/쇼핑/네이버 클립/브랜드) → skip
+    - h2 자손 있음 + 그 외 → '인기글'
     """
     if not html:
         return []
@@ -84,7 +84,9 @@ def _detect_block_order(html: str) -> list[str]:
         h2 = box.find("h2")
         kind: Optional[str] = None
         if h2 is None:
-            if _extract_main_link(box):
+            # T-M33: 박스 안 cafe link 없으면 AB 분류 X (blog/web 만 박힌 박스 = skip)
+            has_cafe = any("cafe.naver.com" in a.get("href", "") for a in box.find_all("a", href=True))
+            if has_cafe and _extract_main_link(box):
                 kind = ExposureArea.AB.value
         else:
             h2_text = h2.get_text(strip=True)
@@ -119,6 +121,11 @@ def _parse_ab_list(html: str, target_url: Optional[str], result: RankResult, lin
     ab_items: list[tuple[str, str]] = []
     for box in boxes:
         if box.find("h2") is not None:
+            continue
+        # T-M33 (2026-05-12 D-022): 박스 안 cafe link 0건 = AB 분류 X
+        # blog/web 만 박힌 박스는 AB로 카운트하지 않음 (Case B 11건 fix)
+        has_cafe = any("cafe.naver.com" in a.get("href", "") for a in box.find_all("a", href=True))
+        if not has_cafe:
             continue
         main_url = _extract_main_link(box)
         if not main_url:
