@@ -2,6 +2,12 @@
 
 2026-05-11 T-M9.1: requests → curl_cffi 마이그레이션. impersonate="chrome131" 로
 TLS/JA3 지문 위장 → 네이버 봇 차단 회피 (cron run 25647821456 손상 root cause 중 하나).
+
+2026-05-12 T-M23~T-M26 (D-021):
+- IMPERSONATE_POOL 회전 (chrome146/145/136/131) — fingerprint 다양성
+- cookie warmup (네이버 메인 fetch 후 검색) — Cold session 차단 회피
+- wait() base 값 정합 — config NAVER_SLOWDOWN_BASE_SEC 진짜 적용
+- Accept-Encoding 헤더 추가 — 브라우저 동일 행동
 """
 import random
 import re
@@ -10,9 +16,10 @@ from typing import Optional
 
 from curl_cffi import requests
 
-from src.config import USER_AGENTS
+from src.config import USER_AGENTS, IMPERSONATE_POOL
 
-IMPERSONATE = "chrome131"
+# T-M24c: impersonate 회전. 매 Crawler 인스턴스 random 선택.
+IMPERSONATE = "chrome146"  # 기본 = 최신 (test 호환성 유지)
 
 CAFE_URL_RE = re.compile(r"https?://cafe\.naver\.com/([^/?#]+)/(\d+)")
 
@@ -82,17 +89,17 @@ class SlowdownController:
         self.current_interval = max(self.base, self.current_interval * 0.5)
 
     def wait(self):
-        """2026-05-11 D-017 fix: 5초 고정 → random 1.5~4초 (document-specialist 검증).
-        고정 slowdown = 봇 패턴 ↑ 오히려 차단 위험. 진짜 자연 패턴 = random 1.5~4초 + backoff.
-        backoff 발생 시 (current_interval > base) 그 값 + jitter, 정상 시 random 1.5~4초.
+        """2026-05-12 T-M26 fix: 정상 분기 = config NAVER_SLOWDOWN_BASE_SEC 정합.
+        기존 하드코딩 random.uniform(1.5, 4.0) → self.base * 1.5 (5~7.5초 at base=5.0).
+        backoff 발생 시 (current_interval > base) 그 값 + jitter, 정상 시 base~base×1.5초.
         """
         if self.current_interval > self.base:
             # backoff 발생 — 그 간격 사용 (차단 누적 위험 ↓)
             jitter = random.uniform(-0.3, 0.3)
             time.sleep(max(0.1, self.current_interval + jitter))
         else:
-            # 정상 — random 1.5~4초 (봇 패턴 회피)
-            time.sleep(random.uniform(1.5, 4.0))
+            # 정상 — config base 정합 (5~7.5초 at base=5.0, 봇 패턴 회피)
+            time.sleep(random.uniform(self.base, self.base * 1.5))
 
 
 from enum import Enum
@@ -112,6 +119,8 @@ class CrawlerError(Exception):
 _BROWSER_HEADERS = {
     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
     "Accept-Language": "ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7",
+    # T-M24b (2026-05-12): 브라우저 동일 행동 — gzip/br 압축 요청 추가
+    "Accept-Encoding": "gzip, deflate, br",
     "Sec-Ch-Ua": '"Google Chrome";v="131", "Chromium";v="131", "Not_A Brand";v="24"',
     "Sec-Ch-Ua-Mobile": "?0",
     "Sec-Ch-Ua-Platform": '"Windows"',
@@ -130,7 +139,20 @@ class Crawler:
 
     def __init__(self, slowdown: Optional[SlowdownController] = None):
         self.slowdown = slowdown or SlowdownController()
-        self.session = requests.Session(impersonate=IMPERSONATE)
+        # T-M24 (2026-05-12): 매 인스턴스 random impersonate — fingerprint 다양성 ↑
+        self.impersonate = random.choice(IMPERSONATE_POOL)
+        self.session = requests.Session(impersonate=self.impersonate)
+
+    def warmup(self) -> None:
+        """네이버 메인 1회 fetch → Session cookie 적재 → 자연 사용자 흐름.
+
+        document-specialist 검증 결과 (2026-05-12): Cold session = 검색 시 빈 응답
+        soft 차단 위험. 메인 fetch 후 검색 = trust ↑.
+        """
+        try:
+            self.session.get("https://www.naver.com/", headers=self._headers(), timeout=10)
+        except Exception:
+            pass  # warmup 실패 = 무시 (검색 자체는 진행)
 
     def _headers(self) -> dict:
         return {**_BROWSER_HEADERS, "User-Agent": random_user_agent()}

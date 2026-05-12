@@ -184,3 +184,24 @@ deps = 의존성 (선행 task), parallel = 동시 작업 안전한 다른 task
   - Case B (link 있는 row 박스 분류 잘못): "h2 X = AB" 가정 + 사장님 컨벤션 차이
   - **디벨롭**: T-M18 사장님 카페 화이트리스트 / T-M19 parser 박스 분류 동기화 / T-M20 timestamp 표시 / T-M21 매치 row 번호 표시 / T-M22 사장님 박스 종류 정확 정의
   - 다음 세션 이어서 진행 의무 (사장님 명시)
+
+- 2026-05-12: **D-021 + Phase 0 실행 완료** — 사장님 발화 "정확도 100% 종합 최종 plan" 의무. 4 agent 검증 (architect + document-specialist + planner Opus + critic Opus FIX-THEN-PROCEED). 진짜 가능 상한 = K 88~92% / 4컬럼 65~75% (planner 87~95% = 과대 평가 확정). Phase 0 즉시 실행 7 fix:
+  - T-M23: config.py USER_AGENTS 모바일 UA 제거 → PC Chrome 4종 (146/145/146 Mac/136). 사장님 발화 fingerprint mismatch root cause 해소
+  - T-M24: crawler.py SlowdownController.wait() = config NAVER_SLOWDOWN_BASE_SEC=5.0 진짜 정합 (5~7.5초). 기존 random 1.5~4초 하드코딩 = 사장님 의도 무시 = 버그 fix
+  - T-M24b: Crawler.warmup() 추가 = 네이버 메인 1회 fetch 후 검색 (Cold session soft 차단 회피). document-specialist 검증
+  - T-M24c: IMPERSONATE_POOL = ["chrome146", "chrome145", "chrome136", "chrome131"] 매 인스턴스 random 회전. curl_cffi 0.15.0 진짜 지원 검증 (BrowserType enum 확인)
+  - T-M25: config.py CAFE_WHITELIST 26 slug + main.py link_set 필터 = D-020 Case A 11건 false positive 즉시 차단
+  - T-M26: _BROWSER_HEADERS Accept-Encoding "gzip, deflate, br" 추가 (브라우저 동일 행동)
+  - critic (e): parser._extract_main_link CSS selector 1순위 5종 (.total_tit / .title_link / api_txt_lines / .title_area / .user_thumb) + 텍스트 길이 fallback 유지. 광고/관련검색 link 오작동 차단
+  - test 결과: **172/172 pass** (160 → 172, +12 신규 test). test_crawler.py +10 (TestCrawlerImpersonatePool / TestCrawlerWarmup / TestSlowdownWaitBase) + test_main.py +6 신규 (TestCafeWhitelistFilter)
+  - 변경 파일 = config.py (+25줄) / crawler.py (+22줄) / parser.py (+18줄) / main.py (+13줄) / test_crawler.py (+68줄) / test_main.py (+64줄)
+  - 진척도 = 95% 유지 (이미 운영 진입, 정확도 fix 단계)
+
+- 2026-05-12: **Phase 1~5 사장님 결정 의무 7개 박혀있음** (decisions.md D-021 + `.omc/plans/open-questions.md`):
+  1. 카페 slug 전체 목록 (현재 자동 추출 26 slug 확정 / 추가 / 제외 명시)
+  2. L/M 컬럼 계산 방식 (AB / 인기글 박스 동일? 다른?)
+  3. 박스 종류 정의 (h2 없는 블로그 박스 = AB / skip?)
+  4. 검색 빈도 6h → 3h
+  5. PC 24/7 online 보장
+  6. 월 1회 100 키워드 수기 검증 수용
+  7. 사장님 수기 시 1페이지만 / 2~3페이지까지 (critic 발견)

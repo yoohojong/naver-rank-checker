@@ -168,14 +168,26 @@ def run_cycle() -> dict:
     data = client.load_all_data_tabs(tab_filter=_carea_filter)
     print(f"대상 탭 {len(data)}개: {list(data.keys())}")
 
-    # 1.5. T-M14: 사장님 시트 전체 link set 박음 (link 빈 row 의 매치 검사용)
+    # cookie warmup — Crawler 인스턴스 생성 직후 네이버 메인 1회 fetch
+    # T-M26 (2026-05-12): Cold session 차단 회피. warmup 실패해도 cron 계속 진행.
+    crawler.warmup()
+
+    # 1.5. T-M14: 사장님 시트 전체 link set 적재 (link 빈 row 의 매치 검사용)
+    # T-M25 (2026-05-12): 사장님 카페 화이트리스트 slug 만 link_set 에 포함.
+    # 외부 카페 link (외주/타사) = link_set 제외 = false positive 차단.
+    from src.config import CAFE_WHITELIST
+    from src.crawler import parse_cafe_url
+
     all_known_links: set = set()
     for tab_rows in data.values():
         for row in tab_rows:
             row_link = (row.get("링크") or "").strip()
-            if row_link:
+            if not row_link:
+                continue
+            slug, _ = parse_cafe_url(row_link)
+            if slug and slug in CAFE_WHITELIST:
                 all_known_links.add(row_link)
-    print(f"전체 link set: {len(all_known_links)}개 (T-M14 매치 검사용)")
+    print(f"전체 link set: {len(all_known_links)}개 (T-M25 화이트리스트 필터 적용)")
 
     # 2. 각 탭 + 행 처리
     tab_updates: dict[str, list[RowUpdate]] = {}

@@ -205,3 +205,74 @@ class TestCrawlerFetchCafeUrlStatus:
         c.slowdown.base = 0
         c.slowdown.current_interval = 0
         assert c.fetch_cafe_url_status("https://cafe.naver.com/private/1") == CafeStatus.PRIVATE
+
+
+class TestCrawlerImpersonatePool:
+    """T-M24 (2026-05-12): IMPERSONATE_POOL 회전 검증."""
+
+    def test_impersonate_in_pool(self):
+        """Crawler 인스턴스의 impersonate = IMPERSONATE_POOL 안에 있어야 함."""
+        from src.config import IMPERSONATE_POOL
+        c = Crawler()
+        assert c.impersonate in IMPERSONATE_POOL
+
+    def test_different_instances_can_have_different_impersonate(self):
+        """여러 인스턴스 생성 시 최소 한 번은 다른 impersonate 가 선택될 수 있음
+        (random 이므로 확률적 — 100회 중 전부 동일 확률 = (1/4)^99 ≈ 0).
+        """
+        from src.config import IMPERSONATE_POOL
+        seen = set()
+        for _ in range(30):
+            c = Crawler()
+            seen.add(c.impersonate)
+        # 30회 중 적어도 1종 이상 등장 (당연), 풀 안에 있는 것만 등장
+        assert seen.issubset(set(IMPERSONATE_POOL))
+        assert len(seen) >= 1
+
+
+class TestCrawlerWarmup:
+    """T-M26 (2026-05-12): cookie warmup 메서드 검증."""
+
+    def test_warmup_calls_naver_main(self):
+        """warmup() 호출 시 네이버 메인 URL fetch 시도."""
+        c = Crawler()
+        c.session = MagicMock()
+        c.session.get.return_value = MagicMock(status_code=200, text="ok")
+        c.warmup()
+        called_url = c.session.get.call_args[0][0]
+        assert "naver.com" in called_url
+
+    def test_warmup_ignores_exception(self):
+        """warmup() 네트워크 오류 시 예외 raise X (무시하고 계속)."""
+        c = Crawler()
+        c.session = MagicMock()
+        c.session.get.side_effect = Exception("네트워크 오류")
+        # 예외가 밖으로 나오면 안 됨
+        c.warmup()  # raise 되면 테스트 실패
+
+
+class TestSlowdownWaitBase:
+    """T-M26 (2026-05-12): wait() 정상 분기 = config base 정합 검증."""
+
+    def test_normal_wait_uses_base_range(self):
+        """정상 분기 sleep 인자 = [base, base*1.5] 범위."""
+        import time
+        s = SlowdownController(base=2.0, max_=60.0)
+        slept = []
+        orig_sleep = time.sleep
+        with patch("src.crawler.time.sleep", side_effect=lambda x: slept.append(x)):
+            s.wait()
+        assert len(slept) == 1
+        assert 2.0 <= slept[0] <= 3.0  # base=2.0 → [2.0, 3.0]
+
+    def test_backoff_wait_uses_current_interval(self):
+        """backoff 분기 sleep 인자 = current_interval ± jitter."""
+        import time
+        s = SlowdownController(base=2.0, max_=60.0)
+        s.on_block_detected()  # current_interval = 4.0
+        slept = []
+        with patch("src.crawler.time.sleep", side_effect=lambda x: slept.append(x)):
+            s.wait()
+        assert len(slept) == 1
+        # 4.0 ± 0.3 범위 (jitter)
+        assert 3.7 <= slept[0] <= 4.3

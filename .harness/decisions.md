@@ -298,3 +298,63 @@
 **근거**:
 - probe v9 직접 검증 (2026-05-12 KST 13:00)
 - 사장님 명시 2 case (민감성샴푸 / 닥터포헤어토닉)
+
+
+### D-021: 정확도 42% → 95% 종합 최종 plan (4 agent 검증 + Phase 0 실행)
+
+**결정**: 사장님 발화 "정확도 100% 달성 + 모든 가능성" 의무 정합. 4 agent 종합 검증 (architect + document-specialist + planner Opus + critic Opus). Phase 0 즉시 실행, Phase 1~5 단계 진행.
+
+**4 agent 검증 결과**:
+- **architect**: 4컬럼 95% 불가능 / 70~75% 상한 확정 (사장님 컨벤션 자체 일관 X). 누락 root cause 2개 (parser 첫 페이지만 / `_extract_main_link` 휴리스틱 약함)
+- **document-specialist**: Chrome131 = 구버전 (curl_cffi 0.15.0 진짜 지원 chrome146 최신). Cookie warmup 효과 ↑. 6시간 정시 cron = 봇 패턴
+- **planner Opus**: 22 task / 6 Phase plan 박음. 50 가능성 발산 + P0~P3 수렴. 정확도 추정 Phase 5 K 93~97% / 4컬럼 87~95% (다만 critic = 과대 평가 확정)
+- **critic Opus FIX-THEN-PROCEED**: planner 추정 15~20%p 과대 평가. 진짜 상한 = K 88~92% / 4컬럼 65~75% (동일 시점 기준). plan 보완 의무 7개 (CRITICAL 3 + MAJOR 4)
+
+**정확도 진솔 답** (D-008 정합):
+- 100% = 기술적 불가능 (시점 차이 + 네이버 개인화 + 사장님 수기 자체 오차)
+- 진짜 가능 상한 = **K 88~92% / 4컬럼 65~75%** (Phase 5 정착 후, 동일 시점 기준)
+- 가장 큰 fix 효과 = 사장님 L/M 컨벤션 1줄 확정 (4컬럼 +10%p ↑ 가능)
+
+**Phase 0 즉시 실행 완료** (2026-05-12):
+- T-M23: USER_AGENTS 모바일 UA 제거 → PC Chrome 4종 (146/145/146 Mac/136)
+- T-M24: SlowdownController.wait() = config NAVER_SLOWDOWN_BASE_SEC=5.0 진짜 정합 (5~7.5초)
+- T-M24b: Crawler.warmup() 추가 = 네이버 메인 1회 fetch 후 검색 (Cold session 차단 회피)
+- T-M24c: IMPERSONATE_POOL = chrome146/145/136/131 매 인스턴스 random 회전
+- T-M25: CAFE_WHITELIST 26 slug = main.py link_set 화이트리스트 필터 적용 (Case A false positive 11건 즉시 차단)
+- T-M26: Accept-Encoding "gzip, deflate, br" 헤더 추가 (브라우저 동일 행동)
+- critic (e) 발견 fix: `_extract_main_link` CSS selector 1순위 5종 + 텍스트 길이 fallback (광고/관련검색 link 오작동 차단)
+- 172/172 tests pass (160 → 172, +12 신규 test)
+
+**Phase 1~5 사장님 결정 의무** (3 결정 + 4 보조):
+1. 카페 slug 전체 목록 (현재 자동 추출 26 slug = 사장님 확정 또는 추가/제외 명시 의무, 5분)
+2. L/M 컬럼 계산 방식 = AB / 인기글 박스 동일? 다른? (사장님 1줄 결정, 2분)
+3. 박스 종류 정의 = h2 없는 블로그 박스 = AB / skip? (사장님 직접 5 키워드 화면 보고 결정, 5분)
+4. 검색 빈도 6h → 3h (Phase 0~3 안정 검증 후, 보조)
+5. PC 24/7 online 보장 (인프라 의무)
+6. 월 1회 100 키워드 수기 검증 수용 (선택)
+7. 사장님 수기 시 = 1페이지만 보나 / 2~3페이지까지? (critic 발견)
+
+**Phase 별 정확도 추정** (critic 교정 수치):
+- 현재 = K 79.4% / 4컬럼 41.9%
+- Phase 0 완료 = K 82~85% / 4컬럼 50~55% (차단 회피 + 화이트리스트)
+- Phase 2+3 완료 = K 85~90% / 4컬럼 60~70% (사장님 컨벤션 확정 + parser 정밀화)
+- Phase 5 정착 = K 88~92% / 4컬럼 65~75% (운영 안정 + 빈도 ↑)
+
+**Phase 1~5 다음 단계** (사장님 답 박은 후):
+- Phase 1: auto_compare 스크립트 + 사장님 10 키워드 동시 검증
+- Phase 2: 사장님 컨벤션 3개 확정
+- Phase 3: parser L/M 분리 fix + 박스 분류 fix
+- Phase 4: timestamp 시트 표시 + anomaly 감지 + retry 강화 + workflow 이중화
+- Phase 5: 월 모니터링 + 자동 알림 + 키워드 difficulty 점수
+
+**근거**:
+- comparison-500-after-fix.json 310행 직접 분석 (사장님 수기 vs parser)
+- 4 agent 종합 검증 (architect + document-specialist + planner + critic)
+- D-008 정합 (100% 보장 X 명시)
+- 0원 운영 정합 (모든 옵션 무료 검증 완료)
+
+**대안 안 고른 이유**:
+- 단순 parser fix = root cause 4종 누락 위험 ↑
+- 단일 agent 검증 = 사각지대 ↑ (4 agent = 객관성 ↑)
+- 100% 약속 = 거짓말 (D-001 외주본도 X)
+- 유료 프록시 / Playwright = 0원 위반

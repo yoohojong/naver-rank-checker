@@ -160,10 +160,31 @@ def _parse_ab_list(html: str, target_url: Optional[str], result: RankResult, lin
 
 
 def _extract_main_link(box) -> str:
-    """박스 내부에서 가장 텍스트 긴 외부 a[href] 를 메인 결과 URL 로 간주.
+    """박스 내부 메인 결과 URL.
 
+    1순위: total_area / title_area / api_txt_lines 클래스 안의 a 태그 (CSS 정밀 선택)
+    2순위: 가장 텍스트 긴 외부 a[href] (fallback)
+
+    광고 / 관련 검색 등 부수 링크가 더 길어도 오작동하지 않도록 CSS 정밀 선택 우선.
     검색 fragment(?nso=...) 나 javascript: 등은 제외.
+
+    critic 발견 (2026-05-12): 기존 텍스트 길이 기준 fallback 만 사용 = 광고/관련검색이
+    더 길면 오작동. CSS 정밀 selector 1순위 추가로 fix.
     """
+    # 1순위 — CSS 정밀 selector (네이버 검색 결과 실제 title 영역)
+    for sel in [
+        ".total_tit a[href]",
+        ".title_link a[href]",
+        "a.api_txt_lines[href]",
+        ".title_area a[href]",
+        ".user_thumb a[href]",
+    ]:
+        a = box.select_one(sel)
+        if a:
+            href = a.get("href", "")
+            if href.startswith("http") and not href.startswith(("javascript:", "#")):
+                return href
+    # 2순위 — fallback (텍스트 가장 긴 a)
     main_link = ""
     main_text_len = 0
     for a in box.find_all("a", href=True):
