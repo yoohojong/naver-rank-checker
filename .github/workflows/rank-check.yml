@@ -16,8 +16,9 @@ concurrency:
 
 jobs:
   # T-M40: 1순위 — self-hosted runner (가정용 ISP IP, 차단 회피 최우선)
+  # 2026-05-13 임시: 사장님 PC offline → ubuntu-latest 임시 (PC online 후 self-hosted 복귀 의무)
   run-cron-primary:
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
     timeout-minutes: 180
     continue-on-error: true  # 실패해도 fallback job 실행 가능하도록
 
