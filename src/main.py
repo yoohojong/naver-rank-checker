@@ -81,6 +81,9 @@ def _process_row(
         # 검색 + link_set 매치
         html = crawler.fetch_search(keyword)
         result = parse_search_result(html, target_url=None, link_set=all_known_links)
+        # 2026-05-12 T-M14.1 진단 log — 매치 시 매치된 link 정보 명시 (사장님 검증용)
+        if result.exposure_area.value != "미노출":
+            print(f"  [LINK_SET_MATCH] kw={keyword!r} area={result.exposure_area.value} L={result.integrated_rank} M={result.cafe_slot_rank} smart_block={result.smart_block_name!r}")
         # link 빈 row = url alive 검증 박지 X (link 없음)
         cols = rank_result_to_columns(
             block_order=result.block_order,

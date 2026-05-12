@@ -141,6 +141,8 @@ def _parse_ab_list(html: str, target_url: Optional[str], result: RankResult, lin
                 elif kind == "blog":
                     result.blog_slot_rank = blog_count
                 result.parser_confidence = 0.9
+                # T-M14.1 진단 log — 매치된 link 명시
+                print(f"    [AB_MATCH] idx={idx} kind={kind} matched_url={url[:90]}")
                 return True
             continue
         if target_url is None:
@@ -311,6 +313,8 @@ def _parse_popular(html: str, target_url: Optional[str], result: RankResult, lin
                         result.cafe_slot_rank = cafe_count
                     result.smart_block_name = h2_text
                     result.parser_confidence = 0.85
+                    # T-M14.1 진단 log — 매치된 link 명시
+                    print(f"    [POPULAR_MATCH] idx={idx} is_cafe={is_cafe} h2={h2_text!r} matched_url={url[:90]}")
                     return True
                 continue
             if target_url is None:
