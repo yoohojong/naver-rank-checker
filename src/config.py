@@ -3,7 +3,7 @@ import os
 
 SPREADSHEET_ID = os.environ.get("SPREADSHEET_ID", "")
 SERVICE_ACCOUNT_JSON = os.environ.get("SERVICE_ACCOUNT_JSON", "")
-NAVER_SLOWDOWN_BASE_SEC = float(os.environ.get("NAVER_SLOWDOWN_BASE_SEC", "5.0"))  # 사장님 발화 정합 (2026-05-08), 5/8 사례에서 차단 발생한 1.5 → 5.0 보수화
+NAVER_SLOWDOWN_BASE_SEC = float(os.environ.get("NAVER_SLOWDOWN_BASE_SEC", "3.5"))  # 2026-05-13 사장님 시간 ↓ 요구. run 25747754727 = 차단 0건 검증 후 5.0 → 3.5 단축. wait() = random(3.5, 5.25) 평균 4.4초 × 832 = 61분 + 기타 = 약 90분 (139 → 90, -49분).
 NAVER_SLOWDOWN_MAX_SEC = float(os.environ.get("NAVER_SLOWDOWN_MAX_SEC", "60"))
 
 # T-M23 (2026-05-12): 모바일 UA 제거 (PC Chrome만). 모바일 UA + curl_cffi PC Chrome impersonate
