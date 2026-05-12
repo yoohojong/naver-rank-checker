@@ -129,15 +129,15 @@
 **근거**:
 - document-specialist (외부 사실): GitHub Actions Azure IP = anti-bot 표준 트리거. residential IP > datacenter IP base trust.
 - critic (메타 챌린지): self-hosted 결정 ACCEPT-WITH-RESERVATIONS (PC 24/7 부담 ≠ critical).
-- architect (구현 결함): 4 fix push 후 진짜 evidence (실 cron log) 확인 — 차단 누적 + retry "삭제" 박힘 + L/M 분리 부작용.
+- architect (구현 결함): 4 fix push 후 진짜 evidence (실 cron log) 확인 — 차단 누적 + retry "삭제" 입력됨 + L/M 분리 부작용.
 
 **진짜 root cause (log evidence + tracer)**:
-1. main.py 의 retry 실패 → K="삭제" 박음 logic = critic 2026-05-08 권장이었으나 **차단 ≠ 삭제** 의미 충돌. 사장님 작업자 혼란.
-2. _parse_popular L/M 분리 → blog target M=None 박힘 (이전 L=M 컨벤션과 다름).
+1. main.py 의 retry 실패 → K="삭제" 적용 logic = critic 2026-05-08 권장이었으나 **차단 ≠ 삭제** 의미 충돌. 사장님 작업자 혼란.
+2. _parse_popular L/M 분리 → blog target M=None 적용됨 (이전 L=M 컨벤션과 다름).
 3. _parse_smart_blocks deprecated (항상 False) → 이전 스마트블록 행 UNEXPOSED.
 
 **미래 fix 의무 (사장님 결정 대기)**:
-- main.py 의 retry 실패 → K 보존 (시트 안 박음, 다음 cron 자연 재처리)
+- main.py 의 retry 실패 → K 보존 (시트 갱신 안 함, 다음 cron 자연 재처리)
 - L/M 분리 fix 진짜 효과 검증 (사장님 실 데이터 정합)
 - _parse_smart_blocks 진짜 다시 활성 or popular 정합 검증
 
@@ -195,25 +195,25 @@
 
 ## 2026-05-12
 
-### D-018: T-M13 학습 — 사장님 의도 모호 시 우리 결정 박지 X
+### D-018: T-M13 학습 — 사장님 의도 모호 시 우리 단호 결정 금지
 
-**결정**: 사장님 메시지에 "OR" 시그널 (이거 하던가 저거 하던가 / 둘 다 가능 / 상관없어) 박힐 때 = 우리가 단호 결정 박지 X. 사장님 1줄 결정 박음 의무.
+**결정**: 사장님 메시지에 "OR" 시그널 (이거 하던가 저거 하던가 / 둘 다 가능 / 상관없어) 있을 때 = 우리가 단호 결정하지 않는다. 사장님 1줄 결정 받음 의무.
 
 **근거**:
-- 2026-05-12 T-M10 박은 결과 (link 빈 row 도 검색 + 첫 카페 박음) = 사장님 의도 정합 X
-- 사장님 직전 메시지 = "그냥 ... 박던가 ... 박던가" OR 박혀있음
-- 우리가 옵션 A 단호 박음 = 832 행 link 빈 row 에 K/L/M 잘못 박힘 = 사장님 시트 손상
-- 진짜 사장님 의도 = link 빈 row = 마케팅 예정 (작업자 빈) = 박지 X
-- T-M13 revert + 사장님 시트 정리 박음
+- 2026-05-12 T-M10 적용한 결과 (link 빈 row 도 검색 + 첫 카페 선택) = 사장님 의도 정합 X
+- 사장님 직전 메시지 = "그냥 ... 박던가 ... 박던가" OR 있음
+- 우리가 옵션 A 단호 선택함 = 832 행 link 빈 row 에 K/L/M 잘못 입력됨 = 사장님 시트 손상
+- 진짜 사장님 의도 = link 빈 row = 마케팅 예정 (작업자 빈) = 처리 제외
+- T-M13 revert + 사장님 시트 정리 진행
 
-**영구 룰** (CLAUDE.md 박음):
-1. "OR" 시그널 박힐 때 = 사장님 1줄 결정 박은 후 진행
-2. 사장님 시트 컨벤션 변경 (마케터 작업 흐름 / 새 동작 / 스키마 영향) = sample 박음 또는 사장님 OK
-3. 비즈니스 컨텍스트 (마케터 시점, 작업자 빈 = 예정) 깊이 박은 후 결정
+**영구 룰** (CLAUDE.md 추가):
+1. "OR" 시그널 있을 때 = 사장님 1줄 결정 받은 후 진행
+2. 사장님 시트 컨벤션 변경 (마케터 작업 흐름 / 새 동작 / 스키마 영향) = sample 제출 또는 사장님 OK 받음
+3. 비즈니스 컨텍스트 (마케터 시점, 작업자 빈 = 예정) 깊이 이해한 후 결정
 
 **대안 안 고른 이유**:
-- 모호 박힐 때 단호 박는 거 = 사장님 페르소나 정합 박은 듯하지만 진짜 의도 박지 못함 risk ↑
-- 사장님 매번 1줄 결정 = polling 박는 느낌 가능하지만 모호 시점 = 안전 우선
+- 모호한 상황에 단호 결정 = 사장님 페르소나 정합 맞는 듯하지만 진짜 의도 파악 못할 risk ↑
+- 사장님 매번 1줄 결정 = polling 느낌 가능하지만 모호 시점 = 안전 우선
 
 
 ### D-019: T-M14 메타 학습 — 한국어 표준어 강제 + 사장님 지적 후 메타 룰 의무
@@ -268,7 +268,7 @@
 **T-M18: 사장님 카페 화이트리스트 도입**
 - link_set = 사장님 회사 카페 slug 화이트리스트만 매치 (예: pusanmommy, cosmania, iroid, mindy7857, multiroader 등 사장님 작업 cafe slug)
 - 다른 카페 slug = 매치 X
-- 또는 = `_carea_filter` 식 박는 사장님 작업 cafe slug 정의 의무
+- 또는 = `_carea_filter` 식으로 사장님 작업 cafe slug 정의 의무
 - 우선순위 ↑
 
 **T-M19: parser 박스 분류 사장님 컨벤션 동기화**
@@ -279,11 +279,11 @@
 
 **T-M20: 시점 차이 동기화 + timestamp 시트 표시**
 - cron 시점 ≠ 사장님 검증 시점 = 네이버 결과 변동 (1시간 단위)
-- 시트 어딘가 (예: 메모 컬럼) 에 cron timestamp 박음 = 사장님 = "이 시점 결과" 인지 가능
+- 시트 어딘가 (예: 메모 컬럼) 에 cron timestamp 추가 = 사장님 = "이 시점 결과" 인지 가능
 - 사장님 검증 시점 = timestamp 확인 → "지금과 다른 시점" 정합 가능
 
 **T-M21: link_set 매치 시 매치 row 번호 시트 표시**
-- link 빈 row 매치 시 = K 컬럼에 "AB (행 47)" 식 박음
+- link 빈 row 매치 시 = K 컬럼에 "AB (행 47)" 식 표시
 - 사장님 = 행 47 확인 → 그 link 확인 → 우리 카페 글인지 검증
 - 다만 K 컬럼 형식 변경 = 다른 도구 영향 ↑
 
@@ -293,7 +293,7 @@
 
 **대안 안 고른 이유**:
 - 단순 T-M14/T-M16 fix = 잔존 문제 (Case A/B) 해결 X
-- link_set 매치 자체 비활성화 = 사장님 의도 "다른 키워드 노출 추적" 박지 X
+- link_set 매치 자체 비활성화 = 사장님 의도 "다른 키워드 노출 추적" 반영 X
 
 **근거**:
 - probe v9 직접 검증 (2026-05-12 KST 13:00)
@@ -307,7 +307,7 @@
 **4 agent 검증 결과**:
 - **architect**: 4컬럼 95% 불가능 / 70~75% 상한 확정 (사장님 컨벤션 자체 일관 X). 누락 root cause 2개 (parser 첫 페이지만 / `_extract_main_link` 휴리스틱 약함)
 - **document-specialist**: Chrome131 = 구버전 (curl_cffi 0.15.0 진짜 지원 chrome146 최신). Cookie warmup 효과 ↑. 6시간 정시 cron = 봇 패턴
-- **planner Opus**: 22 task / 6 Phase plan 박음. 50 가능성 발산 + P0~P3 수렴. 정확도 추정 Phase 5 K 93~97% / 4컬럼 87~95% (다만 critic = 과대 평가 확정)
+- **planner Opus**: 22 task / 6 Phase plan 작성. 50 가능성 발산 + P0~P3 수렴. 정확도 추정 Phase 5 K 93~97% / 4컬럼 87~95% (다만 critic = 과대 평가 확정)
 - **critic Opus FIX-THEN-PROCEED**: planner 추정 15~20%p 과대 평가. 진짜 상한 = K 88~92% / 4컬럼 65~75% (동일 시점 기준). plan 보완 의무 7개 (CRITICAL 3 + MAJOR 4)
 
 **정확도 진솔 답** (D-008 정합):
@@ -340,7 +340,7 @@
 - Phase 2+3 완료 = K 85~90% / 4컬럼 60~70% (사장님 컨벤션 확정 + parser 정밀화)
 - Phase 5 정착 = K 88~92% / 4컬럼 65~75% (운영 안정 + 빈도 ↑)
 
-**Phase 1~5 다음 단계** (사장님 답 박은 후):
+**Phase 1~5 다음 단계** (사장님 답 받은 후):
 - Phase 1: auto_compare 스크립트 + 사장님 10 키워드 동시 검증
 - Phase 2: 사장님 컨벤션 3개 확정
 - Phase 3: parser L/M 분리 fix + 박스 분류 fix
@@ -362,13 +362,13 @@
 
 ### D-022: 사장님 결정 7개 우리 단호 결정 (CLAUDE.md gate 6 정합)
 
-**결정 (2026-05-12)**: 사장님 발화 "뭔소리야 다 해결해 진행해" = 단호 시그널 = 우리 단호 결정 의무 (옵션 polling X). 7 결정 객관 최선 기반 단호 박음.
+**결정 (2026-05-12)**: 사장님 발화 "뭔소리야 다 해결해 진행해" = 단호 시그널 = 우리 단호 결정 의무 (옵션 polling X). 7 결정 객관 최선 기반 단호 확정.
 
 **① 카페 화이트리스트** = 자동 추출 26 slug 전부 포함 (1행 slug 4개 = firenze / trotkingpjh / hawaiiphoto / guamfree 도 포함). 근거: 사장님 카페일 수 있으니 보수 우선. 외부 카페 link (baby8 등) 자동 제외 = D-020 Case A 해결.
 
 **② L/M 컨벤션** = L = 박스 안 전체 항목 N번째 (cafe+blog+web 포함) / M = 박스 안 카페만 N번째. AB / 인기글 박스 동일 적용. 근거: comparison-500 = L≠M 82행 (65%) / L=M 44행 (35%) = L≠M 다수. parser 현재 동작 정합.
 
-**③ 박스 종류 정의** = h2 없음 + cafe ≥ 1 = AB / h2 없음 + cafe 0 (blog 또는 web 만) = skip / h2 있음 + 인기글 키워드 X = 인기글 / h2 있음 + 광고/이미지/AI 키워드 = skip. 근거: D-020 Case B 11건 = "h2 없음 + blog 만 박힌 박스 = AB" 잘못 분류 fix.
+**③ 박스 종류 정의** = h2 없음 + cafe ≥ 1 = AB / h2 없음 + cafe 0 (blog 또는 web 만) = skip / h2 있음 + 인기글 키워드 X = 인기글 / h2 있음 + 광고/이미지/AI 키워드 = skip. 근거: D-020 Case B 11건 = "h2 없음 + blog 만 들어있는 박스 = AB" 잘못 분류 fix.
 
 **④ 검색 빈도** = 6h 유지 (Phase 0 안정 검증 후 3h 전환 검토). 근거: 사장님 PC 24/7 부담 ↓ + 차단 위험 검증 후 의무.
 
@@ -378,7 +378,7 @@
 
 **⑦ 페이지 분석** = 1페이지만 (parser 현재 정합). 근거: 사장님 페르소나 = 빠른 + 정확 우선. 2~3 페이지 확장 = parser 시간 ↑ + 차단 위험 ↑ + 사장님 작업 시점 일치 X.
 
-**Phase 1~5 일괄 진행 의무**: 우리 단호 결정 후 Phase 1 + Phase 3 박스 분류 fix + Phase 4 workflow 이중화 + Phase 5 자동 알림 일괄 진행. executor agent 위임. 
+**Phase 1~5 일괄 진행 의무**: 우리 단호 결정 후 Phase 1 + Phase 3 박스 분류 fix + Phase 4 workflow 이중화 + Phase 5 자동 알림 일괄 진행. executor agent 위임.
 
 **대안 안 고른 이유**:
 - 사장님께 polling = "뭔소리야" 단호 거부 시그널 정합 X (CLAUDE.md gate 6 정합)

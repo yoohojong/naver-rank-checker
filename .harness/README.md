@@ -37,7 +37,7 @@
 - cron run 25662967605: curl_cffi 적용된 eb7d472 진짜 실행 ✅ (headSha 검증)
 - 차단 0/508, 33분 완주, Avg conf 0.36
 - 실증 probe (probe_v1~v4, 5 keyword): **parser 5/5 정확** ✅
-- 진짜 root cause = HealthMonitor avg_conf 계산식 false positive (UNEXPOSED record 평균에 박혀서 미노출 우세 시트 시 자연 ↓ → false alert)
+- 진짜 root cause = HealthMonitor avg_conf 계산식 false positive (UNEXPOSED record 평균에 포함되어 미노출 우세 시트 시 자연 ↓ → false alert)
 - fix = 노출 record (conf > 0) 만 평균. UNEXPOSED 는 의도된 정상 분류
 - **사장님 시트 = 정확 갱신 가능성 ↑↑↑** (parser 5/5 정확 검증)
 
