@@ -83,21 +83,42 @@ deps = 의존성 (선행 task), parallel = 동시 작업 안전한 다른 task
 
 ---
 
-## 다음 작업 (Next Up)
+## 다음 작업 (Next Up) — 2026-05-13 갱신
 
-🎯 **즉시 ready**:
-- 없음 (🤖 자동 가능한 task 모두 완료. 남은 건 사장님 작업 → 그 후 T-M3.4 / T-M8.3)
+🤖 **자동 가능 = 모두 완료** (코드 fix 다음 cron 자동 적용 진행)
 
-👤 **사장님 작업 대기 (순서)**:
-1. **T-M3.3** — GitHub 공개 저장소 생성 (가이드: `docs/사장님-가이드/T-M3-인프라-셋업.md` 3장, 5분)
-2. **T-M8.2** — GitHub Secrets 2개 등록 (`SPREADSHEET_ID`, `SERVICE_ACCOUNT_JSON`) — README.md 안내, 5분
+👤 **사장님 작업 = 우선순위 ↓ 순**:
 
-⏭️ **차단 중 (사장님 작업 후 🤖 자동)**:
-- T-M3.4 ← T-M3.3 (git init + remote + 첫 커밋, 약 5분)
-- T-M8.3 ← T-M3.4 + T-M8.2 (수동 트리거 + 검증, 5~30분)
+### ⭐ 1순위 (가장 큰 영향) — PC 24/7 online 복귀
+- 사장님 PC self-hosted runner = 현재 offline 상태
+- 한국 IP (가정용 ISP) = Azure IP (ubuntu fallback) 대비 정확도 ↑↑ + 차단 위험 ↓↓
+- document-specialist 외부 검증 = "비한국 IP = 결과 차이 + CAPTCHA ↑" 확정
+- 사장님 PC = 절전 해제 + 네트워크 안정 의무 = 1회 설정
+
+### 2순위 — 10 키워드 동시 검증 (15분, 1회)
+- 다음 cron 직후 (1시간 안)
+- 시트 임의 10 키워드 = 네이버 시크릿 모드 직접 검색
+- 본인 카페 글 노출 + K/L/M/J 수기 비교
+- 일치율 = **진짜 정확도 측정** + 추가 fix 발견 의무
+
+### 3순위 — GitHub 알림 설정 (5분, 1회)
+- github.com/settings/notifications = "Email" 체크
+- yoongu777@gmail.com 등록 확인
+- naver-rank-checker repo = "Watch" = All Activity
+- 결과 = cron 결과 자동 이메일 도착
+
+### 4순위 (선택) — 50 키워드 분기 검증 (25분, 분기 1회)
+- 장기 정확도 추적
+- 매월 부담 ↓↓ (분기 1회)
+
+## ⏭️ 자동 진행 (사장님 작업 X = 자동)
+- 다음 cron (KST 12:00) = 모든 fix 적용 결과
+- D-022 우리 단호 결정 7개 = 적용 완료
+- T-M14.2 / T-M14.3 / T-M10.4 / T-M22 / T-M22.1 = 적용 완료
 
 ## 차단 이슈 (Blockers)
-없음 (사장님 액션만 대기)
+- 사장님 PC offline = 차단 위험 ↑ + 정확도 ↓ (1순위 의무)
+- 100% 정확도 = 자연 한계 객관 불가능 (D-021/D-022 정합, 3 agent 검증)
 
 ## 변경 이력
 - 2026-05-05: 초기 생성 (brainstorming 단계 종료 시점)
@@ -204,4 +225,43 @@ deps = 의존성 (선행 task), parallel = 동시 작업 안전한 다른 task
   4. 검색 빈도 6h → 3h
   5. PC 24/7 online 보장
   6. 월 1회 100 키워드 수기 검증 수용
+  7. 1페이지 vs 2~3페이지 분석 (critic 발견)
+
+- 2026-05-12: **D-022 우리 단호 결정 7개 적용 완료** (사장님 "다 해결해 진행해" 단호 시그널):
+  - ① 카페 26 slug 전부 화이트리스트 / ② L 전체 / M 카페만 분리 / ③ h2 없음 + cafe 0 = skip
+  - ④ 6h 유지 / ⑤ workflow 이중화 / ⑥ 분기 1회 50 키워드 / ⑦ 1페이지 분석
+
+- 2026-05-13: **cron run 25747754727 성공** (commit eee70b2 박... 적용 후) — ubuntu-latest fallback. 832 행 / 3911 셀 갱신. 139분 (slowdown 5.0). 차단 0건. 사장님 PC self-hosted runner = offline 유지.
+
+- 2026-05-13: **T-M10.3 cron 시간 단축 + push** — slowdown 5.0 → 3.5초 (cron 139→90분). 또 = Adaptive SlowdownController 가속 (10회 성공 시 adaptive_base × 0.7) + url_alive_cache (cron 1회 메모리) + DELETED 추가 키워드. 204 tests pass.
+
+- 2026-05-13: **T-M10.4 url_alive 검증 확장 + push** — `if link and not search_found` → `if link` 변경. 검색 노출 무관 url_alive 검증. D-009 사장님 차별화 정합. 210 tests pass.
+
+- 2026-05-13: **T-M14.2 link 자동 갱신 + push** — 사장님 명시 ("프로그램 핵심 목적 = 키워드 잘 잡고 있는지 체크"). 시트 link A 매치 X + 다른 행 link B 매치 시 = link A → B 자동 갱신 + K/L/M 표시. parser.RankResult.matched_url 필드 + main.py 2단계 매치 + sheets.py HEADER_LINK 컬럼 갱신. 216 tests pass.
+
+- 2026-05-13: **3 agent 객관 검증 완료** (document-specialist + architect + critic Opus):
+  - document-specialist 외부 사실: JS 동적 박스 (`entry.bootstrap()` JSON) / Azure IP vs 한국 IP / A/B test / 봇 silent degradation / 시점 차이 (트렌딩 쿼리) = 5 자연 한계 실측 확인
+  - architect 코드 검증: K 90~93% / 4컬럼 85~90% 상한 + 구체 결함 3개 발견
+  - **critic Opus verdict = OVERCONFIDENT** (직전 "100% 가능" 답 = 과대 확신 / plan 자체 "불가능" 명시 무시)
+  - **진짜 가능 상한** = K 동일시점 93~97% / 4컬럼 87~95% (100% = 자연 한계 X 확정)
+
+- 2026-05-13: **T-M14.3 + T-M10.4 + T-M22 + T-M22.1 fix + push** (commit e9702c4) — architect 발견 4 fix:
+  - T-M14.3 _extract_popular_items dedup → URL 단위 dedup (같은 카페 복수 글 매치 가능)
+  - T-M10.4 url_alive 키워드 추가 ("등급이 부족" / "권한이 없" / "회원등급이" = PRIVATE)
+  - T-M22 _POPULAR_SKIP_PATTERNS 확장 ("AI 추천" / "숏폼" / "플레이스" / "동영상" / "쇼핑")
+  - T-M22.1 _extract_bootstrap_json 함수 추가 (네이버 JS JSON 페이로드 추출, parse_search_result 미통합 — 다음 cron 검증 후 통합)
+  - 효과 = +5~10%p (K 정확도 ↑)
+  - 234 tests pass (216 → 234, +18 신규)
+
+- 2026-05-13: **이메일 step 제거 + push** (commit 474800f) — GMAIL_USER / GMAIL_APP_PASSWORD secrets 미등록 = 530 인증 실패. issue #1 댓글 알림 의존 + 사장님 GitHub 알림 설정 의무.
+
+- 2026-05-13: **workflow yml ubuntu-latest 임시 변경 + push** (commit 20acbd5) — 사장님 PC offline = primary self-hosted = 영원 큐 위험. ubuntu 임시. PC 복귀 시 self-hosted 복귀 의무.
+
+- 2026-05-13: **한국어 표준어 강제 + push** (commit 04201f2) — 사장님 강한 재지적 후 진짜 root cause 5층 분석:
+  - Layer 1 표면 = 응답 어근 반복
+  - Layer 2 의식 = 어휘 습관 우위
+  - Layer 3 자체 컨텍스트 오염 = .harness 안 어근 28건 = 자기 강화 루프 (핵심)
+  - Layer 4 검증 부재 = response-validator hook 정규식 어미 4개 누락
+  - Layer 5 룰 모순 = D-019 본문 자체 어근 사용
+  - fix: .harness 22건 일괄 치환 + hook 정규식 확장 ("은|을|음|는|지|아|았|혀|혔|힘|힌|히") + CLAUDE.md 보강
   7. 사장님 수기 시 1페이지만 / 2~3페이지까지 (critic 발견)
