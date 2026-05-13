@@ -540,14 +540,33 @@ class TestPopularSkipPatterns:
 
 
 class TestExtractBootstrapJson:
-    """T-M22.1 (2026-05-13): _extract_bootstrap_json 함수 검증."""
+    """T-M22.1 (2026-05-14 probe 실측 fix): _extract_bootstrap_json 함수 검증.
 
-    def test_extracts_valid_json(self):
-        """entry.bootstrap() 안 유효 JSON = dict 반환."""
+    진짜 형식: entry.bootstrap(document.getElementById("fdr-..."), {...JSON...});
+    첫 번째 인자 = DOM element (무시), 두 번째 인자 = JSON 페이로드.
+    brace 균형 기반 파싱으로 중첩 brace 안전 처리.
+    """
+
+    def test_extracts_valid_json_real_format(self):
+        """진짜 형식 (document.getElementById + 두 번째 인자 JSON) = dict 반환."""
         from src.parser import _extract_bootstrap_json
-        html = '<script>entry.bootstrap({"key": "value", "num": 42});</script>'
+        html = '<script>entry.bootstrap(document.getElementById("fdr-abc"), {"key": "value", "num": 42});</script>'
         result = _extract_bootstrap_json(html)
         assert result == {"key": "value", "num": 42}
+
+    def test_extracts_nested_brace_json(self):
+        """중첩 brace JSON = 안전하게 추출 (brace counting 방식 검증)."""
+        from src.parser import _extract_bootstrap_json
+        html = '<script>entry.bootstrap(document.getElementById("fdr-xyz"), {"a": {"b": "c"}, "d": [1, 2]});</script>'
+        result = _extract_bootstrap_json(html)
+        assert result == {"a": {"b": "c"}, "d": [1, 2]}
+
+    def test_extracts_json_with_brace_in_string(self):
+        """JSON string 값 안 '}'  = 무시 (string 안 brace 처리 검증)."""
+        from src.parser import _extract_bootstrap_json
+        html = '<script>entry.bootstrap(document.getElementById("fdr-1"), {"key": "value with } inside"});</script>'
+        result = _extract_bootstrap_json(html)
+        assert result == {"key": "value with } inside"}
 
     def test_returns_none_when_no_bootstrap(self):
         """entry.bootstrap 없음 = None 반환."""
@@ -562,10 +581,17 @@ class TestExtractBootstrapJson:
         result = _extract_bootstrap_json("")
         assert result is None
 
-    def test_returns_none_on_invalid_json(self):
-        """entry.bootstrap() 안 JSON 파싱 실패 = None 반환 (fallback 안전)."""
+    def test_returns_none_on_old_format(self):
+        """구 형식 (document.getElementById 없음) = None 반환 (regex 불일치)."""
         from src.parser import _extract_bootstrap_json
-        html = '<script>entry.bootstrap({invalid json here});</script>'
+        html = '<script>entry.bootstrap({"key": "value"});</script>'
+        result = _extract_bootstrap_json(html)
+        assert result is None
+
+    def test_returns_none_on_invalid_json(self):
+        """entry.bootstrap 진짜 형식이지만 JSON 파싱 실패 = None 반환."""
+        from src.parser import _extract_bootstrap_json
+        html = '<script>entry.bootstrap(document.getElementById("fdr-1"), {invalid json});</script>'
         result = _extract_bootstrap_json(html)
         assert result is None
 

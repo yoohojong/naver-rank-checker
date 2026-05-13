@@ -437,26 +437,63 @@ def _parse_jisikin(html: str, target_url: str, result: RankResult) -> None:
                 return
 
 
-# T-M22.1 (2026-05-13 document-specialist 발견): entry.bootstrap() JS JSON 추출용 정규식
-_BOOTSTRAP_RE = re.compile(r'entry\.bootstrap\s*\(\s*(\{.*?\})\s*\)\s*;', re.DOTALL)
+# T-M22.1 (2026-05-14 probe 실측 fix): entry.bootstrap() 두 번째 인자 위치 탐색용 정규식.
+# 진짜 형식: entry.bootstrap(document.getElementById("fdr-..."), {...JSON...});
+# 첫 번째 인자 = DOM element (무시), 두 번째 인자 = JSON 페이로드.
+# JSON 끝은 regex non-greedy 로 중첩 brace 처리 불가 → brace counting 방식 사용.
+_BOOTSTRAP_PREFIX_RE = re.compile(
+    r'entry\.bootstrap\(\s*document\.getElementById\([^)]+\)\s*,\s*'
+)
 
 
 def _extract_bootstrap_json(html: str) -> Optional[dict]:
-    """T-M22.1 (2026-05-13 document-specialist 발견):
-    네이버 검색 결과 페이지 = entry.bootstrap() JS JSON 페이로드.
-    HTTP fetch 시 script 태그 안 JSON 추출 가능 = JS 미실행 박스 발견 가능.
+    """T-M22.1 (2026-05-14 probe 실측 fix): 네이버 entry.bootstrap() 두 번째 인자 JSON 추출.
 
-    주의: JSON 구조는 변동 가능. 현재는 함수만 추가하고 parse_search_result 에서
-    호출하지 않음 (다음 cron 결과로 JSON 추출 가능 여부 검증 후 통합 예정).
+    진짜 형식: entry.bootstrap(document.getElementById("fdr-..."), {...JSON...});
+
+    regex non-greedy = JSON 안 중첩 brace 처리 불가.
+    brace 균형 기반 수동 파싱으로 JSON 객체 끝을 정확히 탐색.
 
     반환: 추출 성공 시 dict, 실패 시 None (정적 HTML 파싱 fallback 사용).
     """
     if not html or "entry.bootstrap" not in html:
         return None
-    match = _BOOTSTRAP_RE.search(html)
+
+    # entry.bootstrap(document.getElementById(...), 위치 탐색
+    match = _BOOTSTRAP_PREFIX_RE.search(html)
     if not match:
         return None
-    try:
-        return json.loads(match.group(1))
-    except (json.JSONDecodeError, ValueError):
+
+    # 두 번째 인자 시작 위치 = JSON 객체 시작 '{' 여야 함
+    start = match.end()
+    if start >= len(html) or html[start] != '{':
         return None
+
+    # brace 균형 기반 JSON 끝 탐색
+    depth = 0
+    in_string = False
+    escape = False
+    for i in range(start, len(html)):
+        c = html[i]
+        if escape:
+            escape = False
+            continue
+        if c == '\\':
+            escape = True
+            continue
+        if c == '"' and not escape:
+            in_string = not in_string
+            continue
+        if in_string:
+            continue
+        if c == '{':
+            depth += 1
+        elif c == '}':
+            depth -= 1
+            if depth == 0:
+                # JSON 객체 끝 발견 → 파싱 시도
+                try:
+                    return json.loads(html[start:i + 1])
+                except (json.JSONDecodeError, ValueError):
+                    return None
+    return None
