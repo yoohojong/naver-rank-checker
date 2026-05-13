@@ -126,6 +126,18 @@ def _process_row(
                     auto_updated_link = result.matched_url
                     print(f"  [LINK_AUTO_UPDATE] kw={keyword!r}: {link} → {auto_updated_link}")
 
+    # T-M14.7 (2026-05-14 신규): 3차 — CAFE_WHITELIST slug 매치 fallback
+    # 1차(target_url) + 2차(link_set) 모두 미노출 시 = 박스 안 화이트리스트 카페 slug 검출
+    # 시트 미등록 새 글 노출 시 = 자동 검출 + 시트 link 자동 갱신
+    if result.exposure_area == ExposureArea.UNEXPOSED:
+        from src.config import CAFE_WHITELIST
+        result_slug = parse_search_result(html, target_url=None, cafe_slug_whitelist=CAFE_WHITELIST)
+        if result_slug.exposure_area != ExposureArea.UNEXPOSED:
+            result = result_slug
+            if result.matched_url and result.matched_url != link:
+                auto_updated_link = result.matched_url
+                print(f"  [LINK_NEW_AUTO_ADD] kw={keyword!r}: 새 글 자동 검출 = {result.matched_url}")
+
     # url_alive — link 있는 경우 검색 노출 여부 무관하게 항상 검증.
     # 2026-05-12 T-M10.1 사장님 요구: 게시글 조회 시 "삭제됐다" 뜨는 케이스 = 무조건 K=삭제.
     # 2026-05-13 T-M10.4 수정: 검색 노출 중 (search_found=True) 이어도 link 비공개/삭제 케이스 존재.

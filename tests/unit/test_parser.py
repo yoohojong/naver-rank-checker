@@ -782,3 +782,167 @@ class TestExtractMainLinkAdExclusion:
         box = BeautifulSoup(html, "lxml").find("div")
         result = _extract_main_link(box)
         assert result == "https://cafe.naver.com/pusanmommy/1445556"
+
+
+class TestExtractCafeSlug:
+    """T-M14.7 (2026-05-14): _extract_cafe_slug 내부 헬퍼 검증."""
+
+    def test_old_url_returns_slug(self):
+        """구형 URL: cafe.naver.com/{slug}/{post_id} → slug 반환."""
+        from src.parser import _extract_cafe_slug
+        assert _extract_cafe_slug("https://cafe.naver.com/pusanmommy/1445556") == "pusanmommy"
+
+    def test_old_url_mobile_prefix_returns_slug(self):
+        """m. prefix 구형 URL → slug 반환."""
+        from src.parser import _extract_cafe_slug
+        assert _extract_cafe_slug("https://m.cafe.naver.com/cosmania/38373348") == "cosmania"
+
+    def test_new_url_returns_none(self):
+        """신형 URL (ca-fe/cafes/...) → None 반환 (slug 매핑 불가)."""
+        from src.parser import _extract_cafe_slug
+        assert _extract_cafe_slug("https://cafe.naver.com/ca-fe/cafes/12345/articles/99001") is None
+
+    def test_non_cafe_url_returns_none(self):
+        """카페 URL 아님 → None 반환."""
+        from src.parser import _extract_cafe_slug
+        assert _extract_cafe_slug("https://blog.naver.com/some/post") is None
+
+    def test_empty_string_returns_none(self):
+        """빈 문자열 → None 반환."""
+        from src.parser import _extract_cafe_slug
+        assert _extract_cafe_slug("") is None
+
+
+class TestCafeSlugWhitelistMatch:
+    """T-M14.7 (2026-05-14): cafe_slug_whitelist 매치 fallback 검증.
+
+    매치 우선순위:
+    1. target_url 정확 매치
+    2. link_set 정확 매치 (T-M14.2)
+    3. cafe_slug_whitelist slug 매치 (T-M14.7 신규)
+    4. 매치 X
+    """
+
+    _PADDING = "<div class='pad'>" + ("x" * 600) + "</div>"
+
+    def _make_ab_box(self, cafe_url: str) -> str:
+        """AB 박스 (h2 없음 + cafe link 포함) HTML 조각 생성."""
+        return (
+            f'<div class="fds-default-mode api_subject_bx">'
+            f'<a class="api_txt_lines" href="{cafe_url}">글제목</a>'
+            f'</div>'
+        )
+
+    def _make_popular_box(self, cafe_url: str, h2_text: str = "패션 인기글") -> str:
+        """인기글 박스 (h2 있음 + cafe link 포함) HTML 조각 생성."""
+        return (
+            f'<div class="fds-default-mode api_subject_bx">'
+            f'<h2>{h2_text}</h2>'
+            f'<a href="{cafe_url}">글제목</a>'
+            f'</div>'
+        )
+
+    # --- AB 박스 slug 매치 ---
+
+    def test_ab_slug_match_whitelist_slug(self):
+        """AB 박스 안 카페 slug 가 화이트리스트 안 = 매치 성공."""
+        whitelist_url = "https://cafe.naver.com/pusanmommy/9999"
+        box = self._make_ab_box(whitelist_url)
+        html = f"<html><body>{self._PADDING}{box}</body></html>"
+        whitelist = {"pusanmommy", "cosmania"}
+        result = parse_search_result(html, target_url=None, cafe_slug_whitelist=whitelist)
+        assert result.exposure_area == ExposureArea.AB
+        assert result.matched_url == whitelist_url
+        assert result.integrated_rank == 1
+        assert result.cafe_slot_rank == 1
+        assert result.parser_confidence == 0.85
+
+    def test_ab_slug_match_non_whitelist_slug_no_match(self):
+        """AB 박스 안 카페 slug 가 화이트리스트 외 = 매치 X."""
+        unknown_url = "https://cafe.naver.com/unknown_cafe/9999"
+        box = self._make_ab_box(unknown_url)
+        html = f"<html><body>{self._PADDING}{box}</body></html>"
+        whitelist = {"pusanmommy", "cosmania"}
+        result = parse_search_result(html, target_url=None, cafe_slug_whitelist=whitelist)
+        assert result.exposure_area == ExposureArea.UNEXPOSED
+        assert result.matched_url is None
+
+    def test_ab_slug_match_new_url_no_match(self):
+        """신형 URL (ca-fe/cafes/...) = slug 추출 불가 → 매치 X."""
+        new_url = "https://cafe.naver.com/ca-fe/cafes/12345/articles/9999"
+        box = self._make_ab_box(new_url)
+        html = f"<html><body>{self._PADDING}{box}</body></html>"
+        whitelist = {"pusanmommy", "cosmania"}
+        result = parse_search_result(html, target_url=None, cafe_slug_whitelist=whitelist)
+        assert result.exposure_area == ExposureArea.UNEXPOSED
+
+    # --- 인기글 박스 slug 매치 ---
+
+    def test_popular_slug_match_whitelist_slug(self):
+        """인기글 박스 안 카페 slug 가 화이트리스트 안 = 매치 성공."""
+        whitelist_url = "https://cafe.naver.com/cosmania/38373348"
+        box = self._make_popular_box(whitelist_url)
+        html = f"<html><body>{self._PADDING}{box}</body></html>"
+        whitelist = {"pusanmommy", "cosmania"}
+        result = parse_search_result(html, target_url=None, cafe_slug_whitelist=whitelist)
+        assert result.exposure_area == ExposureArea.POPULAR
+        assert result.matched_url == whitelist_url
+        assert result.cafe_slot_rank == 1
+        assert result.parser_confidence == 0.85
+
+    def test_popular_slug_match_non_whitelist_no_match(self):
+        """인기글 박스 안 slug 가 화이트리스트 외 = 매치 X."""
+        unknown_url = "https://cafe.naver.com/unknown_cafe/9999"
+        box = self._make_popular_box(unknown_url)
+        html = f"<html><body>{self._PADDING}{box}</body></html>"
+        whitelist = {"pusanmommy", "cosmania"}
+        result = parse_search_result(html, target_url=None, cafe_slug_whitelist=whitelist)
+        assert result.exposure_area == ExposureArea.UNEXPOSED
+
+    # --- 우선순위 검증 ---
+
+    def test_priority_target_url_over_slug_whitelist(self):
+        """우선순위: target_url 정확 매치 > cafe_slug_whitelist slug 매치."""
+        target = "https://cafe.naver.com/pusanmommy/1111"
+        other_whitelist_url = "https://cafe.naver.com/cosmania/2222"
+        box1 = self._make_ab_box(target)
+        box2 = self._make_ab_box(other_whitelist_url)
+        html = f"<html><body>{self._PADDING}{box1}{box2}</body></html>"
+        whitelist = {"pusanmommy", "cosmania"}
+        # target_url 지정 시 = target_url 매치 우선
+        result = parse_search_result(html, target_url=target, cafe_slug_whitelist=whitelist)
+        assert result.exposure_area == ExposureArea.AB
+        assert result.matched_url == target
+        assert result.integrated_rank == 1
+
+    def test_priority_link_set_over_slug_whitelist(self):
+        """우선순위: link_set 정확 매치 > cafe_slug_whitelist slug 매치."""
+        link_set_url = "https://cafe.naver.com/cosmania/2222"
+        other_url = "https://cafe.naver.com/pusanmommy/3333"
+        box1 = self._make_ab_box(link_set_url)
+        box2 = self._make_ab_box(other_url)
+        html = f"<html><body>{self._PADDING}{box1}{box2}</body></html>"
+        link_set = {link_set_url}
+        whitelist = {"pusanmommy", "cosmania"}
+        # link_set 지정 시 = link_set 매치 우선 (cafe_slug_whitelist 무시)
+        result = parse_search_result(html, target_url=None, link_set=link_set, cafe_slug_whitelist=whitelist)
+        assert result.exposure_area == ExposureArea.AB
+        assert result.matched_url == link_set_url
+        assert result.integrated_rank == 1
+
+    def test_slug_whitelist_fallback_when_no_target_and_no_link_set(self):
+        """target_url=None + link_set=None + cafe_slug_whitelist 박힘 = slug 매치 동작."""
+        whitelist_url = "https://cafe.naver.com/iroid/5412361"
+        box = self._make_ab_box(whitelist_url)
+        html = f"<html><body>{self._PADDING}{box}</body></html>"
+        whitelist = {"iroid", "pusanmommy"}
+        result = parse_search_result(html, target_url=None, cafe_slug_whitelist=whitelist)
+        assert result.exposure_area == ExposureArea.AB
+        assert result.matched_url == whitelist_url
+
+    def test_no_match_when_whitelist_none(self):
+        """cafe_slug_whitelist=None + target_url=None + link_set=None = 매치 X."""
+        box = self._make_ab_box("https://cafe.naver.com/pusanmommy/1111")
+        html = f"<html><body>{self._PADDING}{box}</body></html>"
+        result = parse_search_result(html, target_url=None)
+        assert result.exposure_area == ExposureArea.UNEXPOSED

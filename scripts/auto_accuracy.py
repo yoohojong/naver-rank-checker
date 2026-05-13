@@ -181,6 +181,11 @@ def main() -> Optional[int]:
                 fallback = parse_search_result(html, target_url=None, link_set=other_links)
                 if fallback.exposure_area.value != "미노출":
                     parser_result = fallback
+        # T-M14.7 (2026-05-14 신규): slug 매치 fallback — 시트 미등록 새 글 자동 검출
+        if parser_result.exposure_area.value == "미노출":
+            slug_match = parse_search_result(html, target_url=None, cafe_slug_whitelist=CAFE_WHITELIST)
+            if slug_match.exposure_area.value != "미노출":
+                parser_result = slug_match
         parser_K = parser_result.exposure_area.value
 
         # direct 검출 (ground truth)

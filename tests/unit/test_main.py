@@ -412,3 +412,100 @@ class TestLinkAutoUpdate:
         assert cols[HEADER_AREA] == "AB"
         # 링크 컬럼 갱신 없음 (matched_url == link_a 이므로 auto_updated_link = None)
         assert HEADER_LINK not in cols
+
+
+class TestSlugWhitelistFallback:
+    """T-M14.7 (2026-05-14): 3차 CAFE_WHITELIST slug 매치 fallback — _process_row 통합 검증.
+
+    시트 미등록 새 글 노출 시 = 자동 검출 + 시트 link 자동 갱신.
+    1차(target_url) + 2차(link_set) 모두 미노출 → 3차 slug 매치 동작.
+    """
+
+    def _make_row(self, keyword: str, link: str, prev_K: str = "") -> dict:
+        """테스트용 행 dict 생성."""
+        return {"키워드": keyword, "링크": link, "노출영역": prev_K, "_row": 2}
+
+    def _mock_result(self, area: str, matched_url: str = None):
+        """parse_search_result 반환용 mock RankResult."""
+        from src.parser import RankResult, ExposureArea
+        r = RankResult()
+        r.exposure_area = ExposureArea(area) if area != "미노출" else ExposureArea.UNEXPOSED
+        r.matched_url = matched_url
+        r.parser_confidence = 0.85 if area != "미노출" else 0.0
+        r.integrated_rank = 1 if area != "미노출" else None
+        r.cafe_slot_rank = 1 if area != "미노출" else None
+        r.block_order = [area] if area != "미노출" else []
+        r.in_jisikin = False
+        return r
+
+    def test_slug_match_detects_new_post_and_updates_link(self):
+        """1차 미노출 → 2차 link_set 없음 → 3차 slug 매치 성공 = 새 글 자동 검출 + link 자동 갱신.
+
+        시나리오: 시트 link = pusanmommy/1111 (삭제된 글), 검색 결과에는
+        pusanmommy/9999 (새 글) 노출 → slug 매치로 자동 검출 + link 갱신.
+
+        참고: all_known_links 에 현재 행 link 만 있으면 other_links = 공집합
+        → 2차 link_set fallback 은 skip (other_links 없음) → 바로 3차 slug 매치.
+        따라서 fake_parse 는 1차(target_url)=미노출, 2차(cafe_slug_whitelist)=매치 순서.
+        """
+        from src.main import _process_row
+        from src.health import HealthMonitor
+        from src.sheets import HEADER_AREA, HEADER_LINK
+
+        crawler = MagicMock()
+        health = HealthMonitor()
+        old_link = "https://cafe.naver.com/pusanmommy/1111"
+        new_link = "https://cafe.naver.com/pusanmommy/9999"
+        # all_known_links 에 현재 행 link 만 있으면 other_links = {} → 2차 link_set skip
+        all_known_links = {old_link}
+
+        unexposed = self._mock_result("미노출")
+        slug_matched = self._mock_result("AB", matched_url=new_link)
+
+        crawler.fetch_search.return_value = "<html>검색결과</html>"
+        crawler.fetch_cafe_url_status.return_value = CafeStatus.ALIVE
+
+        call_count = [0]
+
+        def fake_parse(html, target_url=None, link_set=None, cafe_slug_whitelist=None):
+            call_count[0] += 1
+            if call_count[0] == 1:
+                # 1차: target_url 매치 → 미노출
+                return unexposed
+            else:
+                # 2차(slug): cafe_slug_whitelist 매치 → 새 글 검출
+                # (other_links 공집합이라 link_set fallback 은 건너뜀)
+                return slug_matched
+
+        with patch("src.main.parse_search_result", side_effect=fake_parse):
+            row = self._make_row("부산맘", old_link)
+            cols = _process_row(row, crawler, health, all_known_links=all_known_links)
+
+        # K = AB (slug 매치로 새 글 검출)
+        assert cols[HEADER_AREA] == "AB"
+        # 링크 컬럼 = 새 글 link (자동 갱신)
+        assert cols[HEADER_LINK] == new_link
+
+    def test_slug_match_no_update_when_all_unexposed(self):
+        """1차+2차+3차 모두 미노출 → K=미노출, 링크 갱신 X."""
+        from src.main import _process_row
+        from src.health import HealthMonitor
+        from src.sheets import HEADER_AREA, HEADER_LINK
+
+        crawler = MagicMock()
+        health = HealthMonitor()
+        link = "https://cafe.naver.com/pusanmommy/1111"
+        all_known_links = {link}
+
+        unexposed = self._mock_result("미노출")
+        crawler.fetch_search.return_value = "<html>검색결과</html>"
+        crawler.fetch_cafe_url_status.return_value = CafeStatus.ALIVE
+
+        with patch("src.main.parse_search_result", return_value=unexposed):
+            row = self._make_row("부산맘", link)
+            cols = _process_row(row, crawler, health, all_known_links=all_known_links)
+
+        # 3차 slug 매치도 미노출 → K=""
+        assert cols[HEADER_AREA] == ""
+        # 링크 갱신 없음
+        assert HEADER_LINK not in cols
