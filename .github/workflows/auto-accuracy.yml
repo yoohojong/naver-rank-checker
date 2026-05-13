@@ -1,0 +1,67 @@
+name: auto-accuracy
+# 2026-05-14: 자동 정확도 측정 workflow — 사장님 직접 검증 X = parser 자체 결함 자동 발견.
+# 100 키워드 random sample = HTML fetch + parser vs ground truth 비교 = 자동 정확도 측정.
+
+on:
+  workflow_dispatch:
+    inputs:
+      sample_size:
+        description: 'sample 키워드 수 (기본 100)'
+        required: false
+        default: '100'
+
+jobs:
+  auto-accuracy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python 3.13
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+
+      - name: Setup venv + install deps
+        shell: bash
+        run: |
+          python -m venv .venv
+          ./.venv/bin/python -m pip install --upgrade pip
+          ./.venv/bin/python -m pip install -r requirements.txt
+
+      - name: Run auto accuracy
+        shell: bash
+        env:
+          SPREADSHEET_ID: ${{ secrets.SPREADSHEET_ID }}
+          SERVICE_ACCOUNT_JSON: ${{ secrets.SERVICE_ACCOUNT_JSON }}
+          NAVER_SLOWDOWN_BASE_SEC: '3.5'
+          NAVER_SLOWDOWN_MAX_SEC: '120'
+          PYTHONIOENCODING: 'utf-8'
+        run: |
+          ./.venv/bin/python -m scripts.auto_accuracy --sample ${{ github.event.inputs.sample_size || '100' }}
+
+      - name: Upload accuracy report artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: auto-accuracy-report
+          path: .harness/auto-accuracy-*.json
+          retention-days: 30
+
+      - name: Post summary to issue #1
+        if: always()
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # 최신 auto-accuracy JSON 파일 찾기
+          LATEST=$(ls -t .harness/auto-accuracy-*.json 2>/dev/null | head -1)
+          if [ -n "$LATEST" ]; then
+            ACCURACY=$(./.venv/bin/python -c "import json; d=json.load(open('$LATEST', encoding='utf-8')); print(f\"{d['accuracy_pct']:.1f}\")")
+            SAMPLE=$(./.venv/bin/python -c "import json; d=json.load(open('$LATEST', encoding='utf-8')); print(d['sample_size'])")
+            MISMATCH=$(./.venv/bin/python -c "import json; d=json.load(open('$LATEST', encoding='utf-8')); print(d['mismatch_count'])")
+            COMMENT="🤖 auto-accuracy 결과: ${ACCURACY}% (${SAMPLE} sample / mismatch ${MISMATCH}건). 상세 = Actions artifacts."
+            gh issue comment 1 --repo ${{ github.repository }} --body "$COMMENT"
+          fi

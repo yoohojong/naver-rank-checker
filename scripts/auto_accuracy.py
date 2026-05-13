@@ -1,0 +1,242 @@
+"""자동 정확도 측정 - 사장님 직접 검증 없이 parser 자체 결함 자동 발견.
+
+방법:
+1. 사장님 시트 832 행 중 random 100 키워드 선택 (SPREADSHEET_ID 탭 필터: "카외" 끝)
+2. HTML fetch + parser 결과 = parser_K (AB / 인기글 / 미노출)
+3. 같은 HTML = 박스 안 CAFE_WHITELIST 카페 글 직접 검출 = direct_K (ground truth)
+4. parser_K vs direct_K 일치율 = 진짜 정확도
+5. mismatch 사례 = JSON 저장 + 콘솔 리포트
+
+산출물: .harness/auto-accuracy-{timestamp}.json
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import random
+import sys
+from collections import Counter
+from datetime import datetime, timezone, timedelta
+from pathlib import Path
+from typing import Optional
+from urllib.parse import urlparse
+
+from bs4 import BeautifulSoup
+
+from src.config import (
+    SPREADSHEET_ID,
+    SERVICE_ACCOUNT_JSON,
+    NAVER_SLOWDOWN_BASE_SEC,
+    NAVER_SLOWDOWN_MAX_SEC,
+    CAFE_WHITELIST,
+)
+from src.crawler import Crawler, SlowdownController
+from src.parser import parse_search_result, _POPULAR_SKIP_PATTERNS
+from src.sheets import SheetsClient
+
+
+def detect_direct_K(html: str) -> dict:
+    """HTML 안 박스 직접 분석 = CAFE_WHITELIST 카페 글 노출 여부 + 박스 종류.
+
+    ground truth = parser 우회 = 진짜 박스 내 카페 글 직접 검출.
+    반환값:
+        K: "AB" / "인기글" / "미노출"
+        boxes_with_cafe: 카페 글 감지된 박스 정보 리스트 (디버깅용)
+    """
+    if not html:
+        return {"K": "미노출", "boxes_with_cafe": []}
+
+    soup = BeautifulSoup(html, "lxml")
+    boxes = soup.select(".desktop_mode.api_subject_bx, .fds-default-mode.api_subject_bx")
+
+    boxes_with_cafe = []
+    for i, box in enumerate(boxes, 1):
+        h2 = box.find("h2")
+        h2_text = h2.get_text(strip=True) if h2 else None
+
+        # h2 있고 skip 패턴이면 검출 대상 제외 (광고/이미지/AI 등)
+        if h2_text and any(p in h2_text for p in _POPULAR_SKIP_PATTERNS):
+            continue
+
+        # 박스 안 화이트리스트 카페 글 검출
+        cafe_hits = []
+        for a in box.find_all("a", href=True):
+            href = a["href"]
+            if "cafe.naver.com" not in href:
+                continue
+            p = urlparse(href)
+            parts = [s for s in p.path.split("/") if s]
+            if not parts:
+                continue
+            slug = parts[0]
+            # 신형 URL: ca-fe/cafes/{cafe_id}/articles/{post_id}
+            if slug == "ca-fe":
+                if len(parts) >= 4 and parts[1] == "cafes" and parts[3] == "articles":
+                    cafe_hits.append({"slug": "ca-fe(신형)", "url": href[:100]})
+                continue
+            # 구형 URL: {slug}/{post_id}
+            if slug in CAFE_WHITELIST:
+                cafe_hits.append({"slug": slug, "url": href[:100]})
+
+        if cafe_hits:
+            box_kind = "no_h2" if h2 is None else "h2_box"
+            boxes_with_cafe.append({
+                "idx": i,
+                "h2": h2_text,
+                "kind": box_kind,
+                "cafe_hits": len(cafe_hits),
+            })
+
+    if not boxes_with_cafe:
+        return {"K": "미노출", "boxes_with_cafe": []}
+
+    # 첫 번째 카페 글 발견 박스 기준으로 K 추정
+    first_box = boxes_with_cafe[0]
+    if first_box["kind"] == "no_h2":
+        # h2 없음 + 카페 글 있음 = AB
+        K = "AB"
+    else:
+        # h2 있음 + skip 패턴 아님 = 인기글
+        K = "인기글"
+
+    return {"K": K, "boxes_with_cafe": boxes_with_cafe}
+
+
+def main() -> Optional[int]:
+    ap = argparse.ArgumentParser(
+        description="parser 자동 정확도 측정: CAFE_WHITELIST 카페 글 직접 검출 vs parser 결과 비교"
+    )
+    ap.add_argument("--sample", type=int, default=100, help="random sample 키워드 수 (기본: 100)")
+    ap.add_argument("--seed", type=int, default=42, help="random seed (재현 가능성, 기본: 42)")
+    args = ap.parse_args()
+
+    # 환경변수 누락 검사
+    if not SPREADSHEET_ID or not SERVICE_ACCOUNT_JSON:
+        print("[ERROR] SPREADSHEET_ID / SERVICE_ACCOUNT_JSON 환경변수 누락")
+        print("   GitHub Actions Secrets 또는 로컬 .env 설정 후 재실행 의무")
+        return 1
+
+    # 1. 시트 read = 키워드 + 링크 목록 수집
+    print("시트 데이터 로드 중...")
+    client = SheetsClient(
+        spreadsheet_id=SPREADSHEET_ID,
+        service_account_json=SERVICE_ACCOUNT_JSON,
+    )
+    data = client.load_all_data_tabs(tab_filter=lambda t: t.endswith("카외"))
+    all_rows: list[tuple[str, str]] = []
+    for tab_rows in data.values():
+        for r in tab_rows:
+            kw = r.get("키워드", "").strip()
+            link = r.get("링크", "").strip()
+            if kw:
+                all_rows.append((kw, link))
+
+    if not all_rows:
+        print("[ERROR] 시트에서 유효한 키워드를 찾지 못함 (탭 필터 = '카외' 끝)")
+        return 1
+
+    print(f"전체 {len(all_rows)} 키워드 수집 완료")
+
+    # 2. random sample 선택
+    random.seed(args.seed)
+    sample = random.sample(all_rows, min(args.sample, len(all_rows)))
+    print(f"=== {len(sample)} 키워드 자동 정확도 측정 시작 ===")
+
+    # 3. crawler 초기화 + warmup
+    crawler = Crawler(
+        slowdown=SlowdownController(
+            base=NAVER_SLOWDOWN_BASE_SEC,
+            max_=NAVER_SLOWDOWN_MAX_SEC,
+        )
+    )
+    crawler.warmup()
+
+    # 4. 각 키워드 처리
+    results: list[dict] = []
+    parser_K_counter: Counter = Counter()
+    direct_K_counter: Counter = Counter()
+    match_count = 0
+
+    for idx, (kw, link) in enumerate(sample, 1):
+        try:
+            html = crawler.fetch_search(kw)
+        except Exception as e:
+            print(f"  [{idx:3d}] {kw!r}: ERROR ({e})")
+            continue
+
+        # parser 결과 (target_url 기반, 시트 링크 활용)
+        target_url: Optional[str] = link if link else None
+        parser_result = parse_search_result(html, target_url=target_url)
+        parser_K = parser_result.exposure_area.value
+
+        # direct 검출 (ground truth)
+        direct = detect_direct_K(html)
+        direct_K = direct["K"]
+
+        match = (parser_K == direct_K)
+        if match:
+            match_count += 1
+        parser_K_counter[parser_K] += 1
+        direct_K_counter[direct_K] += 1
+
+        results.append({
+            "kw": kw,
+            "link": link[:80] if link else "",
+            "parser_K": parser_K,
+            "direct_K": direct_K,
+            "match": match,
+            "boxes_with_cafe": direct["boxes_with_cafe"][:3],  # 디버깅용 (최대 3개)
+        })
+
+        # 진행 상황 출력 (10개 단위)
+        if idx % 10 == 0:
+            print(f"  진행: {idx}/{len(sample)} (일치율 {match_count/idx*100:.1f}%)")
+
+    if not results:
+        print("[ERROR] 처리된 결과 없음 - 네트워크 / 차단 확인 의무")
+        return 1
+
+    # 5. 결과 저장
+    kst = timezone(timedelta(hours=9))
+    ts = datetime.now(kst).strftime("%Y-%m-%dT%H-%M-KST")
+    out_path = Path(".harness") / f"auto-accuracy-{ts}.json"
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+
+    accuracy = match_count / len(results) * 100
+    mismatch_cases = [r for r in results if not r["match"]]
+
+    summary = {
+        "timestamp_kst": ts,
+        "sample_size": len(results),
+        "match_count": match_count,
+        "accuracy_pct": round(accuracy, 2),
+        "parser_K_distribution": dict(parser_K_counter),
+        "direct_K_distribution": dict(direct_K_counter),
+        "mismatch_count": len(mismatch_cases),
+        "results": results,
+    }
+
+    with open(out_path, "w", encoding="utf-8") as f:
+        json.dump(summary, f, ensure_ascii=False, indent=2)
+
+    # 6. 결과 출력
+    print()
+    print("=== 결과 ===")
+    print(f"전체: {len(results)} 키워드")
+    print(f"일치: {match_count} / {len(results)} = {accuracy:.1f}%")
+    print(f"parser K 분포: {dict(parser_K_counter)}")
+    print(f"direct K 분포: {dict(direct_K_counter)}")
+    print(f"mismatch: {len(mismatch_cases)} 건")
+    print(f"결과 저장: {out_path}")
+    print()
+
+    if mismatch_cases:
+        print("mismatch 사례 (상위 5건):")
+        for r in mismatch_cases[:5]:
+            print(f"  kw={r['kw']!r:30s} parser={r['parser_K']:5s} direct={r['direct_K']:5s}")
+
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main() or 0)
