@@ -171,6 +171,18 @@ def _parse_ab_list(html: str, target_url: Optional[str], result: RankResult, lin
     return False
 
 
+# T-M14.6 (2026-05-14): 광고 및 사이드바 링크 제외 패턴
+_AD_LINK_PATTERNS = ("ader.naver.com", "adcr.naver.com", "/ad/", "?adidx=")
+_SIDEBAR_LINK_PATTERNS = ("hashtag", "related_keyword", "/?query=")
+
+
+def _is_excluded_link(url: str) -> bool:
+    """T-M14.6 (2026-05-14): 광고 / 사이드바 / 관련 검색 링크 제외 판별."""
+    if not url:
+        return True
+    return any(p in url for p in _AD_LINK_PATTERNS) or any(p in url for p in _SIDEBAR_LINK_PATTERNS)
+
+
 def _extract_main_link(box) -> str:
     """박스 내부 메인 결과 URL.
 
@@ -182,6 +194,9 @@ def _extract_main_link(box) -> str:
 
     critic 발견 (2026-05-12): 기존 텍스트 길이 기준 fallback 만 사용 = 광고/관련검색이
     더 길면 오작동. CSS 정밀 selector 1순위 추가로 fix.
+
+    T-M14.6 (2026-05-14): 광고 / 사이드바 / 관련 검색 링크 명시 제외 — CSS 1순위 및
+    fallback 양쪽 모두 _is_excluded_link 필터 적용.
     """
     # 1순위 — CSS 정밀 selector (네이버 검색 결과 실제 title 영역)
     for sel in [
@@ -195,8 +210,10 @@ def _extract_main_link(box) -> str:
         if a:
             href = a.get("href", "")
             if href.startswith("http") and not href.startswith(("javascript:", "#")):
+                if _is_excluded_link(href):
+                    continue
                 return href
-    # 2순위 — fallback (텍스트 가장 긴 a)
+    # 2순위 — fallback (텍스트 가장 긴 a, 광고/사이드바 제외)
     main_link = ""
     main_text_len = 0
     for a in box.find_all("a", href=True):
@@ -204,6 +221,8 @@ def _extract_main_link(box) -> str:
         if not href.startswith("http"):
             continue
         if href.startswith(("javascript:", "#")):
+            continue
+        if _is_excluded_link(href):
             continue
         text_len = len(a.get_text(strip=True))
         if text_len > main_text_len:
@@ -232,15 +251,68 @@ def _normalize_netloc(netloc: str) -> str:
     return netloc
 
 
+# T-M14.5 (2026-05-14): 네이버 카페 신형 URL 패턴 — ca-fe/cafes/{cafe_id}/articles/{post_id}
+_CAFE_NEW_URL_RE = re.compile(r"/ca-fe/cafes/(\d+)/articles/(\d+)")
+
+
+def _normalize_cafe_url(parsed_url) -> tuple:
+    """T-M14.5 (2026-05-14): 카페 URL 정규화 — 구형 / 신형 통합 비교용 키 반환.
+
+    구형: cafe.naver.com/{slug}/{post_id}
+    신형: cafe.naver.com/ca-fe/cafes/{cafe_id}/articles/{post_id}
+
+    netloc 정규화 (m. prefix 제거) 후 path → (netloc, key) 튜플 반환.
+    - 신형 = ("정규화된_netloc", "NEW:{post_id}")
+    - 구형 (끝이 숫자) = ("정규화된_netloc", "OLD:{post_id}")
+    - 그 외 = ("정규화된_netloc", path)
+
+    구형 slug ≠ 신형 cafe_id (네이버 내부 매핑 필요) → 직접 비교 불가.
+    fallback = post_id 단독 비교 (같은 post_id = 같은 글 가정).
+    """
+    netloc = _normalize_netloc(parsed_url.netloc)
+    path = parsed_url.path.rstrip("/")
+
+    # 신형 URL 검출
+    m = _CAFE_NEW_URL_RE.match(path)
+    if m:
+        post_id = m.group(2)
+        return (netloc, f"NEW:{post_id}")
+
+    # 구형 URL — path 끝 segment 가 숫자이면 post_id
+    path_parts = [s for s in path.split("/") if s]
+    if len(path_parts) >= 2 and path_parts[-1].isdigit():
+        post_id = path_parts[-1]
+        return (netloc, f"OLD:{post_id}")
+
+    return (netloc, path)
+
+
 def _urls_match(a: str, b: str) -> bool:
-    """URL 매칭: 쿼리/fragment 무시, netloc (m. prefix 정규화) + path (trailing slash 무시) 일치."""
+    """URL 매칭: 쿼리/fragment 무시, netloc (m. prefix 정규화) + path 비교.
+
+    T-M14.5 (2026-05-14): 네이버 카페 구형/신형 URL 동시 지원.
+    - 둘 다 구형 또는 둘 다 신형 = 정확 비교
+    - 구형 vs 신형 (혼합) = post_id 단독 fallback 비교
+    - 카페 URL 아닌 경우 = 기존 netloc + path 비교 유지
+    """
     if not a or not b:
         return False
     pa, pb = urlparse(a), urlparse(b)
-    return (
-        _normalize_netloc(pa.netloc) == _normalize_netloc(pb.netloc)
-        and pa.path.rstrip("/") == pb.path.rstrip("/")
-    )
+    na, ka = _normalize_cafe_url(pa)
+    nb, kb = _normalize_cafe_url(pb)
+
+    # 같은 netloc + 같은 키 (구형+구형, 신형+신형, 일반 URL)
+    if na == nb and ka == kb:
+        return True
+
+    # 같은 netloc + 구형 vs 신형 혼합 = post_id 단독 fallback
+    if na == nb:
+        if ka.startswith("OLD:") and kb.startswith("NEW:"):
+            return ka[4:] == kb[4:]
+        if ka.startswith("NEW:") and kb.startswith("OLD:"):
+            return ka[4:] == kb[4:]
+
+    return False
 
 
 def _urls_match_any(url: str, link_set: set[str]) -> bool:

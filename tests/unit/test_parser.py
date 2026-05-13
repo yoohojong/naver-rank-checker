@@ -600,3 +600,185 @@ class TestExtractBootstrapJson:
         from src.parser import _extract_bootstrap_json
         result = _extract_bootstrap_json(None)
         assert result is None
+
+
+class TestUrlsMatchCafeNewUrl:
+    """T-M14.5 (2026-05-14): 네이버 카페 신형 URL fallback 매치 검증.
+
+    구형: cafe.naver.com/{slug}/{post_id}
+    신형: cafe.naver.com/ca-fe/cafes/{cafe_id}/articles/{post_id}
+    """
+
+    def test_old_vs_old_same_post_matches(self):
+        """구형 vs 구형 — 같은 post_id = True (기존 동작 회귀 방지)."""
+        from src.parser import _urls_match
+        a = "https://cafe.naver.com/pusanmommy/1445556"
+        b = "https://cafe.naver.com/pusanmommy/1445556"
+        assert _urls_match(a, b) is True
+
+    def test_old_vs_old_different_post_no_match(self):
+        """구형 vs 구형 — 다른 post_id = False (기존 동작 회귀 방지)."""
+        from src.parser import _urls_match
+        a = "https://cafe.naver.com/pusanmommy/1111"
+        b = "https://cafe.naver.com/pusanmommy/2222"
+        assert _urls_match(a, b) is False
+
+    def test_new_vs_new_same_post_matches(self):
+        """신형 vs 신형 — 같은 cafe_id + post_id = True."""
+        from src.parser import _urls_match
+        a = "https://cafe.naver.com/ca-fe/cafes/12345/articles/99001"
+        b = "https://cafe.naver.com/ca-fe/cafes/12345/articles/99001"
+        assert _urls_match(a, b) is True
+
+    def test_new_vs_new_different_post_no_match(self):
+        """신형 vs 신형 — 다른 post_id = False."""
+        from src.parser import _urls_match
+        a = "https://cafe.naver.com/ca-fe/cafes/12345/articles/99001"
+        b = "https://cafe.naver.com/ca-fe/cafes/12345/articles/99002"
+        assert _urls_match(a, b) is False
+
+    def test_old_vs_new_same_post_id_matches(self):
+        """구형 vs 신형 — 같은 post_id = True (fallback 매치)."""
+        from src.parser import _urls_match
+        a = "https://cafe.naver.com/pusanmommy/1445556"
+        b = "https://cafe.naver.com/ca-fe/cafes/12345/articles/1445556"
+        assert _urls_match(a, b) is True
+
+    def test_new_vs_old_same_post_id_matches(self):
+        """신형 vs 구형 — 같은 post_id = True (방향 무관 대칭 확인)."""
+        from src.parser import _urls_match
+        a = "https://cafe.naver.com/ca-fe/cafes/12345/articles/1445556"
+        b = "https://cafe.naver.com/pusanmommy/1445556"
+        assert _urls_match(a, b) is True
+
+    def test_old_vs_new_different_post_id_no_match(self):
+        """구형 vs 신형 — 다른 post_id = False."""
+        from src.parser import _urls_match
+        a = "https://cafe.naver.com/pusanmommy/1111"
+        b = "https://cafe.naver.com/ca-fe/cafes/12345/articles/2222"
+        assert _urls_match(a, b) is False
+
+    def test_mobile_prefix_normalized_with_new_url(self):
+        """m. prefix + 신형 URL = 정규화 후 매치."""
+        from src.parser import _urls_match
+        a = "https://m.cafe.naver.com/ca-fe/cafes/12345/articles/1445556"
+        b = "https://cafe.naver.com/pusanmommy/1445556"
+        assert _urls_match(a, b) is True
+
+    def test_query_ignored_new_url(self):
+        """신형 URL 쿼리 파라미터 무시."""
+        from src.parser import _urls_match
+        a = "https://cafe.naver.com/ca-fe/cafes/12345/articles/99001?art=foo"
+        b = "https://cafe.naver.com/ca-fe/cafes/12345/articles/99001"
+        assert _urls_match(a, b) is True
+
+
+class TestIsExcludedLink:
+    """T-M14.6 (2026-05-14): _is_excluded_link 광고/사이드바 제외 검증."""
+
+    def test_ad_domain_ader_excluded(self):
+        """ader.naver.com 광고 도메인 = 제외."""
+        from src.parser import _is_excluded_link
+        assert _is_excluded_link("https://ader.naver.com/ad?campaign=123") is True
+
+    def test_ad_domain_adcr_excluded(self):
+        """adcr.naver.com 광고 도메인 = 제외."""
+        from src.parser import _is_excluded_link
+        assert _is_excluded_link("https://adcr.naver.com/r/click?abc") is True
+
+    def test_ad_path_excluded(self):
+        """/ad/ path 포함 = 제외."""
+        from src.parser import _is_excluded_link
+        assert _is_excluded_link("https://search.naver.com/ad/redirect") is True
+
+    def test_adidx_query_excluded(self):
+        """?adidx= 쿼리 포함 = 제외."""
+        from src.parser import _is_excluded_link
+        assert _is_excluded_link("https://shopping.naver.com/item?adidx=5") is True
+
+    def test_hashtag_sidebar_excluded(self):
+        """hashtag 패턴 사이드바 링크 = 제외."""
+        from src.parser import _is_excluded_link
+        assert _is_excluded_link("https://search.naver.com/search?hashtag=foo") is True
+
+    def test_related_keyword_excluded(self):
+        """related_keyword 패턴 = 제외."""
+        from src.parser import _is_excluded_link
+        assert _is_excluded_link("https://search.naver.com/related_keyword?q=bar") is True
+
+    def test_query_sidebar_excluded(self):
+        """/?query= 패턴 관련 검색 = 제외."""
+        from src.parser import _is_excluded_link
+        assert _is_excluded_link("https://search.naver.com/?query=abc") is True
+
+    def test_normal_cafe_link_not_excluded(self):
+        """정상 카페 링크 = 제외 X."""
+        from src.parser import _is_excluded_link
+        assert _is_excluded_link("https://cafe.naver.com/pusanmommy/1445556") is False
+
+    def test_empty_string_excluded(self):
+        """빈 문자열 = 제외."""
+        from src.parser import _is_excluded_link
+        assert _is_excluded_link("") is True
+
+
+class TestExtractMainLinkAdExclusion:
+    """T-M14.6 (2026-05-14): _extract_main_link 광고/사이드바 링크 제외 동작 검증."""
+
+    _PADDING = "<div class='pad'>" + ("x" * 600) + "</div>"
+
+    def test_ad_link_excluded_from_css_selector(self):
+        """CSS 1순위 selector 에서 광고 링크 = 제외 후 정상 링크 반환."""
+        from src.parser import _extract_main_link
+        from bs4 import BeautifulSoup
+        html = (
+            '<div class="fds-default-mode api_subject_bx">'
+            '<a class="api_txt_lines" href="https://ader.naver.com/ad?x=1">광고</a>'
+            '<a class="api_txt_lines" href="https://cafe.naver.com/pusanmommy/100">카페 글</a>'
+            '</div>'
+        )
+        box = BeautifulSoup(html, "lxml").find("div")
+        result = _extract_main_link(box)
+        assert result == "https://cafe.naver.com/pusanmommy/100"
+
+    def test_ad_link_excluded_from_fallback(self):
+        """fallback (텍스트 길이 기준) 에서도 광고 링크 = 제외."""
+        from src.parser import _extract_main_link
+        from bs4 import BeautifulSoup
+        # 광고 링크가 텍스트 더 길어도 제외되어 카페 링크 반환
+        html = (
+            '<div class="fds-default-mode api_subject_bx">'
+            '<a href="https://ader.naver.com/ad?x=1">이 텍스트는 매우 길고 광고입니다 광고 광고 광고</a>'
+            '<a href="https://cafe.naver.com/pusanmommy/100">카페 글</a>'
+            '</div>'
+        )
+        box = BeautifulSoup(html, "lxml").find("div")
+        result = _extract_main_link(box)
+        assert result == "https://cafe.naver.com/pusanmommy/100"
+
+    def test_hashtag_sidebar_excluded(self):
+        """사이드바 해시태그 링크 = fallback 에서 제외."""
+        from src.parser import _extract_main_link
+        from bs4 import BeautifulSoup
+        html = (
+            '<div class="fds-default-mode api_subject_bx">'
+            '<a href="https://search.naver.com/?hashtag=뷰티">관련 해시태그 매우 긴 텍스트</a>'
+            '<a href="https://cafe.naver.com/cosmania/200">카페 글</a>'
+            '</div>'
+        )
+        box = BeautifulSoup(html, "lxml").find("div")
+        result = _extract_main_link(box)
+        assert result == "https://cafe.naver.com/cosmania/200"
+
+    def test_normal_cafe_link_returned(self):
+        """광고 없는 정상 박스 = 기존 동작 유지."""
+        from src.parser import _extract_main_link
+        from bs4 import BeautifulSoup
+        html = (
+            '<div class="fds-default-mode api_subject_bx">'
+            '<a class="api_txt_lines" href="https://cafe.naver.com/pusanmommy/1445556">게시글 제목</a>'
+            '</div>'
+        )
+        box = BeautifulSoup(html, "lxml").find("div")
+        result = _extract_main_link(box)
+        assert result == "https://cafe.naver.com/pusanmommy/1445556"
