@@ -126,17 +126,9 @@ def _process_row(
                     auto_updated_link = result.matched_url
                     print(f"  [LINK_AUTO_UPDATE] kw={keyword!r}: {link} → {auto_updated_link}")
 
-    # T-M14.7 (2026-05-14 신규): 3차 — CAFE_WHITELIST slug 매치 fallback
-    # 1차(target_url) + 2차(link_set) 모두 미노출 시 = 박스 안 화이트리스트 카페 slug 검출
-    # 시트 미등록 새 글 노출 시 = 자동 검출 + 시트 link 자동 갱신
-    if result.exposure_area == ExposureArea.UNEXPOSED:
-        from src.config import CAFE_WHITELIST
-        result_slug = parse_search_result(html, target_url=None, cafe_slug_whitelist=CAFE_WHITELIST)
-        if result_slug.exposure_area != ExposureArea.UNEXPOSED:
-            result = result_slug
-            if result.matched_url and result.matched_url != link:
-                auto_updated_link = result.matched_url
-                print(f"  [LINK_NEW_AUTO_ADD] kw={keyword!r}: 새 글 자동 검출 = {result.matched_url}")
+    # T-M14.7 폐기 (2026-05-14): slug 매치 fallback 제거.
+    # 사장님 진짜 의도 = 시트 등록 link 정확 매치만 (D-022 옵션 A).
+    # slug 매치 = 회사 카페의 다른 직원 글 / 타사 글 오검출 위험 = 사용 불가.
 
     # T-M10.5 (2026-05-14): url_alive 검증 자체 폐기 — 비로그인 환경 한계.
     # 진짜 root cause (probe 직접 검증 2026-05-14):
