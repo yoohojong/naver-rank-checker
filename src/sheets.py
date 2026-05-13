@@ -52,6 +52,7 @@ HEADER_AREA = "노출영역"  # K — AB / 인기글 / 삭제 / 빈칸(미노출
 HEADER_L = "노출여부(통합탭 순위)"  # L — integrated_rank
 HEADER_M = "노출여부(카페구좌순위)"  # M — cafe_slot_rank
 HEADER_JISIKIN = "지식인탭"  # O — 'O' or 빈칸
+HEADER_LINK = "링크"  # T-M14.2 (D-022): link 자동 갱신용 헤더
 
 # 데이터 탭 아닌 특수 탭 — load_all_data_tabs 가 skip.
 # 사장님 시트의 "카페매핑" 등 메타 탭 제외용.
@@ -206,6 +207,7 @@ def rank_result_to_columns(
     integrated_rank: Optional[int],
     cafe_slot_rank: Optional[int],
     in_jisikin: bool,
+    new_link: Optional[str] = None,  # T-M14.2 (D-022): link 자동 갱신 시 = 갱신된 URL
 ) -> dict[str, str]:
     """RankResult → 사장님 시트 컬럼 dict 변환 (사장님 컨벤션 정합).
 
@@ -214,6 +216,9 @@ def rank_result_to_columns(
     - 노출영역: AB / 인기글 / 삭제. UNEXPOSED 는 빈 칸.
     - L/M: 숫자 또는 빈 칸
     - 지식인탭: 'O' or 빈 칸
+
+    T-M14.2 (D-022 보완):
+    - new_link 박힘 시 = "링크" 컬럼도 갱신 (시트 자동 갱신).
     """
     cols: dict[str, str] = {}
     cols[HEADER_TYPE] = block_order[0] if block_order else ""
@@ -221,6 +226,8 @@ def rank_result_to_columns(
     cols[HEADER_L] = str(integrated_rank) if integrated_rank is not None else ""
     cols[HEADER_M] = str(cafe_slot_rank) if cafe_slot_rank is not None else ""
     cols[HEADER_JISIKIN] = "O" if in_jisikin else ""
+    if new_link:
+        cols[HEADER_LINK] = new_link  # T-M14.2: 시트 "링크" 컬럼 자동 갱신
     return cols
 
 

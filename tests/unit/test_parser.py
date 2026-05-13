@@ -253,6 +253,52 @@ class TestParsePopular:
         assert result.cafe_slot_rank is None  # blog target = M None
 
 
+class TestMatchedUrl:
+    """T-M14.2 (D-022): RankResult.matched_url 필드 검증."""
+
+    _PADDING = "<div class='pad'>" + ("x" * 600) + "</div>"
+
+    def _make_ab_box(self, cafe_url: str) -> str:
+        """AB 박스 (h2 없음 + cafe link 포함) HTML 조각 생성."""
+        return (
+            f'<div class="fds-default-mode api_subject_bx">'
+            f'<a class="api_txt_lines" href="{cafe_url}">글제목</a>'
+            f'</div>'
+        )
+
+    def test_target_url_match_sets_matched_url(self):
+        """target_url 매치 성공 시 matched_url = target_url."""
+        target = "https://cafe.naver.com/pusanmommy/1111"
+        box = self._make_ab_box(target)
+        html = f"<html><body>{self._PADDING}{box}</body></html>"
+        result = parse_search_result(html, target_url=target)
+        assert result.exposure_area == ExposureArea.AB
+        assert result.matched_url == target
+
+    def test_link_set_match_sets_matched_url(self):
+        """target_url=None + link_set 매치 성공 시 matched_url = 매치된 link."""
+        matched = "https://cafe.naver.com/cosmania/2222"
+        other = "https://cafe.naver.com/pusanmommy/3333"
+        box = self._make_ab_box(matched)
+        html = f"<html><body>{self._PADDING}{box}</body></html>"
+        result = parse_search_result(html, target_url=None, link_set={matched, other})
+        assert result.exposure_area == ExposureArea.AB
+        assert result.matched_url == matched
+
+    def test_no_match_matched_url_is_none(self):
+        """target_url 매치 X + link_set 매치 X → matched_url = None."""
+        box = self._make_ab_box("https://cafe.naver.com/cosmania/9999")
+        html = f"<html><body>{self._PADDING}{box}</body></html>"
+        result = parse_search_result(html, target_url="https://cafe.naver.com/pusanmommy/0001")
+        assert result.exposure_area == ExposureArea.UNEXPOSED
+        assert result.matched_url is None
+
+    def test_default_rank_result_matched_url_is_none(self):
+        """RankResult 기본값: matched_url = None."""
+        r = RankResult()
+        assert r.matched_url is None
+
+
 class TestM33BoxClassification:
     """T-M33 (2026-05-12 D-022): 박스 분류 — h2 없음 + cafe 0 = AB/block_order skip."""
 

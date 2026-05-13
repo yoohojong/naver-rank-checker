@@ -36,6 +36,7 @@ class RankResult:
     block_order: list[str] = field(default_factory=list)
     smart_block_name: Optional[str] = None
     parser_confidence: float = 0.0
+    matched_url: Optional[str] = None  # T-M14.2: 매치된 URL. link_set 매치 시 = 매치된 link, target_url 매치 시 = target_url
 
 
 def parse_search_result(html: str, target_url: Optional[str], link_set: Optional[set[str]] = None) -> RankResult:
@@ -149,11 +150,12 @@ def _parse_ab_list(html: str, target_url: Optional[str], result: RankResult, lin
                 result.integrated_rank = idx
                 result.cafe_slot_rank = cafe_count
                 result.parser_confidence = 0.9
+                result.matched_url = url  # T-M14.2: 매치된 URL 기록
                 print(f"    [AB_MATCH] idx={idx} kind={kind} matched_url={url[:90]}")
                 return True
             continue
         if target_url is None:
-            # link_set 없으면 매치 박지 X (T-M13 정신)
+            # link_set 없으면 매치하지 않음 (T-M13 정신)
             continue
         if _urls_match(url, target_url):
             result.integrated_rank = idx
@@ -162,6 +164,7 @@ def _parse_ab_list(html: str, target_url: Optional[str], result: RankResult, lin
             elif kind == "blog":
                 result.blog_slot_rank = blog_count
             result.parser_confidence = 0.9
+            result.matched_url = target_url  # T-M14.2: target_url 매치 시 = target_url 기록
             return True
     return False
 
@@ -343,6 +346,7 @@ def _parse_popular(html: str, target_url: Optional[str], result: RankResult, lin
                     result.cafe_slot_rank = cafe_count
                     result.smart_block_name = h2_text
                     result.parser_confidence = 0.85
+                    result.matched_url = url  # T-M14.2: 매치된 URL 기록
                     print(f"    [POPULAR_MATCH] idx={idx} h2={h2_text!r} matched_url={url[:90]}")
                     return True
                 continue
@@ -354,6 +358,7 @@ def _parse_popular(html: str, target_url: Optional[str], result: RankResult, lin
                     result.cafe_slot_rank = cafe_count
                 result.smart_block_name = h2_text
                 result.parser_confidence = 0.85
+                result.matched_url = target_url  # T-M14.2: target_url 매치 시 = target_url 기록
                 return True
     return False
 

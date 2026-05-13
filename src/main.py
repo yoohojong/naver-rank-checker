@@ -25,12 +25,12 @@ from src.cache import CafeMappingCache
 from src.config import SPREADSHEET_ID, SERVICE_ACCOUNT_JSON, NAVER_SLOWDOWN_BASE_SEC, NAVER_SLOWDOWN_MAX_SEC
 from src.crawler import Crawler, SlowdownController, CafeStatus, CrawlerError, CircuitBreakerOpen, resolve_short_url
 from src.health import HealthMonitor
-from src.parser import parse_search_result
+from src.parser import parse_search_result, ExposureArea
 from src.retry import RetryQueue
 from src.sheets import (
     SheetsClient, RowUpdate,
     rank_result_to_columns,
-    HEADER_AREA, HEADER_L, HEADER_M, HEADER_JISIKIN,
+    HEADER_AREA, HEADER_L, HEADER_M, HEADER_JISIKIN, HEADER_LINK,
 )
 from src.transitions import compute_new_K
 
@@ -106,9 +106,25 @@ def _process_row(
     if "naver.me" in link:
         link = resolve_short_url(link)
 
-    # 검색 + parser
+    # 검색 + parser (1차: 시트 link 단독 매치 시도)
     html = crawler.fetch_search(keyword)
     result = parse_search_result(html, link)
+
+    # T-M14.2 (D-022 보완): 1차 매치 실패 시 시트의 다른 link 중 매치 시도 (link_set fallback)
+    # 사장님 의도: "행 A의 link A 가 미노출이어도 시트의 다른 link B 가 매치되면 → 행 A의 link 를 link B 로 자동 갱신"
+    # 갱신 시: 시트 "링크" 컬럼도 matched_url 로 자동 갱신 (D-018 룰 정합)
+    auto_updated_link: Optional[str] = None  # 자동 갱신된 link (없으면 None)
+    if result.exposure_area == ExposureArea.UNEXPOSED and all_known_links:
+        # 현재 행의 link 제외 (자기 자신 매치 방지)
+        other_links = all_known_links - {link}
+        if other_links:
+            result_fallback = parse_search_result(html, target_url=None, link_set=other_links)
+            if result_fallback.exposure_area != ExposureArea.UNEXPOSED:
+                result = result_fallback
+                # matched_url 이 원래 link 와 다를 때만 자동 갱신
+                if result.matched_url and result.matched_url != link:
+                    auto_updated_link = result.matched_url
+                    print(f"  [LINK_AUTO_UPDATE] kw={keyword!r}: {link} → {auto_updated_link}")
 
     # url_alive — link 있는 경우 검색 노출 여부 무관하게 항상 검증.
     # 2026-05-12 T-M10.1 사장님 요구: 게시글 조회 시 "삭제됐다" 뜨는 케이스 = 무조건 K=삭제.
@@ -117,17 +133,19 @@ def _process_row(
     # 변경: `if link and not search_found:` → `if link:` (D-009 정합, 사장님 정확성 우선).
     # 비용: 검색 노출 행도 url_alive 검증 추가 = 약 +15분 (cron 90 → 105분 예상).
     # 단, url_alive_cache 로 같은 link 중복 호출 방지 (T-M10.2).
+    # T-M14.2: link 자동 갱신 시 = 갱신된 link 기준으로 url_alive 검증
+    effective_link = auto_updated_link if auto_updated_link else link
     url_alive = True
     search_found = result.exposure_area.value != "미노출"
-    if link:
+    if effective_link:
         # 2026-05-13 T-M10.2: cron 1회 안에서 같은 link 중복 호출 방지 (캐시 활용)
-        if url_alive_cache is not None and link in url_alive_cache:
-            url_alive = url_alive_cache[link]
+        if url_alive_cache is not None and effective_link in url_alive_cache:
+            url_alive = url_alive_cache[effective_link]
         else:
-            status = crawler.fetch_cafe_url_status(link)
+            status = crawler.fetch_cafe_url_status(effective_link)
             url_alive = status == CafeStatus.ALIVE
             if url_alive_cache is not None:
-                url_alive_cache[link] = url_alive
+                url_alive_cache[effective_link] = url_alive
 
     # 사장님 컨벤션 K 결정
     new_K = compute_new_K(
@@ -145,12 +163,14 @@ def _process_row(
     )
 
     # 시트 컬럼 dict 변환 (사장님 컨벤션)
+    # T-M14.2: 자동 갱신된 link 있으면 시트 "링크" 컬럼도 함께 갱신
     cols = rank_result_to_columns(
         block_order=result.block_order,
         exposure_area=new_K,
         integrated_rank=result.integrated_rank if search_found else None,
         cafe_slot_rank=result.cafe_slot_rank if search_found else None,
         in_jisikin=result.in_jisikin,
+        new_link=auto_updated_link,  # T-M14.2: None 이면 링크 컬럼 갱신 X
     )
     return cols
 
