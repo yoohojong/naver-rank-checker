@@ -35,21 +35,52 @@ from src.parser import parse_search_result, _POPULAR_SKIP_PATTERNS
 from src.sheets import SheetsClient
 
 
-def detect_direct_K(html: str) -> dict:
-    """HTML 안 박스 직접 분석 = CAFE_WHITELIST 카페 글 노출 여부 + 박스 종류.
+def _normalize_url(url: str):
+    """URL 정규화 = (netloc, path) 튜플 반환 (parser._urls_match 와 동일 로직).
 
-    ground truth = parser 우회 = 진짜 박스 내 카페 글 직접 검출.
+    - m. 서브도메인 제거
+    - path 끝 슬래시 제거
+    - 파싱 실패 시 None 반환
+    """
+    if not url:
+        return None
+    try:
+        p = urlparse(url)
+    except Exception:
+        return None
+    netloc = p.netloc
+    if netloc.startswith("m."):
+        netloc = netloc[2:]
+    path = p.path.rstrip("/")
+    return (netloc, path)
+
+
+def detect_direct_K(html: str, target_link: str, all_known_links: set) -> dict:
+    """ground truth 검출 (사장님 의도 정합):
+
+    - HTML 박스 안 link 가 target_link 또는 all_known_links 안 link 중 하나와 정확 매치
+    - 매치 시 = 박스 분류 (h2 없음 = AB / h2 있음 = 인기글)
+    - 매치 X 시 = 미노출
+
+    시트 미등록 새 글(화이트리스트 slug 일치)은 ground truth에서 제외 = 사장님 의도 정합.
+
     반환값:
         K: "AB" / "인기글" / "미노출"
-        boxes_with_cafe: 카페 글 감지된 박스 정보 리스트 (디버깅용)
+        boxes_with_cafe: 시트 등록 link 매치된 박스 정보 리스트 (디버깅용)
     """
-    if not html:
+    # 매치 대상 link set 구성 (target_link + all_known_links 정규화)
+    target_norm = {_normalize_url(target_link)} if target_link else set()
+    known_norm = {_normalize_url(l) for l in all_known_links if l}
+    valid_matches = target_norm | known_norm
+    valid_matches.discard(None)
+
+    if not html or not valid_matches:
         return {"K": "미노출", "boxes_with_cafe": []}
 
     soup = BeautifulSoup(html, "lxml")
     boxes = soup.select(".desktop_mode.api_subject_bx, .fds-default-mode.api_subject_bx")
 
-    boxes_with_cafe = []
+    boxes_with_match = []
     for i, box in enumerate(boxes, 1):
         h2 = box.find("h2")
         h2_text = h2.get_text(strip=True) if h2 else None
@@ -58,48 +89,38 @@ def detect_direct_K(html: str) -> dict:
         if h2_text and any(p in h2_text for p in _POPULAR_SKIP_PATTERNS):
             continue
 
-        # 박스 안 화이트리스트 카페 글 검출
-        cafe_hits = []
+        # 박스 안 link = 시트 등록 link 정확 매치 검증 (화이트리스트 slug 매치 X)
+        matches = []
         for a in box.find_all("a", href=True):
             href = a["href"]
             if "cafe.naver.com" not in href:
                 continue
-            p = urlparse(href)
-            parts = [s for s in p.path.split("/") if s]
-            if not parts:
-                continue
-            slug = parts[0]
-            # 신형 URL: ca-fe/cafes/{cafe_id}/articles/{post_id}
-            if slug == "ca-fe":
-                if len(parts) >= 4 and parts[1] == "cafes" and parts[3] == "articles":
-                    cafe_hits.append({"slug": "ca-fe(신형)", "url": href[:100]})
-                continue
-            # 구형 URL: {slug}/{post_id}
-            if slug in CAFE_WHITELIST:
-                cafe_hits.append({"slug": slug, "url": href[:100]})
+            href_norm = _normalize_url(href)
+            if href_norm and href_norm in valid_matches:
+                matches.append(href[:100])
 
-        if cafe_hits:
+        if matches:
             box_kind = "no_h2" if h2 is None else "h2_box"
-            boxes_with_cafe.append({
+            boxes_with_match.append({
                 "idx": i,
                 "h2": h2_text,
                 "kind": box_kind,
-                "cafe_hits": len(cafe_hits),
+                "matches": len(matches),
             })
 
-    if not boxes_with_cafe:
+    if not boxes_with_match:
         return {"K": "미노출", "boxes_with_cafe": []}
 
-    # 첫 번째 카페 글 발견 박스 기준으로 K 추정
-    first_box = boxes_with_cafe[0]
+    # 첫 번째 매치 박스 기준으로 K 분류
+    first_box = boxes_with_match[0]
     if first_box["kind"] == "no_h2":
-        # h2 없음 + 카페 글 있음 = AB
+        # h2 없음 + 시트 등록 link 매치 = AB
         K = "AB"
     else:
-        # h2 있음 + skip 패턴 아님 = 인기글
+        # h2 있음 + skip 패턴 아님 + 시트 등록 link 매치 = 인기글
         K = "인기글"
 
-    return {"K": K, "boxes_with_cafe": boxes_with_cafe}
+    return {"K": K, "boxes_with_cafe": boxes_with_match}
 
 
 def main() -> Optional[int]:
@@ -184,8 +205,8 @@ def main() -> Optional[int]:
         # T-M14.7 폐기 (2026-05-14): slug 매치 fallback 제거 (사장님 의도 = 시트 등록 link 정확 매치만).
         parser_K = parser_result.exposure_area.value
 
-        # direct 검출 (ground truth)
-        direct = detect_direct_K(html)
+        # direct 검출 (ground truth) — 시트 등록 link 정확 매치만 (사장님 의도 정합)
+        direct = detect_direct_K(html, target_link=link, all_known_links=all_known_links)
         direct_K = direct["K"]
 
         match = (parser_K == direct_K)
