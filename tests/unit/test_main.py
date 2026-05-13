@@ -81,23 +81,30 @@ class TestCafeWhitelistFilter:
 
 
 class TestUrlAliveCache:
-    """T-M10.2 (2026-05-13): url_alive_cache 중복 호출 방지 검증."""
+    """T-M10.5 (2026-05-14): url_alive 검증 폐기 — 비로그인 환경 한계 확인.
+
+    url_alive_cache 파라미터는 _process_row 시그니처에 유지되나
+    fetch_cafe_url_status 호출 자체가 폐기되어 캐시 동작 테스트는 무의미.
+    대신 url_alive_cache 전달 여부와 무관하게 결과가 동일함을 검증.
+    """
 
     def _make_row(self, keyword: str, link: str) -> dict:
         """테스트용 행 dict 생성."""
         return {"키워드": keyword, "링크": link, "유형": "", "_row": 2}
 
-    def test_same_link_fetched_only_once_with_cache(self):
-        """같은 link 2회 _process_row 호출 시 fetch_cafe_url_status 1회만 호출 확인."""
+    def test_url_alive_cache_param_has_no_effect_on_result(self):
+        """T-M10.5: url_alive_cache 전달 여부 무관 = 동일 결과 반환 (fetch_cafe_url_status 폐기).
+        검색 미노출 → K="" (url 상태 무관).
+        """
         from src.main import _process_row
         from src.health import HealthMonitor
+        from src.sheets import HEADER_AREA
 
         crawler = MagicMock()
         health = HealthMonitor()
         url_alive_cache: dict = {}
         link = "https://cafe.naver.com/cosmania/12345"
 
-        # 검색 결과 = 미노출 (url_alive 검증 진행되도록)
         mock_result = MagicMock()
         mock_result.exposure_area.value = "미노출"
         mock_result.parser_confidence = 1.0
@@ -107,19 +114,19 @@ class TestUrlAliveCache:
         mock_result.in_jisikin = False
 
         crawler.fetch_search.return_value = "<html>검색결과</html>"
-        crawler.fetch_cafe_url_status.return_value = CafeStatus.ALIVE
 
         with patch("src.main.parse_search_result", return_value=mock_result):
             row = self._make_row("샴푸", link)
-            _process_row(row, crawler, health, url_alive_cache=url_alive_cache)
-            # 두 번째 호출 — 캐시 적중해야 함
-            _process_row(row, crawler, health, url_alive_cache=url_alive_cache)
+            cols_with_cache = _process_row(row, crawler, health, url_alive_cache=url_alive_cache)
+            cols_no_cache = _process_row(row, crawler, health, url_alive_cache=None)
 
-        # fetch_cafe_url_status 는 캐시로 인해 1회만 호출되어야 함
-        assert crawler.fetch_cafe_url_status.call_count == 1
+        # url_alive 폐기 = fetch_cafe_url_status 호출 X
+        crawler.fetch_cafe_url_status.assert_not_called()
+        # 캐시 여부 무관 = 동일 결과
+        assert cols_with_cache[HEADER_AREA] == cols_no_cache[HEADER_AREA] == ""
 
-    def test_cache_stores_result_correctly(self):
-        """캐시에 fetch_cafe_url_status 결과가 올바르게 저장되는지 확인."""
+    def test_url_alive_cache_not_populated(self):
+        """T-M10.5: fetch_cafe_url_status 폐기 = url_alive_cache 에 아무것도 저장 X."""
         from src.main import _process_row
         from src.health import HealthMonitor
 
@@ -137,17 +144,16 @@ class TestUrlAliveCache:
         mock_result.in_jisikin = False
 
         crawler.fetch_search.return_value = "<html>검색결과</html>"
-        crawler.fetch_cafe_url_status.return_value = CafeStatus.ALIVE
 
         with patch("src.main.parse_search_result", return_value=mock_result):
             _process_row(self._make_row("샴푸", link), crawler, health, url_alive_cache=url_alive_cache)
 
-        # 캐시에 결과 저장 확인
-        assert link in url_alive_cache
-        assert url_alive_cache[link] is True  # ALIVE → True
+        # url_alive 폐기 = 캐시 비어있음
+        assert len(url_alive_cache) == 0
+        crawler.fetch_cafe_url_status.assert_not_called()
 
-    def test_no_cache_calls_fetch_each_time(self):
-        """url_alive_cache=None 시 매 호출마다 fetch_cafe_url_status 호출 확인."""
+    def test_multiple_calls_fetch_status_never_called(self):
+        """T-M10.5: 동일 link 여러 번 _process_row 호출해도 fetch_cafe_url_status 호출 X."""
         from src.main import _process_row
         from src.health import HealthMonitor
 
@@ -164,23 +170,24 @@ class TestUrlAliveCache:
         mock_result.in_jisikin = False
 
         crawler.fetch_search.return_value = "<html>검색결과</html>"
-        crawler.fetch_cafe_url_status.return_value = CafeStatus.ALIVE
 
         with patch("src.main.parse_search_result", return_value=mock_result):
             row = self._make_row("샴푸", link)
             _process_row(row, crawler, health, url_alive_cache=None)
             _process_row(row, crawler, health, url_alive_cache=None)
 
-        # 캐시 없음 = 2회 모두 호출
-        assert crawler.fetch_cafe_url_status.call_count == 2
+        # url_alive 폐기 = 캐시 없어도 fetch_cafe_url_status 호출 X
+        crawler.fetch_cafe_url_status.assert_not_called()
 
 
 class TestUrlAliveOnExposedRows:
-    """T-M10.4 (2026-05-13): 검색 노출 행도 url_alive 검증 적용 확인.
+    """T-M10.5 (2026-05-14): url_alive 검증 폐기 — 비로그인 환경 한계.
 
-    수정 전: `if link and not search_found:` → 검색 노출 행 url_alive 검증 X.
-    수정 후: `if link:` → 검색 노출 + 비공개/삭제 케이스도 K="삭제" 정합.
-    예: pusanmommy/1463516 = 검색 노출 + HTTP 200 + "nidlogin.login" (비공개) → K="삭제" 필요.
+    원래 T-M10.4: 검색 노출 행도 fetch_cafe_url_status 호출해 비공개 판정.
+    T-M10.5 폐기 사유: 네이버 카페 비로그인 접근 = 로그인 페이지 HTML 반환 =
+    nidlogin.login 키워드로 정상 ALIVE 글도 PRIVATE 잘못 판정 → K="삭제" 시트 손상.
+    = 비로그인 환경에서 url_alive 검증 자체 무효 = 폐기.
+    검색 노출/미노출 결과만으로 K 결정. 진짜 삭제 = 다음 cron 자연 미노출.
     """
 
     def _make_row(self, keyword: str, link: str, prev_K: str = "") -> dict:
@@ -209,10 +216,11 @@ class TestUrlAliveOnExposedRows:
         mock_result.in_jisikin = False
         return mock_result
 
-    def test_search_exposed_link_private_returns_deleted(self):
-        """검색 노출 + link 비공개 (PRIVATE) → K="삭제" (T-M10.4 핵심 케이스).
+    def test_search_exposed_link_private_returns_AB(self):
+        """T-M10.5: 검색 노출 + url 비공개 (PRIVATE) → K="AB" (url_alive 검증 폐기).
 
-        pusanmommy/1463516 실측 케이스 재현: 검색 결과에 노출 + 실제 URL은 비공개.
+        원래 T-M10.4: K="삭제" 기대.
+        폐기 후: fetch_cafe_url_status 호출 X = url 상태 무관 = K=AB (검색 노출 결과 우선).
         """
         from src.main import _process_row
         from src.health import HealthMonitor
@@ -223,19 +231,20 @@ class TestUrlAliveOnExposedRows:
         link = "https://cafe.naver.com/pusanmommy/1463516"
 
         crawler.fetch_search.return_value = "<html>검색결과</html>"
-        crawler.fetch_cafe_url_status.return_value = CafeStatus.PRIVATE  # 비공개
+        # fetch_cafe_url_status 반환값 설정해도 _process_row 에서 호출 X
+        crawler.fetch_cafe_url_status.return_value = CafeStatus.PRIVATE
 
         with patch("src.main.parse_search_result", return_value=self._mock_exposed_result("AB")):
             row = self._make_row("부산맘", link)
             cols = _process_row(row, crawler, health)
 
-        # 검색 노출이어도 URL 비공개 → K="삭제"
-        assert cols[HEADER_AREA] == "삭제"
-        # url_alive 검증 호출됨 (수정 전에는 호출 안 됨)
-        crawler.fetch_cafe_url_status.assert_called_once_with(link)
+        # url_alive 폐기 = 검색 노출 → K=AB (url 비공개여도 삭제 X)
+        assert cols[HEADER_AREA] == "AB"
+        # fetch_cafe_url_status 호출 X
+        crawler.fetch_cafe_url_status.assert_not_called()
 
     def test_search_exposed_link_alive_returns_AB(self):
-        """검색 노출 + link 정상 (ALIVE) → K=AB (기존 정합 유지)."""
+        """검색 노출 + link 정상 (ALIVE) → K=AB (정합 유지)."""
         from src.main import _process_row
         from src.health import HealthMonitor
         from src.sheets import HEADER_AREA
@@ -254,7 +263,7 @@ class TestUrlAliveOnExposedRows:
         assert cols[HEADER_AREA] == "AB"
 
     def test_search_unexposed_link_alive_returns_empty(self):
-        """검색 미노출 + link 정상 (ALIVE) → K="" (기존 정합 유지)."""
+        """검색 미노출 + link 정상 (ALIVE) → K="" (정합 유지)."""
         from src.main import _process_row
         from src.health import HealthMonitor
         from src.sheets import HEADER_AREA
@@ -272,8 +281,13 @@ class TestUrlAliveOnExposedRows:
 
         assert cols[HEADER_AREA] == ""
 
-    def test_search_unexposed_link_private_returns_deleted(self):
-        """검색 미노출 + link 비공개 → K="삭제" (기존 정합 유지)."""
+    def test_search_unexposed_link_private_returns_empty(self):
+        """T-M10.5: 검색 미노출 + url 비공개 → K="" (url_alive 검증 폐기).
+
+        원래: K="삭제" 기대.
+        폐기 후: fetch_cafe_url_status 호출 X = url 상태 무관 = K="" (검색 미노출).
+        진짜 삭제 = 다음 cron 박스 매치 X = 자연 미노출 표시.
+        """
         from src.main import _process_row
         from src.health import HealthMonitor
         from src.sheets import HEADER_AREA
@@ -289,10 +303,12 @@ class TestUrlAliveOnExposedRows:
             row = self._make_row("부산맘", link, prev_K="")
             cols = _process_row(row, crawler, health)
 
-        assert cols[HEADER_AREA] == "삭제"
+        # url_alive 폐기 = 검색 미노출 → K="" (삭제 판정 X)
+        assert cols[HEADER_AREA] == ""
+        crawler.fetch_cafe_url_status.assert_not_called()
 
     def test_search_exposed_no_link_returns_AB_without_status_check(self):
-        """검색 노출 + link 빈칸 → K=AB, url_alive 검증 X (link 없음)."""
+        """검색 노출 + link 빈칸 → K=AB, fetch_cafe_url_status 호출 X (link 없음 + 폐기)."""
         from src.main import _process_row
         from src.health import HealthMonitor
         from src.sheets import HEADER_AREA
@@ -306,11 +322,15 @@ class TestUrlAliveOnExposedRows:
             row = self._make_row("샴푸", "")  # link 빈칸
             cols = _process_row(row, crawler, health, all_known_links={"https://cafe.naver.com/cosmania/9"})
 
-        # link 없음 = url_alive 검증 X
+        # link 없음 + url_alive 폐기 = fetch_cafe_url_status 호출 X
         crawler.fetch_cafe_url_status.assert_not_called()
 
-    def test_exposed_row_fetch_called_once_with_cache(self):
-        """검색 노출 행 동일 link 2회 처리 시 fetch_cafe_url_status 1회만 호출 (캐시 동작)."""
+    def test_exposed_row_fetch_status_never_called_with_cache(self):
+        """T-M10.5: 검색 노출 행 동일 link 2회 처리 — fetch_cafe_url_status 호출 X (폐기).
+
+        원래 T-M10.4: 캐시로 1회만 호출 검증.
+        폐기 후: 캐시 여부 무관 = fetch_cafe_url_status 호출 자체 X.
+        """
         from src.main import _process_row
         from src.health import HealthMonitor
 
@@ -327,8 +347,8 @@ class TestUrlAliveOnExposedRows:
             _process_row(row, crawler, health, url_alive_cache=url_alive_cache)
             _process_row(row, crawler, health, url_alive_cache=url_alive_cache)
 
-        # 검색 노출 행도 캐시 동작 → 1회만 호출
-        assert crawler.fetch_cafe_url_status.call_count == 1
+        # url_alive 폐기 = 2회 호출해도 fetch_cafe_url_status 호출 X
+        crawler.fetch_cafe_url_status.assert_not_called()
 
 
 class TestLinkAutoUpdate:

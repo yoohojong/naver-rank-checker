@@ -138,26 +138,16 @@ def _process_row(
                 auto_updated_link = result.matched_url
                 print(f"  [LINK_NEW_AUTO_ADD] kw={keyword!r}: 새 글 자동 검출 = {result.matched_url}")
 
-    # url_alive — link 있는 경우 검색 노출 여부 무관하게 항상 검증.
-    # 2026-05-12 T-M10.1 사장님 요구: 게시글 조회 시 "삭제됐다" 뜨는 케이스 = 무조건 K=삭제.
-    # 2026-05-13 T-M10.4 수정: 검색 노출 중 (search_found=True) 이어도 link 비공개/삭제 케이스 존재.
-    # 예: pusanmommy/1463516 = 검색 노출 + HTTP 200 + "nidlogin.login" (비공개) → 사장님 시점 K=삭제 필요.
-    # 변경: `if link and not search_found:` → `if link:` (D-009 정합, 사장님 정확성 우선).
-    # 비용: 검색 노출 행도 url_alive 검증 추가 = 약 +15분 (cron 90 → 105분 예상).
-    # 단, url_alive_cache 로 같은 link 중복 호출 방지 (T-M10.2).
-    # T-M14.2: link 자동 갱신 시 = 갱신된 link 기준으로 url_alive 검증
-    effective_link = auto_updated_link if auto_updated_link else link
-    url_alive = True
+    # T-M10.5 (2026-05-14): url_alive 검증 자체 폐기 — 비로그인 환경 한계.
+    # 진짜 root cause (probe 직접 검증 2026-05-14):
+    # - 네이버 카페 = 비로그인 사용자 접근 시 = "로그인 페이지" HTML 반환
+    # - 정상 ALIVE 글 (예: pusanmommy/1450312) 도 = nidlogin.login 키워드 검출 = PRIVATE 잘못 판정
+    # - = 모든 link false positive 100% = K="삭제" 시트 손상
+    # = url_alive 검증 의무 무효 = 폐기.
+    # 시트 미노출 = K="" 단순 표시 = 사장님 직접 link 확인 의무.
+    # 진짜 삭제 link = 다음 cron 박스 매치 X = 자연 미노출 표시 = 사장님 인지 가능.
+    url_alive = True  # 항상 True = 검증 자체 무력화
     search_found = result.exposure_area.value != "미노출"
-    if effective_link:
-        # 2026-05-13 T-M10.2: cron 1회 안에서 같은 link 중복 호출 방지 (캐시 활용)
-        if url_alive_cache is not None and effective_link in url_alive_cache:
-            url_alive = url_alive_cache[effective_link]
-        else:
-            status = crawler.fetch_cafe_url_status(effective_link)
-            url_alive = status == CafeStatus.ALIVE
-            if url_alive_cache is not None:
-                url_alive_cache[effective_link] = url_alive
 
     # 사장님 컨벤션 K 결정
     new_K = compute_new_K(

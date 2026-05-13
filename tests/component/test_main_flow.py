@@ -112,22 +112,30 @@ class TestProcessRow:
             "_row": 5,
         }
         cols = _process_row(row, crawler, h)
-        # 검색 결과에 없음 + 이전 노출이라 url_alive 체크 → ALIVE 라 "삭제"
+        # 검색 미노출 + 이전 노출 (인기글) → transitions.compute_new_K → "삭제"
+        # T-M10.5: url_alive 검증 폐기. url_alive=True 고정 → prev_K=인기글 + search_found=False → "삭제" 정합.
         assert cols[HEADER_AREA] == "삭제"
 
-    def test_url_dead_returns_삭제(self, load_fixture):
-        """url 죽음 (404 / 비공개) → '삭제'."""
+    def test_url_dead_first_run_search_unexposed_returns_empty(self, load_fixture):
+        """T-M10.5 (2026-05-14): url_alive 검증 폐기 — 비로그인 환경 한계.
+        첫 추적 (prev_K='') + url DELETED + 검색 미노출 → K="" (url 상태 무관).
+        기존 동작: url DELETED → K="삭제". 폐기 후: 검색 미노출만 반영 = K="".
+        fetch_cafe_url_status 호출 X.
+        """
         html = load_fixture("naver/no_match.html")
+        # url_status 는 이제 _process_row 에서 호출 X — CafeStatus.DELETED 전달해도 무의미
         crawler = self._make_crawler(html_to_return=html, url_status=CafeStatus.DELETED)
         h = HealthMonitor()
         row = {
             "키워드": "ㅁㄴㅇㄻㄴㅇㄻㄴㅇㄹ",
             "링크": "https://cafe.naver.com/anywhere/999",
-            HEADER_AREA: "AB",  # 이전 노출
+            HEADER_AREA: "",  # 첫 추적 — prev_K 없음
             "_row": 5,
         }
         cols = _process_row(row, crawler, h)
-        assert cols[HEADER_AREA] == "삭제"
+        # url_alive 폐기 = 검색 미노출 + 첫 추적 → K="" (삭제 판정 X)
+        assert cols[HEADER_AREA] == ""
+        crawler.fetch_cafe_url_status.assert_not_called()
 
     def test_first_run_unexposed(self, load_fixture):
         """첫 추적 (prev_K = '') + 검색 0 + url 살아있음 → 빈 칸 유지."""
@@ -143,11 +151,14 @@ class TestProcessRow:
         cols = _process_row(row, crawler, h)
         assert cols[HEADER_AREA] == ""  # 미노출 + url 살아있음 = 빈 칸
 
-    def test_first_run_url_dead_returns_삭제(self, load_fixture):
-        """2026-05-12 T-M10.1: 첫 추적 (prev_K='') + 검색 0 + url 죽음 → '삭제'.
-        사장님 요구: 게시글 조회 시 "삭제됐다" 뜨는 거 = K=삭제. prev_K 조건 무관.
+    def test_first_run_url_dead_search_unexposed_returns_empty(self, load_fixture):
+        """T-M10.5 (2026-05-14): url_alive 검증 폐기 — 비로그인 환경 한계.
+        첫 추적 (prev_K='') + 검색 미노출 → K="" (url 상태 무관).
+        진짜 삭제 = 다음 cron 박스 매치 X = 자연 미노출 표시.
+        fetch_cafe_url_status 호출 X (폐기).
         """
         html = load_fixture("naver/no_match.html")
+        # url_status 는 이제 _process_row 에서 호출 X — CafeStatus.DELETED 전달해도 무의미
         crawler = self._make_crawler(html_to_return=html, url_status=CafeStatus.DELETED)
         h = HealthMonitor()
         row = {
@@ -157,8 +168,10 @@ class TestProcessRow:
             "_row": 7,
         }
         cols = _process_row(row, crawler, h)
-        assert cols[HEADER_AREA] == "삭제"
-        crawler.fetch_cafe_url_status.assert_called_once()  # url alive 검증 박힘 ✅
+        # url_alive 폐기 = 검색 미노출 → K="" (삭제 판정 X)
+        assert cols[HEADER_AREA] == ""
+        # fetch_cafe_url_status 호출 X (폐기)
+        crawler.fetch_cafe_url_status.assert_not_called()
 
     def test_crawler_error_propagates(self):
         """차단 에러는 raise 되어 retry queue 로 흘러감."""
