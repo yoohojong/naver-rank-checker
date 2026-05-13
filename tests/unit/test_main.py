@@ -173,3 +173,159 @@ class TestUrlAliveCache:
 
         # 캐시 없음 = 2회 모두 호출
         assert crawler.fetch_cafe_url_status.call_count == 2
+
+
+class TestUrlAliveOnExposedRows:
+    """T-M10.4 (2026-05-13): 검색 노출 행도 url_alive 검증 적용 확인.
+
+    수정 전: `if link and not search_found:` → 검색 노출 행 url_alive 검증 X.
+    수정 후: `if link:` → 검색 노출 + 비공개/삭제 케이스도 K="삭제" 정합.
+    예: pusanmommy/1463516 = 검색 노출 + HTTP 200 + "nidlogin.login" (비공개) → K="삭제" 필요.
+    """
+
+    def _make_row(self, keyword: str, link: str, prev_K: str = "") -> dict:
+        """테스트용 행 dict 생성."""
+        return {"키워드": keyword, "링크": link, "유형": prev_K, "_row": 2}
+
+    def _mock_exposed_result(self, area: str = "AB"):
+        """검색 노출 결과 mock 생성."""
+        mock_result = MagicMock()
+        mock_result.exposure_area.value = area
+        mock_result.parser_confidence = 1.0
+        mock_result.block_order = []
+        mock_result.integrated_rank = 3
+        mock_result.cafe_slot_rank = 1
+        mock_result.in_jisikin = False
+        return mock_result
+
+    def _mock_unexposed_result(self):
+        """검색 미노출 결과 mock 생성."""
+        mock_result = MagicMock()
+        mock_result.exposure_area.value = "미노출"
+        mock_result.parser_confidence = 1.0
+        mock_result.block_order = []
+        mock_result.integrated_rank = None
+        mock_result.cafe_slot_rank = None
+        mock_result.in_jisikin = False
+        return mock_result
+
+    def test_search_exposed_link_private_returns_deleted(self):
+        """검색 노출 + link 비공개 (PRIVATE) → K="삭제" (T-M10.4 핵심 케이스).
+
+        pusanmommy/1463516 실측 케이스 재현: 검색 결과에 노출 + 실제 URL은 비공개.
+        """
+        from src.main import _process_row
+        from src.health import HealthMonitor
+        from src.sheets import HEADER_AREA
+
+        crawler = MagicMock()
+        health = HealthMonitor()
+        link = "https://cafe.naver.com/pusanmommy/1463516"
+
+        crawler.fetch_search.return_value = "<html>검색결과</html>"
+        crawler.fetch_cafe_url_status.return_value = CafeStatus.PRIVATE  # 비공개
+
+        with patch("src.main.parse_search_result", return_value=self._mock_exposed_result("AB")):
+            row = self._make_row("부산맘", link)
+            cols = _process_row(row, crawler, health)
+
+        # 검색 노출이어도 URL 비공개 → K="삭제"
+        assert cols[HEADER_AREA] == "삭제"
+        # url_alive 검증 호출됨 (수정 전에는 호출 안 됨)
+        crawler.fetch_cafe_url_status.assert_called_once_with(link)
+
+    def test_search_exposed_link_alive_returns_AB(self):
+        """검색 노출 + link 정상 (ALIVE) → K=AB (기존 정합 유지)."""
+        from src.main import _process_row
+        from src.health import HealthMonitor
+        from src.sheets import HEADER_AREA
+
+        crawler = MagicMock()
+        health = HealthMonitor()
+        link = "https://cafe.naver.com/cosmania/12345"
+
+        crawler.fetch_search.return_value = "<html>검색결과</html>"
+        crawler.fetch_cafe_url_status.return_value = CafeStatus.ALIVE
+
+        with patch("src.main.parse_search_result", return_value=self._mock_exposed_result("AB")):
+            row = self._make_row("샴푸", link)
+            cols = _process_row(row, crawler, health)
+
+        assert cols[HEADER_AREA] == "AB"
+
+    def test_search_unexposed_link_alive_returns_empty(self):
+        """검색 미노출 + link 정상 (ALIVE) → K="" (기존 정합 유지)."""
+        from src.main import _process_row
+        from src.health import HealthMonitor
+        from src.sheets import HEADER_AREA
+
+        crawler = MagicMock()
+        health = HealthMonitor()
+        link = "https://cafe.naver.com/cosmania/55555"
+
+        crawler.fetch_search.return_value = "<html>검색결과</html>"
+        crawler.fetch_cafe_url_status.return_value = CafeStatus.ALIVE
+
+        with patch("src.main.parse_search_result", return_value=self._mock_unexposed_result()):
+            row = self._make_row("샴푸", link, prev_K="")
+            cols = _process_row(row, crawler, health)
+
+        assert cols[HEADER_AREA] == ""
+
+    def test_search_unexposed_link_private_returns_deleted(self):
+        """검색 미노출 + link 비공개 → K="삭제" (기존 정합 유지)."""
+        from src.main import _process_row
+        from src.health import HealthMonitor
+        from src.sheets import HEADER_AREA
+
+        crawler = MagicMock()
+        health = HealthMonitor()
+        link = "https://cafe.naver.com/pusanmommy/1459022"
+
+        crawler.fetch_search.return_value = "<html>검색결과</html>"
+        crawler.fetch_cafe_url_status.return_value = CafeStatus.PRIVATE
+
+        with patch("src.main.parse_search_result", return_value=self._mock_unexposed_result()):
+            row = self._make_row("부산맘", link, prev_K="")
+            cols = _process_row(row, crawler, health)
+
+        assert cols[HEADER_AREA] == "삭제"
+
+    def test_search_exposed_no_link_returns_AB_without_status_check(self):
+        """검색 노출 + link 빈칸 → K=AB, url_alive 검증 X (link 없음)."""
+        from src.main import _process_row
+        from src.health import HealthMonitor
+        from src.sheets import HEADER_AREA
+
+        crawler = MagicMock()
+        health = HealthMonitor()
+
+        crawler.fetch_search.return_value = "<html>검색결과</html>"
+
+        with patch("src.main.parse_search_result", return_value=self._mock_exposed_result("AB")):
+            row = self._make_row("샴푸", "")  # link 빈칸
+            cols = _process_row(row, crawler, health, all_known_links={"https://cafe.naver.com/cosmania/9"})
+
+        # link 없음 = url_alive 검증 X
+        crawler.fetch_cafe_url_status.assert_not_called()
+
+    def test_exposed_row_fetch_called_once_with_cache(self):
+        """검색 노출 행 동일 link 2회 처리 시 fetch_cafe_url_status 1회만 호출 (캐시 동작)."""
+        from src.main import _process_row
+        from src.health import HealthMonitor
+
+        crawler = MagicMock()
+        health = HealthMonitor()
+        url_alive_cache: dict = {}
+        link = "https://cafe.naver.com/cosmania/77777"
+
+        crawler.fetch_search.return_value = "<html>검색결과</html>"
+        crawler.fetch_cafe_url_status.return_value = CafeStatus.ALIVE
+
+        with patch("src.main.parse_search_result", return_value=self._mock_exposed_result("AB")):
+            row = self._make_row("샴푸", link)
+            _process_row(row, crawler, health, url_alive_cache=url_alive_cache)
+            _process_row(row, crawler, health, url_alive_cache=url_alive_cache)
+
+        # 검색 노출 행도 캐시 동작 → 1회만 호출
+        assert crawler.fetch_cafe_url_status.call_count == 1

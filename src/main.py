@@ -110,14 +110,16 @@ def _process_row(
     html = crawler.fetch_search(keyword)
     result = parse_search_result(html, link)
 
-    # url_alive — link 있는 경우만 (link 없으면 살아있는지 검증 의미 X).
+    # url_alive — link 있는 경우 검색 노출 여부 무관하게 항상 검증.
     # 2026-05-12 T-M10.1 사장님 요구: 게시글 조회 시 "삭제됐다" 뜨는 케이스 = 무조건 K=삭제.
-    # 이전: prev_K in {AB, 인기글} 조건 박혀서 첫 추적 (prev_K="") row 의 죽은 URL 못 잡음.
-    # 변경: link 있음 + 검색 미노출 = 무조건 url alive 검증. compute_new_K(url_alive=False) → K="삭제".
-    # 비용: HTTP 호출 832 × ~60% = ~500 추가. cron 시간 33분 → 50~75분 추정.
+    # 2026-05-13 T-M10.4 수정: 검색 노출 중 (search_found=True) 이어도 link 비공개/삭제 케이스 존재.
+    # 예: pusanmommy/1463516 = 검색 노출 + HTTP 200 + "nidlogin.login" (비공개) → 사장님 시점 K=삭제 필요.
+    # 변경: `if link and not search_found:` → `if link:` (D-009 정합, 사장님 정확성 우선).
+    # 비용: 검색 노출 행도 url_alive 검증 추가 = 약 +15분 (cron 90 → 105분 예상).
+    # 단, url_alive_cache 로 같은 link 중복 호출 방지 (T-M10.2).
     url_alive = True
     search_found = result.exposure_area.value != "미노출"
-    if link and not search_found:
+    if link:
         # 2026-05-13 T-M10.2: cron 1회 안에서 같은 link 중복 호출 방지 (캐시 활용)
         if url_alive_cache is not None and link in url_alive_cache:
             url_alive = url_alive_cache[link]
