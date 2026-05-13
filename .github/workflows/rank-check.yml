@@ -5,9 +5,11 @@ name: naver-rank-check
 
 on:
   schedule:
-    # 매일 KST 00:00, 06:00, 12:00, 18:00 (UTC 기준 15/21/03/09)
-    - cron: '0 15,21,3,9 * * *'
-  workflow_dispatch:  # 사장님 수동 트리거 (Actions 탭 "Run workflow")
+    # 2026-05-14 분 jitter 적용 (T-M40.1): 정시 0분 = GitHub Actions queue 폭증 = 평균 140분 지연 발견.
+    # 17분 = 정시 회피 = 부분 완화. 진짜 해결 = cron-job.org + workflow_dispatch API (사장님 설정 의무).
+    # 매일 KST 00:17, 06:17, 12:17, 18:17 (UTC 기준 15:17/21:17/03:17/09:17)
+    - cron: '17 15,21,3,9 * * *'
+  workflow_dispatch:  # 사장님 수동 트리거 + 외부 cron-job.org API 호출용
 
 # critic 2026-05-08 Critical 2: cron overlap 방지.
 concurrency:
