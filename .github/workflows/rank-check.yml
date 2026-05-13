@@ -5,10 +5,10 @@ name: naver-rank-check
 
 on:
   schedule:
-    # 2026-05-14 분 jitter 적용 (T-M40.1): 정시 0분 = GitHub Actions queue 폭증 = 평균 140분 지연 발견.
-    # 17분 = 정시 회피 = 부분 완화. 진짜 해결 = cron-job.org + workflow_dispatch API (사장님 설정 의무).
-    # 매일 KST 00:17, 06:17, 12:17, 18:17 (UTC 기준 15:17/21:17/03:17/09:17)
-    - cron: '17 15,21,3,9 * * *'
+    # 2026-05-14 T-M40.2 빈도 증가: concurrency group = 중복 진행 자동 차단 (안전).
+    # 1차 시도 (07/27분) 큐 지연 시 = 2차 시도 자동 진행 = 둘 중 하나는 정상 시간 진행.
+    # 매일 KST 00:07/00:27, 06:07/06:27, 12:07/12:27, 18:07/18:27 (4시간 안 2번 시도)
+    - cron: '7,27 15,21,3,9 * * *'
   workflow_dispatch:  # 사장님 수동 트리거 + 외부 cron-job.org API 호출용
 
 # critic 2026-05-08 Critical 2: cron overlap 방지.
