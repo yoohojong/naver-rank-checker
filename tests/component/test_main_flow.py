@@ -34,47 +34,20 @@ class TestProcessRow:
         c.fetch_cafe_url_status = MagicMock(return_value=url_status)
         return c
 
-    def test_link_empty_no_link_set_returns_empty(self):
-        """T-M14: link 빈 + link_set 없으면 = 검색 X + K/L/M 빈칸 박음 (테스트 시 또는 초기 상태)."""
+    def test_link_empty_returns_empty_no_search(self):
+        """T-M14 폐기 (2026-05-14): link 빈 행 = 사장님 미작업 = 검색 X + K/L/M 빈칸.
+        all_known_links 전달 여부 무관하게 동일 결과 (link_set fallback 폐기).
+        """
         crawler = self._make_crawler()
         h = HealthMonitor()
         row = {"키워드": "test", "링크": "", "_row": 5}
-        result = _process_row(row, crawler, h, all_known_links=set())
+        # all_known_links 전달해도 검색 X + 빈칸 반환
+        result = _process_row(row, crawler, h, all_known_links={"https://cafe.naver.com/pusanmommy/1445556"})
         crawler.fetch_search.assert_not_called()
         assert result is not None
         assert result[HEADER_AREA] == ""
         assert result[HEADER_L] == ""
         assert result[HEADER_M] == ""
-
-    def test_link_empty_with_link_set_match_returns_rank(self, load_fixture):
-        """T-M14 (2026-05-12): link 빈 row + link_set 매치 = 그 link 의 순위 박음.
-        사장님 의도: 다른 row 의 카페글이 이 키워드 검색에도 노출 박혔으면 추적.
-        """
-        html = load_fixture("naver/ab_cafe_top.html")
-        crawler = self._make_crawler(html_to_return=html)
-        h = HealthMonitor()
-        # 시트의 다른 row 의 link (fixture 의 1등 link)
-        link_set = {"https://cafe.naver.com/pusanmommy/1445556"}
-        row = {"키워드": "등드름해초필링", "링크": "", "_row": 5}
-        result = _process_row(row, crawler, h, all_known_links=link_set)
-        crawler.fetch_search.assert_called_once()  # 검색 박힘 ✅
-        assert result is not None
-        assert result[HEADER_AREA] == "AB"  # 매치 link 가 AB 박스에 박힘
-        assert result[HEADER_L] == "1"  # 1등
-        assert result[HEADER_M] == "1"  # 카페 중 1등
-
-    def test_link_empty_with_link_set_no_match_returns_empty(self, load_fixture):
-        """T-M14: link 빈 row + link_set 박힘 but 매치 X → 미노출 (K/L/M 빈칸)."""
-        html = load_fixture("naver/ab_cafe_top.html")
-        crawler = self._make_crawler(html_to_return=html)
-        h = HealthMonitor()
-        # 시트 link 박혀있는데 검색 결과에 매치 X
-        link_set = {"https://cafe.naver.com/nonexistent/9999999"}
-        row = {"키워드": "등드름해초필링", "링크": "", "_row": 5}
-        result = _process_row(row, crawler, h, all_known_links=link_set)
-        crawler.fetch_search.assert_called_once()  # 검색 박힘
-        assert result is not None
-        assert result[HEADER_AREA] == ""  # 매치 X = 미노출 = 빈칸
 
     def test_skips_row_with_empty_keyword(self):
         crawler = self._make_crawler()

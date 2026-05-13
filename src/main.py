@@ -21,16 +21,15 @@ import time
 from collections import Counter
 from typing import Optional
 
-from src.cache import CafeMappingCache
 from src.config import SPREADSHEET_ID, SERVICE_ACCOUNT_JSON, NAVER_SLOWDOWN_BASE_SEC, NAVER_SLOWDOWN_MAX_SEC
-from src.crawler import Crawler, SlowdownController, CafeStatus, CrawlerError, CircuitBreakerOpen, resolve_short_url
+from src.crawler import Crawler, SlowdownController, CrawlerError, CircuitBreakerOpen, resolve_short_url
 from src.health import HealthMonitor
-from src.parser import parse_search_result, ExposureArea
+from src.parser import parse_search_result
 from src.retry import RetryQueue
 from src.sheets import (
     SheetsClient, RowUpdate,
     rank_result_to_columns,
-    HEADER_AREA, HEADER_L, HEADER_M, HEADER_JISIKIN, HEADER_LINK,
+    HEADER_AREA, HEADER_L, HEADER_M, HEADER_JISIKIN,
 )
 from src.transitions import compute_new_K
 
@@ -44,16 +43,15 @@ def _process_row(
     row: dict,
     crawler: Crawler,
     health: HealthMonitor,
-    all_known_links: Optional[set] = None,
-    url_alive_cache: Optional[dict] = None,
+    all_known_links: Optional[set] = None,  # 호환성 유지 — 미사용 (T-M14 폐기 2026-05-14)
+    url_alive_cache: Optional[dict] = None,  # 호환성 유지 — 미사용 (T-M10.5 폐기)
 ) -> Optional[dict]:
     """한 행 처리 → 새 컬럼 dict 또는 None (skip).
 
-    Args:
-        all_known_links: T-M14 (2026-05-12) — 사장님 시트의 모든 row 의 link set.
-            link 빈 row 처리 시 매치 검사용. None 이면 빈칸 반환 (테스트용).
-        url_alive_cache: T-M10.2 (2026-05-13) — cron 1회 안에서 같은 link 중복 호출 방지.
-            None 이면 캐시 미사용 (테스트용).
+    T-M14.* 전체 폐기 (2026-05-14): 사장님 진짜 의도 = target_url 단독 매치만.
+    - 시트 link 자동 갱신 X
+    - 다른 행 link fallback X
+    - slug 매치 X
 
     Returns:
         새 column dict (시트 write 용) 또는 None (skip).
@@ -69,76 +67,27 @@ def _process_row(
     if not keyword:
         return None
 
-    # 2026-05-12 T-M14: 링크 빈 row + 시트 link_set 박힘 = 검색 + 매치 link 의 순위 박음.
-    # 사장님 의도: 다른 row 에 박힌 카페글이 이 키워드 검색에도 노출 박혀있으면 그 link 의 순위 표시.
-    # 마케터 시점: "내가 박은 카페글이 다른 키워드에도 노출 박혔으면" 즉시 인식.
+    # link 빈 행 = 사장님 미작업 = 미노출 빈칸 표시
     if not link:
-        if not all_known_links:
-            # 테스트 / 첫 cron — link_set 박지 X = 빈칸 박음
-            return {
-                HEADER_AREA: "",
-                HEADER_L: "",
-                HEADER_M: "",
-                HEADER_JISIKIN: "",
-            }
-        # 검색 + link_set 매치
-        html = crawler.fetch_search(keyword)
-        result = parse_search_result(html, target_url=None, link_set=all_known_links)
-        # 2026-05-12 T-M14.1 진단 log — 매치 시 매치된 link 정보 명시 (사장님 검증용)
-        if result.exposure_area.value != "미노출":
-            print(f"  [LINK_SET_MATCH] kw={keyword!r} area={result.exposure_area.value} L={result.integrated_rank} M={result.cafe_slot_rank} smart_block={result.smart_block_name!r}")
-        # link 빈 row = url alive 검증 박지 X (link 없음)
-        cols = rank_result_to_columns(
-            block_order=result.block_order,
-            exposure_area=result.exposure_area.value if result.exposure_area.value != "미노출" else "",
-            integrated_rank=result.integrated_rank,
-            cafe_slot_rank=result.cafe_slot_rank,
-            in_jisikin=result.in_jisikin,
-        )
-        health.record(
-            parser_confidence=result.parser_confidence,
-            success=True,
-            block_type=cols.get(HEADER_AREA) if cols.get(HEADER_AREA) in {"AB", "인기글"} else None,
-        )
-        return cols
+        return {
+            HEADER_AREA: "",
+            HEADER_L: "",
+            HEADER_M: "",
+            HEADER_JISIKIN: "",
+        }
 
-    # 단축 URL 해석
+    # naver.me 단축 URL 해석
     if "naver.me" in link:
         link = resolve_short_url(link)
 
-    # 검색 + parser (1차: 시트 link 단독 매치 시도)
+    # 검색 + parser (target_url 단독 매치만)
     html = crawler.fetch_search(keyword)
     result = parse_search_result(html, link)
 
-    # T-M14.2 (D-022 보완): 1차 매치 실패 시 시트의 다른 link 중 매치 시도 (link_set fallback)
-    # 사장님 의도: "행 A의 link A 가 미노출이어도 시트의 다른 link B 가 매치되면 → 행 A의 link 를 link B 로 자동 갱신"
-    # 갱신 시: 시트 "링크" 컬럼도 matched_url 로 자동 갱신 (D-018 룰 정합)
-    auto_updated_link: Optional[str] = None  # 자동 갱신된 link (없으면 None)
-    if result.exposure_area == ExposureArea.UNEXPOSED and all_known_links:
-        # 현재 행의 link 제외 (자기 자신 매치 방지)
-        other_links = all_known_links - {link}
-        if other_links:
-            result_fallback = parse_search_result(html, target_url=None, link_set=other_links)
-            if result_fallback.exposure_area != ExposureArea.UNEXPOSED:
-                result = result_fallback
-                # matched_url 이 원래 link 와 다를 때만 자동 갱신
-                if result.matched_url and result.matched_url != link:
-                    auto_updated_link = result.matched_url
-                    print(f"  [LINK_AUTO_UPDATE] kw={keyword!r}: {link} → {auto_updated_link}")
-
-    # T-M14.7 폐기 (2026-05-14): slug 매치 fallback 제거.
-    # 사장님 진짜 의도 = 시트 등록 link 정확 매치만 (D-022 옵션 A).
-    # slug 매치 = 회사 카페의 다른 직원 글 / 타사 글 오검출 위험 = 사용 불가.
-
-    # T-M10.5 (2026-05-14): url_alive 검증 자체 폐기 — 비로그인 환경 한계.
-    # 진짜 root cause (probe 직접 검증 2026-05-14):
-    # - 네이버 카페 = 비로그인 사용자 접근 시 = "로그인 페이지" HTML 반환
-    # - 정상 ALIVE 글 (예: pusanmommy/1450312) 도 = nidlogin.login 키워드 검출 = PRIVATE 잘못 판정
-    # - = 모든 link false positive 100% = K="삭제" 시트 손상
-    # = url_alive 검증 의무 무효 = 폐기.
-    # 시트 미노출 = K="" 단순 표시 = 사장님 직접 link 확인 의무.
-    # 진짜 삭제 link = 다음 cron 박스 매치 X = 자연 미노출 표시 = 사장님 인지 가능.
-    url_alive = True  # 항상 True = 검증 자체 무력화
+    # T-M10.5 (2026-05-14): url_alive 검증 폐기 — 비로그인 환경 한계.
+    # 네이버 카페 = 비로그인 접근 시 로그인 페이지 반환 = PRIVATE 오판정.
+    # url_alive = 항상 True 고정.
+    url_alive = True
     search_found = result.exposure_area.value != "미노출"
 
     # 사장님 컨벤션 K 결정
@@ -152,19 +101,17 @@ def _process_row(
     # health 누적
     health.record(
         parser_confidence=result.parser_confidence,
-        success=True,  # 검색 자체는 성공 (차단 시는 raise 됨)
+        success=True,
         block_type=new_K if new_K in {"AB", "인기글"} else None,
     )
 
-    # 시트 컬럼 dict 변환 (사장님 컨벤션)
-    # T-M14.2: 자동 갱신된 link 있으면 시트 "링크" 컬럼도 함께 갱신
+    # 시트 컬럼 dict 변환 (시트 "링크" 컬럼 = 자동 갱신 X = new_link 미사용)
     cols = rank_result_to_columns(
         block_order=result.block_order,
         exposure_area=new_K,
         integrated_rank=result.integrated_rank if search_found else None,
         cafe_slot_rank=result.cafe_slot_rank if search_found else None,
         in_jisikin=result.in_jisikin,
-        new_link=auto_updated_link,  # T-M14.2: None 이면 링크 컬럼 갱신 X
     )
     return cols
 
@@ -187,7 +134,6 @@ def run_cycle() -> dict:
     crawler = Crawler(slowdown=SlowdownController(base=NAVER_SLOWDOWN_BASE_SEC, max_=NAVER_SLOWDOWN_MAX_SEC))
     health = HealthMonitor()
     retry_queue = RetryQueue()
-    cafe_cache = CafeMappingCache()  # 메모리 캐시 (cron 사이클 안에서만)
 
     # 1. 시트 read
     data = client.load_all_data_tabs(tab_filter=_carea_filter)
@@ -197,25 +143,12 @@ def run_cycle() -> dict:
     # T-M26 (2026-05-12): Cold session 차단 회피. warmup 실패해도 cron 계속 진행.
     crawler.warmup()
 
-    # 1.5. T-M14: 사장님 시트 전체 link set 적재 (link 빈 row 의 매치 검사용)
-    # T-M25 (2026-05-12): 사장님 카페 화이트리스트 slug 만 link_set 에 포함.
-    # 외부 카페 link (외주/타사) = link_set 제외 = false positive 차단.
-    from src.config import CAFE_WHITELIST
-    from src.crawler import parse_cafe_url
-
+    # T-M14 전체 폐기 (2026-05-14): link_set 구성 불필요.
+    # all_known_links = 빈 set (호환성 유지 — _process_row 매개변수로 전달되나 미사용).
     all_known_links: set = set()
-    for tab_rows in data.values():
-        for row in tab_rows:
-            row_link = (row.get("링크") or "").strip()
-            if not row_link:
-                continue
-            slug, _ = parse_cafe_url(row_link)
-            if slug and slug in CAFE_WHITELIST:
-                all_known_links.add(row_link)
-    print(f"전체 link set: {len(all_known_links)}개 (T-M25 화이트리스트 필터 적용)")
 
     # 2. 각 탭 + 행 처리
-    # 2026-05-13 T-M10.2: cron 1회 안 같은 link 중복 호출 방지 캐시
+    # url_alive_cache: T-M10.5 폐기로 미사용. 호환성 유지용 빈 dict.
     url_alive_cache: dict[str, bool] = {}
     tab_updates: dict[str, list[RowUpdate]] = {}
     circuit_breaker_tripped = False  # 2026-05-11 architect Major 1 fix

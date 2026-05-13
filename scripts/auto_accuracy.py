@@ -158,12 +158,13 @@ def main() -> Optional[int]:
 
     print(f"전체 {len(all_rows)} 키워드 수집 완료")
 
-    # T-M14.2 정합: 시트 전체 link set 박... 박... = link_set fallback 매치 활용 (사장님 의도 정합)
+    # all_known_links: detect_direct_K 의 ground truth 검출에 사용 (시트 등록 link 정확 매치).
+    # T-M14 폐기 (2026-05-14): parse_search_result 호출에는 target_url 만 전달 (link_set fallback X).
     all_known_links: set = set()
     for kw, link in all_rows:
         if link:
             all_known_links.add(link)
-    print(f"link_set 크기: {len(all_known_links)} (T-M14.2 fallback 매치 활용)")
+    print(f"link_set 크기: {len(all_known_links)} (detect_direct_K ground truth 전용)")
 
     # 2. random sample 선택
     random.seed(args.seed)
@@ -192,17 +193,9 @@ def main() -> Optional[int]:
             print(f"  [{idx:3d}] {kw!r}: ERROR ({e})")
             continue
 
-        # parser 결과 (T-M14.2 정합 = target_url + link_set fallback)
+        # parser 결과 — target_url 단독 매치만 (T-M14 폐기 2026-05-14: link_set fallback X)
         target_url: Optional[str] = link if link else None
         parser_result = parse_search_result(html, target_url=target_url)
-        # T-M14.2 fallback: 시트 link 매치 X = 다른 행 link 매치 시도 (사장님 의도 정합)
-        if parser_result.exposure_area.value == "미노출" and all_known_links:
-            other_links = all_known_links - {link} if link else all_known_links
-            if other_links:
-                fallback = parse_search_result(html, target_url=None, link_set=other_links)
-                if fallback.exposure_area.value != "미노출":
-                    parser_result = fallback
-        # T-M14.7 폐기 (2026-05-14): slug 매치 fallback 제거 (사장님 의도 = 시트 등록 link 정확 매치만).
         parser_K = parser_result.exposure_area.value
 
         # direct 검출 (ground truth) — 시트 등록 link 정확 매치만 (사장님 의도 정합)
