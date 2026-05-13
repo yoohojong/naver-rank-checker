@@ -137,6 +137,13 @@ def main() -> Optional[int]:
 
     print(f"전체 {len(all_rows)} 키워드 수집 완료")
 
+    # T-M14.2 정합: 시트 전체 link set 박... 박... = link_set fallback 매치 활용 (사장님 의도 정합)
+    all_known_links: set = set()
+    for kw, link in all_rows:
+        if link:
+            all_known_links.add(link)
+    print(f"link_set 크기: {len(all_known_links)} (T-M14.2 fallback 매치 활용)")
+
     # 2. random sample 선택
     random.seed(args.seed)
     sample = random.sample(all_rows, min(args.sample, len(all_rows)))
@@ -164,9 +171,16 @@ def main() -> Optional[int]:
             print(f"  [{idx:3d}] {kw!r}: ERROR ({e})")
             continue
 
-        # parser 결과 (target_url 기반, 시트 링크 활용)
+        # parser 결과 (T-M14.2 정합 = target_url + link_set fallback)
         target_url: Optional[str] = link if link else None
         parser_result = parse_search_result(html, target_url=target_url)
+        # T-M14.2 fallback: 시트 link 매치 X = 다른 행 link 매치 시도 (사장님 의도 정합)
+        if parser_result.exposure_area.value == "미노출" and all_known_links:
+            other_links = all_known_links - {link} if link else all_known_links
+            if other_links:
+                fallback = parse_search_result(html, target_url=None, link_set=other_links)
+                if fallback.exposure_area.value != "미노출":
+                    parser_result = fallback
         parser_K = parser_result.exposure_area.value
 
         # direct 검출 (ground truth)
