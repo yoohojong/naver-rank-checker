@@ -17,12 +17,13 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  # T-M40: 1순위 — self-hosted runner (가정용 ISP IP, 차단 회피 최우선)
-  # 2026-05-13 임시: 사장님 PC offline → ubuntu-latest 임시 (PC online 후 self-hosted 복귀 의무)
-  run-cron-primary:
+  # T-M40.3 (2026-05-14): self-hosted runner 폐기 결정 — 사장님 명시.
+  # 근거: 사장님 PC 24/7 online 부담 ↑ + 직전 cron success 다수 = ubuntu 환경 충분.
+  # ubuntu-latest 단독 = 안정 + 사장님 의무 0.
+  # fallback job 폐기 (= 단일 job = 단순화).
+  run-cron:
     runs-on: ubuntu-latest
     timeout-minutes: 180
-    continue-on-error: true  # 실패해도 fallback job 실행 가능하도록
 
     steps:
       - name: Checkout
@@ -64,50 +65,4 @@ jobs:
       # 2026-05-13: 이메일 step 제거. root cause = GMAIL_USER/GMAIL_APP_PASSWORD secrets 미등록.
       # fix = issue #1 댓글 알림 (Step 6) 만 의존. 사장님 GitHub 계정 알림 설정 = 자동 이메일.
 
-  # T-M40: 2순위 — ubuntu-latest fallback (self-hosted 실패/offline 시 자동 실행)
-  run-cron-fallback:
-    runs-on: ubuntu-latest
-    needs: run-cron-primary
-    if: failure()  # primary job 실패 시에만 실행
-    timeout-minutes: 180
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Setup Python 3.13
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.13'
-
-      - name: Setup venv + install deps
-        shell: bash
-        run: |
-          python -m venv .venv
-          ./.venv/bin/python -m pip install --upgrade pip
-          ./.venv/bin/python -m pip install -r requirements.txt
-
-      - name: Run cron cycle (fallback)
-        id: run_cycle
-        shell: bash
-        env:
-          SPREADSHEET_ID: ${{ secrets.SPREADSHEET_ID }}
-          SERVICE_ACCOUNT_JSON: ${{ secrets.SERVICE_ACCOUNT_JSON }}
-          NAVER_SLOWDOWN_BASE_SEC: '5.0'
-          NAVER_SLOWDOWN_MAX_SEC: '120'
-          PYTHONIOENCODING: 'utf-8'
-        run: |
-          ./.venv/bin/python -u -m src.main
-
-      - name: Post summary to issue #1
-        if: always()
-        shell: bash
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          RUN_STATUS: ${{ steps.run_cycle.outcome }}
-        run: |
-          ./.venv/bin/python -u scripts/post_summary_to_issue.py
-
-      # 2026-05-13: 이메일 step 제거 (동일 근거). issue #1 댓글 알림만 의존.
-
-      # exit code 1 = HealthMonitor.code_change_suspected → issue 댓글 자동 알림
+      # 2026-05-14 T-M40.3: fallback job 폐기 (self-hosted 의존 제거 + 단일 ubuntu-latest 안정).
