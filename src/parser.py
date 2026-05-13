@@ -1,4 +1,6 @@
 """parser: AB / 스마트블록 / 인기글 / 지식인 파싱 분기."""
+import json
+import re
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Optional
@@ -300,6 +302,12 @@ _POPULAR_SKIP_PATTERNS = (
     "네이버 클립",
     "네이버 가격비교",
     "네이버플러스 스토어",
+    # T-M22 (2026-05-13 architect 발견): 신규 박스 사전 대응
+    "AI 추천",
+    "숏폼",
+    "플레이스",
+    "동영상",
+    "쇼핑",
 )
 
 
@@ -310,8 +318,8 @@ def _parse_popular(html: str, target_url: Optional[str], result: RankResult, lin
     안에 본문 묶음 → 모두 '인기글'. 제가 spec 에 박은 'SMART_BLOCK' 은 사장님 컨벤션 X.
 
     매칭 시:
-    - integrated_rank (L) = 인기글 박스 안 본문 글 idx (출처별 dedup, 사장님 컨벤션)
-    - cafe_slot_rank (M) = 같은 박스 안 카페 항목들 중 idx (cafe.naver.com 만 카운트, 출처별 dedup)
+    - integrated_rank (L) = 인기글 박스 안 본문 글 idx (URL 단위 dedup, T-M14.3)
+    - cafe_slot_rank (M) = 같은 박스 안 카페 항목들 중 idx (cafe.naver.com 만 카운트, URL 단위 dedup)
     - smart_block_name = 박스 h2 텍스트 (메타용, 시트 write X)
     - parser_confidence = 0.85
     """
@@ -364,12 +372,16 @@ def _parse_popular(html: str, target_url: Optional[str], result: RankResult, lin
 
 
 def _extract_popular_items(box) -> list[str]:
-    """인기글 박스 안의 본문 글 URL 리스트 (출처별 dedup, 위→아래).
+    """인기글 박스 안의 본문 글 URL 리스트 (위→아래).
 
     본문 글 = path 끝이 숫자 (post_id) 인 URL. 출처 root URL 제외.
-    같은 출처 (path 첫 segment) 의 첫 본문만 카운트.
+
+    T-M14.3 (2026-05-13 architect 발견): source_key dedup 제거.
+    같은 카페 복수 글 = 모두 idx 카운트 (사장님 시트 link 가 두 번째 글이어도 매치 가능).
+    다만 완전히 동일한 URL (netloc + path 동일) = dedup (HTML 안 중복 링크 방지).
     """
-    seen_sources: set[tuple[str, str]] = set()
+    # T-M14.3: URL 단위 dedup (동일 링크 중복 방지), source 단위 dedup 제거
+    seen_urls: set[tuple[str, str]] = set()
     items: list[str] = []
     for a in box.find_all("a", href=True):
         href = a["href"]
@@ -384,10 +396,10 @@ def _extract_popular_items(box) -> list[str]:
         last_seg = path_parts[-1].split("?")[0]
         if not last_seg.isdigit():
             continue
-        source_key = (p.netloc, path_parts[0])
-        if source_key in seen_sources:
+        url_key = (p.netloc, p.path.rstrip("/"))
+        if url_key in seen_urls:
             continue
-        seen_sources.add(source_key)
+        seen_urls.add(url_key)
         items.append(href)
     return items
 
@@ -423,3 +435,28 @@ def _parse_jisikin(html: str, target_url: str, result: RankResult) -> None:
             if "kin.naver.com" in a["href"]:
                 result.in_jisikin = True
                 return
+
+
+# T-M22.1 (2026-05-13 document-specialist 발견): entry.bootstrap() JS JSON 추출용 정규식
+_BOOTSTRAP_RE = re.compile(r'entry\.bootstrap\s*\(\s*(\{.*?\})\s*\)\s*;', re.DOTALL)
+
+
+def _extract_bootstrap_json(html: str) -> Optional[dict]:
+    """T-M22.1 (2026-05-13 document-specialist 발견):
+    네이버 검색 결과 페이지 = entry.bootstrap() JS JSON 페이로드.
+    HTTP fetch 시 script 태그 안 JSON 추출 가능 = JS 미실행 박스 발견 가능.
+
+    주의: JSON 구조는 변동 가능. 현재는 함수만 추가하고 parse_search_result 에서
+    호출하지 않음 (다음 cron 결과로 JSON 추출 가능 여부 검증 후 통합 예정).
+
+    반환: 추출 성공 시 dict, 실패 시 None (정적 HTML 파싱 fallback 사용).
+    """
+    if not html or "entry.bootstrap" not in html:
+        return None
+    match = _BOOTSTRAP_RE.search(html)
+    if not match:
+        return None
+    try:
+        return json.loads(match.group(1))
+    except (json.JSONDecodeError, ValueError):
+        return None

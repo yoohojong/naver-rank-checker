@@ -225,6 +225,9 @@ class Crawler:
             text_lower = r.text.lower()
             if "nidlogin.login" in text_lower or "로그인이 필요합니다" in r.text:
                 return CafeStatus.PRIVATE
+            # T-M10.4 (2026-05-13 architect 발견): 등급 제한 / 권한 없음 = PRIVATE
+            if any(k in r.text for k in ["등급이 부족", "권한이 없", "회원등급이"]):
+                return CafeStatus.PRIVATE
             # 2026-05-13: document-specialist 실측 = 네이버 카페 404 페이지 = 200 + 키워드 반환
             if any(k in r.text for k in ["존재하지 않", "삭제된", "없는 게시물"]):
                 return CafeStatus.DELETED

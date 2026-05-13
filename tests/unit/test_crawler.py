@@ -258,6 +258,45 @@ class TestCrawlerFetchCafeUrlStatus:
         c.slowdown.adaptive_base = 0
         assert c.fetch_cafe_url_status("https://cafe.naver.com/foo/3") == CafeStatus.DELETED
 
+    def test_status_200_with_등급이부족_returns_private(self):
+        """GET 200 + '등급이 부족' 키워드 = PRIVATE (T-M10.4 architect 발견)."""
+        c = Crawler()
+        c.session = MagicMock()
+        c.session.get.return_value = MagicMock(
+            status_code=200,
+            text="<html>등급이 부족하여 열람할 수 없습니다.</html>",
+        )
+        c.slowdown.base = 0
+        c.slowdown.current_interval = 0
+        c.slowdown.adaptive_base = 0
+        assert c.fetch_cafe_url_status("https://cafe.naver.com/foo/4") == CafeStatus.PRIVATE
+
+    def test_status_200_with_권한이없_returns_private(self):
+        """GET 200 + '권한이 없' 키워드 = PRIVATE (T-M10.4 architect 발견)."""
+        c = Crawler()
+        c.session = MagicMock()
+        c.session.get.return_value = MagicMock(
+            status_code=200,
+            text="<html>권한이 없는 게시물입니다.</html>",
+        )
+        c.slowdown.base = 0
+        c.slowdown.current_interval = 0
+        c.slowdown.adaptive_base = 0
+        assert c.fetch_cafe_url_status("https://cafe.naver.com/foo/5") == CafeStatus.PRIVATE
+
+    def test_status_200_with_회원등급이_returns_private(self):
+        """GET 200 + '회원등급이' 키워드 = PRIVATE (T-M10.4 architect 발견)."""
+        c = Crawler()
+        c.session = MagicMock()
+        c.session.get.return_value = MagicMock(
+            status_code=200,
+            text="<html>회원등급이 낮아 열람이 제한됩니다.</html>",
+        )
+        c.slowdown.base = 0
+        c.slowdown.current_interval = 0
+        c.slowdown.adaptive_base = 0
+        assert c.fetch_cafe_url_status("https://cafe.naver.com/foo/6") == CafeStatus.PRIVATE
+
 
 class TestCrawlerImpersonatePool:
     """T-M24 (2026-05-12): IMPERSONATE_POOL 회전 검증."""

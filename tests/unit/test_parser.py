@@ -223,16 +223,15 @@ class TestParsePopular:
         assert result.cafe_slot_rank <= result.integrated_rank
         assert result.parser_confidence > 0.7
 
-    def test_popular_dedup_same_source(self, load_fixture):
-        """같은 출처 (cosmania) 의 다른 글도 같은 출처 idx 매칭 — 첫 본문만 카운트되므로 3등 동일."""
+    def test_popular_second_post_same_cafe_can_match(self, load_fixture):
+        """T-M14.3 (2026-05-13): source_key dedup 제거 후 같은 카페 두 번째 글도 매칭 가능.
+        cosmania/38349398 이 인기글 박스 안에 존재하면 → POPULAR 매칭.
+        존재하지 않으면 UNEXPOSED — fixture 에 없는 경우도 정상."""
         html = load_fixture("naver/popular_cafe.html")
-        # cosmania/38349398 은 cosmania 출처 의 두번째 글 — 출처 dedup 으로 idx 3 = 첫 글 (38373348) 만 매칭
-        # 따라서 38349398 은 매칭 X (이미 첫 본문 38373348 으로 idx 3 사용)
         target = "https://cafe.naver.com/cosmania/38349398"
         result = parse_search_result(html, target)
-        # 두번째 글은 인기글로 카운트 안 됨 → UNEXPOSED 또는 별도 처리
-        # 사장님 컨벤션: 첫 글만 인기글, 다른 글은 UNEXPOSED
-        assert result.cafe_slot_rank != 3 or result.exposure_area != ExposureArea.POPULAR
+        # dedup 제거: 두 번째 글이 박스 안에 있으면 POPULAR, 없으면 UNEXPOSED — 둘 다 정상
+        assert result.exposure_area in (ExposureArea.POPULAR, ExposureArea.UNEXPOSED)
 
     def test_popular_no_match_returns_unexposed(self, load_fixture):
         """인기글 박스 있어도 본인 URL 없으면 UNEXPOSED."""
@@ -428,3 +427,150 @@ class TestParseJisikin:
         """
         result = parse_search_result(html, "https://example.com")
         assert result.in_jisikin is True
+
+
+class TestExtractPopularItemsDedup:
+    """T-M14.3 (2026-05-13): _extract_popular_items source_key dedup 제거 검증."""
+
+    def _make_box(self, hrefs: list) -> object:
+        from bs4 import BeautifulSoup
+        links = "".join(f'<a href="{h}">글</a>' for h in hrefs)
+        html = f'<div class="box">{links}</div>'
+        return BeautifulSoup(html, "lxml").find("div")
+
+    def test_same_cafe_two_posts_both_returned(self):
+        """같은 카페 두 글 = 둘 다 items 에 포함 (URL 단위 dedup 만 적용)."""
+        from src.parser import _extract_popular_items
+        box = self._make_box([
+            "https://cafe.naver.com/cosmania/100",
+            "https://cafe.naver.com/cosmania/200",
+        ])
+        items = _extract_popular_items(box)
+        assert len(items) == 2
+        assert "https://cafe.naver.com/cosmania/100" in items
+        assert "https://cafe.naver.com/cosmania/200" in items
+
+    def test_exact_same_url_deduped(self):
+        """완전 동일 URL (netloc + path 동일) = dedup — 1개만 반환."""
+        from src.parser import _extract_popular_items
+        box = self._make_box([
+            "https://cafe.naver.com/cosmania/100",
+            "https://cafe.naver.com/cosmania/100",
+        ])
+        items = _extract_popular_items(box)
+        assert len(items) == 1
+
+    def test_different_cafes_all_returned(self):
+        """다른 카페 3개 글 = 모두 반환."""
+        from src.parser import _extract_popular_items
+        box = self._make_box([
+            "https://cafe.naver.com/cafeA/1",
+            "https://cafe.naver.com/cafeB/2",
+            "https://cafe.naver.com/cafeC/3",
+        ])
+        items = _extract_popular_items(box)
+        assert len(items) == 3
+
+    def test_non_post_url_excluded(self):
+        """path 끝이 숫자 아님 = 제외."""
+        from src.parser import _extract_popular_items
+        box = self._make_box([
+            "https://cafe.naver.com/cosmania",
+            "https://cafe.naver.com/cosmania/100",
+        ])
+        items = _extract_popular_items(box)
+        assert len(items) == 1
+        assert "https://cafe.naver.com/cosmania/100" in items
+
+
+class TestPopularSkipPatterns:
+    """T-M22 (2026-05-13): _POPULAR_SKIP_PATTERNS 신규 패턴 검증."""
+
+    _PADDING = "<div class='pad'>" + ("x" * 600) + "</div>"
+
+    def _make_popular_box(self, h2_text: str, cafe_url: str = "https://cafe.naver.com/x/1") -> str:
+        return (
+            f'<div class="fds-default-mode api_subject_bx">'
+            f'<h2>{h2_text}</h2>'
+            f'<a href="{cafe_url}">글</a>'
+            f'</div>'
+        )
+
+    def test_ai_recommend_box_skipped(self):
+        """h2='AI 추천' 박스 = 인기글 분류 X."""
+        box = self._make_popular_box("AI 추천")
+        html = f"<html><body>{self._PADDING}{box}</body></html>"
+        result = parse_search_result(html, "https://cafe.naver.com/x/1")
+        assert result.exposure_area == ExposureArea.UNEXPOSED
+
+    def test_shortform_box_skipped(self):
+        """h2='숏폼' 박스 = 인기글 분류 X."""
+        box = self._make_popular_box("숏폼")
+        html = f"<html><body>{self._PADDING}{box}</body></html>"
+        result = parse_search_result(html, "https://cafe.naver.com/x/1")
+        assert result.exposure_area == ExposureArea.UNEXPOSED
+
+    def test_place_box_skipped(self):
+        """h2='플레이스' 박스 = 인기글 분류 X."""
+        box = self._make_popular_box("플레이스")
+        html = f"<html><body>{self._PADDING}{box}</body></html>"
+        result = parse_search_result(html, "https://cafe.naver.com/x/1")
+        assert result.exposure_area == ExposureArea.UNEXPOSED
+
+    def test_video_box_skipped(self):
+        """h2='동영상' 박스 = 인기글 분류 X."""
+        box = self._make_popular_box("동영상")
+        html = f"<html><body>{self._PADDING}{box}</body></html>"
+        result = parse_search_result(html, "https://cafe.naver.com/x/1")
+        assert result.exposure_area == ExposureArea.UNEXPOSED
+
+    def test_shopping_box_skipped(self):
+        """h2='쇼핑' 박스 = 인기글 분류 X."""
+        box = self._make_popular_box("쇼핑")
+        html = f"<html><body>{self._PADDING}{box}</body></html>"
+        result = parse_search_result(html, "https://cafe.naver.com/x/1")
+        assert result.exposure_area == ExposureArea.UNEXPOSED
+
+    def test_normal_inkigi_box_not_skipped(self):
+        """h2='패션 인기글' = 스킵 X → 매칭 시도."""
+        box = self._make_popular_box("패션 인기글")
+        html = f"<html><body>{self._PADDING}{box}</body></html>"
+        result = parse_search_result(html, "https://cafe.naver.com/x/1")
+        assert result.exposure_area == ExposureArea.POPULAR
+
+
+class TestExtractBootstrapJson:
+    """T-M22.1 (2026-05-13): _extract_bootstrap_json 함수 검증."""
+
+    def test_extracts_valid_json(self):
+        """entry.bootstrap() 안 유효 JSON = dict 반환."""
+        from src.parser import _extract_bootstrap_json
+        html = '<script>entry.bootstrap({"key": "value", "num": 42});</script>'
+        result = _extract_bootstrap_json(html)
+        assert result == {"key": "value", "num": 42}
+
+    def test_returns_none_when_no_bootstrap(self):
+        """entry.bootstrap 없음 = None 반환."""
+        from src.parser import _extract_bootstrap_json
+        html = "<html><body>일반 페이지</body></html>"
+        result = _extract_bootstrap_json(html)
+        assert result is None
+
+    def test_returns_none_on_empty_html(self):
+        """빈 문자열 = None 반환."""
+        from src.parser import _extract_bootstrap_json
+        result = _extract_bootstrap_json("")
+        assert result is None
+
+    def test_returns_none_on_invalid_json(self):
+        """entry.bootstrap() 안 JSON 파싱 실패 = None 반환 (fallback 안전)."""
+        from src.parser import _extract_bootstrap_json
+        html = '<script>entry.bootstrap({invalid json here});</script>'
+        result = _extract_bootstrap_json(html)
+        assert result is None
+
+    def test_returns_none_on_none_input(self):
+        """None 입력 = None 반환."""
+        from src.parser import _extract_bootstrap_json
+        result = _extract_bootstrap_json(None)
+        assert result is None
