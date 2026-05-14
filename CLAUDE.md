@@ -104,3 +104,37 @@ naver-rank-checker .harness 읽고 다음 task 이어가
    - K=AB 있어도 = 사장님 시트의 "C 컬럼 (사장님 의도 기록)" 존재 = 우리가 갱신하는 K 와 분리.
 
 **근거**: 2026-05-12 T-M10 적용한 게 사장님 의도 정합 X. 사장님 시트 832 행 link 빈 row 에 잘못된 K/L/M 입력됨. T-M13 revert + 사장님 시트 정리 진행. (`.harness/decisions.md` D-018)
+
+---
+
+## ⚠️ D-023 영구 룰 (2026-05-14) — 사장님 시트 자동 갱신 가드
+
+**사장님 시트 사용자 입력 컬럼 = 자동 갱신 절대 X**:
+
+- 보호 대상 (사장님 입력): 작업일 / 작업자 / 키워드 / 검색량 / 작업아이디 / 카페/게시판 / **링크** / **유형(C)** (D-024 정합)
+- 허용 갱신 (시스템 출력): K(노출영역) / L(통합탭 순위) / M(카페구좌 순위) / O(지식인탭) 4 컬럼만
+
+**검증 메커니즘**:
+- src/sheets.py: SYSTEM_OUTPUT_COLUMNS frozenset 화이트리스트 강제
+- write_results 가드: 화이트리스트 외 컬럼 write 시 = 거부 + log
+- pytest 회귀 test: HEADER_LINK write 시도 시 = 거부 검증
+
+**근거**: T-M14.2 commit `10c1ca5` 사고 (2026-05-13) — 사장님 작업 link silent 덮어쓰기. 시트 = 사장님 마케팅 작업 흔적 = 신성.
+
+---
+
+## ⚠️ D-024 영구 룰 (2026-05-14) — D-023 보강 (critic Opus 검증 후)
+
+**(1) "유형" 컬럼 (C) = 사장님 의도 기록 = 자동 갱신 절대 X**:
+- T-M13 학습 정합 (= "C 컬럼 = 사장님 의도 기록 = K 와 분리")
+- D-005 (C 컬럼 자동 갱신) = 폐기
+- src/sheets.py: SYSTEM_OUTPUT_COLUMNS 에서 HEADER_TYPE 제거 + rank_result_to_columns cols[HEADER_TYPE] 채움 폐기
+
+**(2) main.py 예외 시 K="삭제" 자동 적용 = 폐기**:
+- T-M10.5 학습 정합 (= "예측 못한 상태 = 시트 보존 우선")
+- 예외 시 = skip + log + retry_queue (시트 그대로)
+- d024_skipped_rows summary 필드 + issue #1 댓글 표시 (가시성)
+
+**근거**: critic Opus 검증 (2026-05-14, D-023 객관 검토 background) — Critical 1 (C 컬럼 모순) + Major 1 (main.py except 우회). 사장님 단호 시그널 "ㄱ" 적용.
+
+---

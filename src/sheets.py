@@ -47,12 +47,21 @@ def _sheets_api_retry(func, *, ctx: str = ""):
     raise last_error
 
 # 사장님 시트 헤더 명 (2026-05-08 확인 — 정확 매칭 필수)
-HEADER_TYPE = "유형"  # C — block_order[0] 만 (최상단 1위)
+HEADER_TYPE = "유형"  # C — 사장님 의도 기록 컬럼 (D-024 2026-05-14: 자동 갱신 절대 X)
 HEADER_AREA = "노출영역"  # K — AB / 인기글 / 삭제 / 빈칸(미노출)
 HEADER_L = "노출여부(통합탭 순위)"  # L — integrated_rank
 HEADER_M = "노출여부(카페구좌순위)"  # M — cafe_slot_rank
 HEADER_JISIKIN = "지식인탭"  # O — 'O' or 빈칸
-HEADER_LINK = "링크"  # T-M14.2 (D-022): link 자동 갱신용 헤더
+HEADER_LINK = "링크"  # 사장님 입력 컬럼 (D-023 2026-05-14: 자동 갱신 절대 X — reference 용)
+
+# D-023 (2026-05-14) 영구 룰: 사장님 시트 사용자 입력 컬럼 = 자동 갱신 절대 X.
+# write_results 가 SYSTEM_OUTPUT_COLUMNS 외 컬럼 write 시도 시 = 거부 + log.
+# 보호 대상 (사장님 입력): 작업일/작업자/키워드/검색량/작업아이디/카페/게시판/링크/유형(C) 등.
+# 허용 갱신 (시스템 출력): K(노출영역) / L(통합탭) / M(카페구좌) / O(지식인).
+# 근거: T-M14.2 commit 10c1ca5 = 사장님 작업 link silent 덮어쓰기 사고 → D-023 신규 영구 가드.
+# D-024 (2026-05-14) 추가: 유형(C) = 사장님 의도 기록 = 보호 (T-M13 학습 정합 + D-005 폐기, D-024 적용).
+# critic Opus 검증 후 사장님 단호 시그널 "ㄱ" (= B+예) 정합 일괄 적용.
+SYSTEM_OUTPUT_COLUMNS = frozenset({HEADER_AREA, HEADER_L, HEADER_M, HEADER_JISIKIN})
 
 # 데이터 탭 아닌 특수 탭 — load_all_data_tabs 가 skip.
 # 사장님 시트의 "카페매핑" 등 메타 탭 제외용.
@@ -97,6 +106,11 @@ class SheetsClient:
             for col_name, new_val in upd.columns.items():
                 if col_name not in mapping:
                     continue  # 사장님 시트에 없는 컬럼은 skip (예: blog_slot_rank)
+                # D-023 (2026-05-14) 영구 가드: 사장님 사용자 입력 컬럼 자동 갱신 절대 X.
+                # T-M14.2 사고 (사장님 link silent 덮어쓰기) 재발 방지 메커니즘.
+                if col_name not in SYSTEM_OUTPUT_COLUMNS:
+                    print(f"  [D-023-GUARD] '{col_name}' = 사장님 입력 컬럼 = write 거부 (행 {upd.row})")
+                    continue
                 col_idx = mapping[col_name] + 1  # gspread 1-indexed
                 cells.append({
                     "range": gspread.utils.rowcol_to_a1(upd.row, col_idx),
@@ -207,27 +221,27 @@ def rank_result_to_columns(
     integrated_rank: Optional[int],
     cafe_slot_rank: Optional[int],
     in_jisikin: bool,
-    new_link: Optional[str] = None,  # T-M14.2 (D-022): link 자동 갱신 시 = 갱신된 URL
 ) -> dict[str, str]:
     """RankResult → 사장님 시트 컬럼 dict 변환 (사장님 컨벤션 정합).
 
     사장님 컨벤션 (2026-05-08):
-    - 유형: block_order[0] 만 (최상단 1위)
     - 노출영역: AB / 인기글 / 삭제. UNEXPOSED 는 빈 칸.
     - L/M: 숫자 또는 빈 칸
     - 지식인탭: 'O' or 빈 칸
 
-    T-M14.2 (D-022 보완):
-    - new_link 지정 시 = "링크" 컬럼도 갱신 (시트 자동 갱신).
+    D-023 (2026-05-14): new_link 매개변수 폐기 — 링크 컬럼 자동 갱신 절대 X.
+    사장님 입력 컬럼 신성 (T-M14.2 사고 재발 방지).
+
+    D-024 (2026-05-14): 유형(C) 컬럼 = 사장님 의도 기록 = 우리 자동 갱신 X (T-M13 학습 정합).
+    block_order 매개변수 = 호출 측 호환성 유지 위해 시그너처 보존 (값 = 미사용).
+    D-005 (자동 갱신) = 폐기. critic Opus 검증 후 사장님 단호 시그널 "ㄱ" 정합 적용.
     """
     cols: dict[str, str] = {}
-    cols[HEADER_TYPE] = block_order[0] if block_order else ""
+    # D-024 (2026-05-14): cols[HEADER_TYPE] 채움 폐기 — 유형(C) = 사장님 의도 기록 = 보호.
     cols[HEADER_AREA] = exposure_area if exposure_area != "미노출" else ""
     cols[HEADER_L] = str(integrated_rank) if integrated_rank is not None else ""
     cols[HEADER_M] = str(cafe_slot_rank) if cafe_slot_rank is not None else ""
     cols[HEADER_JISIKIN] = "O" if in_jisikin else ""
-    if new_link:
-        cols[HEADER_LINK] = new_link  # T-M14.2: 시트 "링크" 컬럼 자동 갱신
     return cols
 
 

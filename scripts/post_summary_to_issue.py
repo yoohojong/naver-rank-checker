@@ -32,7 +32,10 @@ Claude 에게 보고 권장."""
 
 def build_success_comment(summary: dict) -> str:
     """2026-05-11 CRITICAL fix: K 분포 + 탭 이름 제거 (사장님 비즈니스 데이터 노출 방지).
-    단순 메타 (시간/행수/셀수/성공률/상태) 만 기록. 자세한 내용 = Actions log 링크 클릭."""
+    단순 메타 (시간/행수/셀수/성공률/상태) 만 기록. 자세한 내용 = Actions log 링크 클릭.
+
+    D-024 (2026-05-14): d024_skipped_rows 추가 (예외 시 시트 보존 skip 카운트 가시성).
+    """
     success_rate = summary.get("success_rate", 0)
     success_pct = f"{success_rate * 100:.1f}%"
     cells = summary.get("total_cells_written", 0)
@@ -42,6 +45,7 @@ def build_success_comment(summary: dict) -> str:
     sec_remain = seconds % 60
     retry_left = summary.get("retry_queue_remaining", 0)
     code_change = summary.get("code_change_suspected", False)
+    d024_skipped = summary.get("d024_skipped_rows", 0)
 
     health_status = "🚨 code_change_suspected" if code_change else "✅ 정상"
 
@@ -52,6 +56,7 @@ def build_success_comment(summary: dict) -> str:
 **시트 갱신**: {cells} 셀
 **성공률**: {success_pct}
 **재시도 큐 남음**: {retry_left}
+**예외 시 시트 보존 (D-024)**: {d024_skipped} 행
 **상태**: {health_status}
 
 ---

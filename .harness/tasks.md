@@ -90,8 +90,8 @@ deps = 의존성 (선행 task), parallel = 동시 작업 안전한 다른 task
 👤 **사장님 작업 = 우선순위 ↓ 순**:
 
 ### ⭐ 1순위 (긴급) — Google Sheets 버전 복원
-- T-M10.4 적용 cron 25827570772 = K="삭제" 다수 손상 확인
-- Google Sheets 버전 기록 = 2026-05-13 23:00 이전 시점 복원 의무
+- T-M14.2 시점 (5-13 commit 10c1ca5) ~ T-M10.4 시점 (5-14 새벽) = 시트 link 컬럼 + K="삭제" 다수 손상
+- Google Sheets 버전 기록 = 2026-05-13 14:00 이전 시점 복원 의무 (link + K 동시 복원)
 - 방법: 시트 상단 메뉴 → 파일 → 버전 기록 → 기록 보기 → 손상 이전 버전 복원
 
 ### 2순위 — GitHub 알림 설정 (5분, 1회)
@@ -323,3 +323,22 @@ deps = 의존성 (선행 task), parallel = 동시 작업 안전한 다른 task
   - A 옵션 (시트 등록 link 정확 매치만) = 사장님 진짜 의도 = 확정
   - link 자동 갱신 = 사장님 작업 손실 위험 = 절대 X
   7. 사장님 수기 시 1페이지만 / 2~3페이지까지 (critic 발견)
+
+- 2026-05-14: **D-023 영구 가드 적용** — 사장님 지적 (T-M14 link 자동 갱신 사고 + K="삭제" 손상 + 상위노출 부정확 3 사고 메타 검증) 후 종합 root cause = Layer 5 페르소나 정합 + Layer 4 가드 부재. fix:
+  - src/sheets.py: SYSTEM_OUTPUT_COLUMNS frozenset 화이트리스트 + write_results 가드 + rank_result_to_columns new_link 매개변수 폐기
+  - tests/unit/test_sheets.py: D-023 회귀 test 4개 추가
+  - .harness/decisions.md: D-023 영구 룰 entry 추가
+  - CLAUDE.md (root): D-023 영구 룰 섹션 명시
+  - 전체 test pass 검증
+
+- 2026-05-14: **D-024 가드 보강 적용** — critic Opus background 검증 (Critical 1 + Major 3 발견) 후 사장님 "ㄱ" 단호 시그널 (= B+예) 정합 일괄 적용:
+  - (1) src/sheets.py:64: SYSTEM_OUTPUT_COLUMNS 에서 HEADER_TYPE 제거 (= 4 컬럼만 — HEADER_AREA/HEADER_L/HEADER_M/HEADER_JISIKIN) — C 컬럼 보호, T-M13 학습 정합, D-005 폐기
+  - (1) src/sheets.py rank_result_to_columns: cols[HEADER_TYPE] 채움 폐기 (block_order 매개변수 = 호환성 유지 미사용)
+  - (2) src/main.py: except 시 K="삭제" 자동 적용 폐기 → skip + log + retry_queue.add + d024_skipped_rows 카운트 (T-M10.5 정합)
+  - (2) src/main.py:252: summary 에 d024_skipped_rows 필드 추가 (사장님 가시성)
+  - scripts/post_summary_to_issue.py: d024_skipped_rows 표시 (issue #1 댓글 가시성)
+  - tests/unit/test_sheets.py: TestD024Guard 신규 3 test (HEADER_TYPE 거부 + frozenset 검증 + mix update)
+  - tests/unit/test_main.py: D-024 회귀 test (예외 시 updates 추가 X + d024_skipped_rows ≥ 1 + summary 필드 존재)
+  - .harness/decisions.md: D-024 entry 추가 + D-005 폐기 명시
+  - CLAUDE.md (root): D-024 영구 룰 섹션 명시 + D-023 보호 대상 모순 해소 (유형C = 사장님 입력 정합)
+  - 전체 pytest pass 검증 의무

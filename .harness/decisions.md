@@ -43,6 +43,8 @@
 - 수동 입력 유지: 사장님 부담
 - 한 번만 자동, 이후 안 건드림: 네이버 검색 결과 변하면 stale
 
+**폐기 — D-024 (2026-05-14)**: C 컬럼 = 사장님 의도 기록 (T-M13 학습 정합) = 자동 갱신 X. critic Opus 발견 Critical 1 정합.
+
 ### D-006: 카페명/게시판 자동 추출 + 캐싱
 **결정**: 첫 발견 카페는 페이지 fetch해서 정식명 추출 → "카페매핑" 별도 시트에 저장 → 사장님이 짧은 이름만 추가 입력 → 이후 자동 적용
 **근거**: 1000행 매 실행 fetch는 무리. 카페/게시판은 정적 정보 = 캐시 1회로 끝. 헤비함 무시 가능 수준
@@ -383,3 +385,52 @@
 **대안 안 고른 이유**:
 - 사장님께 polling = "뭔소리야" 단호 거부 시그널 정합 X (CLAUDE.md gate 6 정합)
 - 다른 결정 = comparison 데이터 정합 X 또는 사장님 부담 ↑
+
+---
+
+## 2026-05-14
+
+### D-023: 사장님 시트 사용자 입력 컬럼 = 자동 갱신 절대 X (영구 룰)
+
+**결정**: 사장님 시트 사용자 입력 컬럼 = 신성. 자동 갱신 절대 X. 시스템 출력 컬럼 (K / L / M / O + 유형 C, D-005 정합) 만 갱신 허용.
+
+**근거**:
+- T-M14.2 commit `10c1ca5` (2026-05-13) = 사장님 작업 link silent 덮어쓰기 사고
+- 3 사고 메타 검증 (link 갱신 + K="삭제" 손상 + 상위노출 부정확) = Layer 5 (사장님 시트 신성성 인식 부재) + Layer 4 (가드 시스템 부재) 공통 root cause
+- 사장님 시점: 시트 = 마케팅 작업 흔적 = 신성. 우리 시점: 시트 = 데이터 컨테이너 = 자유 갱신 가정 = 메타 페르소나 정합 결함
+
+**구현**:
+- src/sheets.py: SYSTEM_OUTPUT_COLUMNS frozenset 화이트리스트 + write_results 가드 (사용자 입력 컬럼 write 시 거부 + log) + rank_result_to_columns new_link 매개변수 폐기
+- tests/unit/test_sheets.py: D-023 회귀 test 4개 (HEADER_LINK + 입력 컬럼 + 출력 컬럼 + mix)
+- CLAUDE.md (root): D-023 영구 룰 섹션 명시
+
+**대안 안 고른 이유**:
+- 코드 코멘트만 추가: 코드 자체 가드 X = 미래 재발 가능
+- runtime warning 후 write 진행: 사장님 데이터 손상 = 복원 비용 ↑↑
+- 사장님 시트 별도 백업 컬럼: 시트 복잡도 ↑ + 사장님 페르소나 거부
+
+
+### D-024: D-023 보강 — C 컬럼 보호 + main.py 예외 시 시트 보존 (영구 룰)
+
+**결정 (2026-05-14)**: critic Opus 검증 후 사장님 단호 시그널 "ㄱ" (= B+예) 정합 일괄 적용.
+(1) C 컬럼 (유형) = 사장님 의도 기록 = 자동 갱신 폐기 (T-M13 학습 정합, D-005 폐기)
+(2) main.py 예외 시 K="삭제" 자동 적용 = 폐기 (T-M10.5 학습 정합, 시트 보존)
+
+**근거**:
+1. C 컬럼: CLAUDE.md (root) line 104 "K=AB 있어도 = 사장님 시트의 'C 컬럼 (사장님 의도 기록)' 존재 = 우리가 갱신하는 K 와 분리" 명시. D-005 (C 컬럼 자동 갱신) 과 정면 모순 미해소. D-023 SYSTEM_OUTPUT_COLUMNS 에 HEADER_TYPE 포함 = T-M14.2 동일 사고 패턴 (사장님 미지적뿐 = 미래 사고 위험). critic verdict = HIGH confidence.
+2. main.py 예외: T-M10.5 학습 (2026-05-14 commit b2b69b9) = "비로그인 = 로그인 페이지 = PRIVATE 잘못 판정 832행 손상" 패턴 = "예측 못한 exception = K=삭제 자동" 패턴 동일 root cause. T-M10.5 학습 시점에 같이 폐기 의무였음. critic verdict = HIGH confidence.
+
+**구현**:
+- src/sheets.py:64: SYSTEM_OUTPUT_COLUMNS 에서 HEADER_TYPE 제거 (= 4 컬럼만 남음 — HEADER_AREA / HEADER_L / HEADER_M / HEADER_JISIKIN)
+- src/sheets.py rank_result_to_columns: cols[HEADER_TYPE] 채움 logic 폐기 (block_order 매개변수 = 호환성 유지 미사용)
+- src/main.py: except 시 K="삭제" 적용 폐기 → skip + log + retry_queue 추가 + d024_skipped_rows summary 카운트
+- scripts/post_summary_to_issue.py: d024_skipped_rows 표시 (issue #1 가시성)
+- tests/unit/test_sheets.py: TestD024Guard 신규 (3 test — HEADER_TYPE write 거부 + frozenset 검증 + mix update)
+- tests/unit/test_main.py: D-024 회귀 test (예외 시 updates 추가 X + d024_skipped_rows ≥ 1 + summary 필드 존재)
+- CLAUDE.md (root): D-024 영구 룰 섹션 명시
+- D-005 본문 끝에 폐기 명시
+
+**대안 안 고른 이유**:
+- C 컬럼 자동 갱신 유지 (옵션 A): T-M14.2 동일 사고 패턴 = 사장님 미지적뿐 = 미래 사고 위험
+- main.py 예외 K="삭제" 유지: T-M10.5 학습 무시 = 사고 패턴 재발
+- 사장님 결정 polling: CLAUDE.md gate 6 정합 X (단호 결정 의무) + 직전 사장님 "ㄱ" 단호 시그널 수신 완료

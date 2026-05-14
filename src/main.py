@@ -134,6 +134,7 @@ def run_cycle() -> dict:
     crawler = Crawler(slowdown=SlowdownController(base=NAVER_SLOWDOWN_BASE_SEC, max_=NAVER_SLOWDOWN_MAX_SEC))
     health = HealthMonitor()
     retry_queue = RetryQueue()
+    d024_skipped_rows = 0  # D-024 (2026-05-14): except 시 시트 보존 skip 카운트 (사장님 가시성)
 
     # 1. 시트 read
     data = client.load_all_data_tabs(tab_filter=_carea_filter)
@@ -181,11 +182,15 @@ def run_cycle() -> dict:
                 retry_queue.add(row, error=str(e))
                 health.record(parser_confidence=0.0, success=False)
             except Exception as e:
-                # 예측 못한 에러 → 시트에 "삭제" + logs (silent drop 방지, critic 2026-05-08 Critical 1)
-                print(f"  [ERR] row={row.get('_row')} kw={row.get('키워드')!r}: {e}")
+                # D-024 (2026-05-14): 예외 시 K="삭제" 자동 적용 = 폐기 (T-M10.5 학습 정합).
+                # 사장님 시트 보존 우선 = updates 추가 X = 다음 cron 자연 재처리.
+                # retry_queue 추가 = T-M11 정합 (전체 cycle 안 1회 재시도).
+                # circuit_breaker 카운터 = health.record 로 유지 (차단 누적 검출).
+                # critic Opus 발견 Major 1: except Exception silent K="삭제" = D-023 화이트리스트 우회.
+                print(f"  [ROW-SKIP] [{tab_name}] 행 {row.get('_row')} 예외 = 시트 보존 (D-024 정합): {e}")
                 health.record(parser_confidence=0.0, success=False)
-                # 사장님 컨벤션: 노출 안 됨 = '삭제' 단일. exception 도 사장님 시점에 = '삭제'
-                updates.append(RowUpdate(row=row["_row"], columns={HEADER_AREA: "삭제"}))
+                retry_queue.add(row, error=str(e))
+                d024_skipped_rows += 1
         tab_updates[tab_name] = updates
         print(f"  → 1차 처리: {len(updates)} 갱신, {len(retry_queue)} 재시도 대기")
 
@@ -244,6 +249,7 @@ def run_cycle() -> dict:
     summary["cycle_seconds"] = cycle_seconds
     summary["tabs_processed"] = list(tab_updates.keys())
     summary["circuit_breaker_tripped"] = circuit_breaker_tripped  # 2026-05-11 architect Major 1
+    summary["d024_skipped_rows"] = d024_skipped_rows  # D-024 (2026-05-14): 예외 시 시트 보존 skip 카운트
     if circuit_breaker_tripped:
         summary["code_change_suspected"] = True  # cron 조기 종료 = 알림 trigger
 

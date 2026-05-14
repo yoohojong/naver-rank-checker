@@ -351,6 +351,130 @@ class TestUrlAliveOnExposedRows:
         crawler.fetch_cafe_url_status.assert_not_called()
 
 
+class TestD024ExceptionPreservation:
+    """D-024 (2026-05-14) 신규 회귀 test — main.py 예외 시 시트 보존 (K="삭제" 자동 적용 폐기).
+
+    critic Opus 발견 Major 1 정합 — except Exception silent K="삭제" = D-023 화이트리스트 우회.
+    T-M10.5 학습 정합 — 예측 못한 상태 = 시트 보존 우선.
+
+    검증 패턴:
+    - run_cycle 안 _process_row 가 raise 시 = updates 에 row 추가 X (시트 그대로)
+    - retry_queue 에 추가 (다음 cycle 자연 재처리)
+    - d024_skipped_rows 카운트 증가 (사장님 가시성)
+    """
+
+    def _patch_run_cycle_deps(self, fake_rows: dict, raise_exception: bool = True):
+        """run_cycle 의존성 mock — SheetsClient / Crawler / parse_search_result.
+
+        Args:
+            fake_rows: {탭이름: [행 dict, ...]} 시뮬 시트
+            raise_exception: True 면 _process_row 가 RuntimeError raise
+        """
+        # SheetsClient mock
+        mock_client_class = MagicMock()
+        mock_client_instance = MagicMock()
+        mock_client_instance.load_all_data_tabs.return_value = fake_rows
+        mock_client_instance.write_results.return_value = 0
+        mock_client_class.return_value = mock_client_instance
+
+        # Crawler mock
+        mock_crawler_class = MagicMock()
+        mock_crawler_instance = MagicMock()
+        mock_crawler_instance.warmup.return_value = None
+        if raise_exception:
+            mock_crawler_instance.fetch_search.side_effect = RuntimeError("예측 못한 에러")
+        else:
+            mock_crawler_instance.fetch_search.return_value = "<html></html>"
+        mock_crawler_class.return_value = mock_crawler_instance
+
+        return mock_client_class, mock_crawler_class, mock_client_instance
+
+    def test_예외_시_시트_보존_K_삭제_적용_X(self):
+        """D-024: _process_row 가 raise 시 = updates 에 row 추가 X = 시트 보존 (K="삭제" 자동 적용 폐기).
+
+        critic Opus 발견 Major 1 (main.py:188 except Exception → updates.append RowUpdate K="삭제") 폐기 검증.
+        """
+        from src.sheets import HEADER_AREA
+
+        fake_rows = {
+            "샴푸 카외": [
+                {"키워드": "탈모샴푸", "링크": "https://cafe.naver.com/cosmania/12345", "_row": 2, "_tab": "샴푸 카외"},
+            ],
+        }
+        mc, mcrw, client_inst = self._patch_run_cycle_deps(fake_rows, raise_exception=True)
+
+        with patch("src.main.SheetsClient", mc), \
+             patch("src.main.Crawler", mcrw), \
+             patch("src.main.SPREADSHEET_ID", "fake_id"), \
+             patch("src.main.SERVICE_ACCOUNT_JSON", "{}"):
+            from src.main import run_cycle
+            summary = run_cycle()
+
+        # D-024 핵심 검증 1: write_results 호출 시 updates 에 K="삭제" 포함 X
+        # write_results 가 호출됐다면 updates list 검증
+        for call_args in client_inst.write_results.call_args_list:
+            tab_name, updates = call_args[0]
+            for upd in updates:
+                # K="삭제" 절대 적용되지 않아야 함 (D-024 핵심)
+                assert upd.columns.get(HEADER_AREA) != "삭제", \
+                    f"D-024 위반: 예외 시 K='삭제' 자동 적용됨 (tab={tab_name}, row={upd.row})"
+
+        # D-024 핵심 검증 2: d024_skipped_rows >= 1 (예외 1건 = skip 1건)
+        assert summary.get("d024_skipped_rows", 0) >= 1, \
+            f"D-024 위반: 예외 시 d024_skipped_rows 증가 X (summary={summary})"
+
+    def test_예외_시_retry_queue_추가(self):
+        """D-024: _process_row 가 raise 시 = retry_queue 에 추가 (T-M11 정합).
+
+        다음 cycle 자연 재처리 = 사장님 시트 손상 X.
+        """
+        fake_rows = {
+            "샴푸 카외": [
+                {"키워드": "탈모샴푸", "링크": "https://cafe.naver.com/cosmania/12345", "_row": 2, "_tab": "샴푸 카외"},
+            ],
+        }
+        mc, mcrw, client_inst = self._patch_run_cycle_deps(fake_rows, raise_exception=True)
+
+        # RetryQueue.add 호출 추적
+        from src.retry import RetryQueue
+        original_add = RetryQueue.add
+        add_call_records = []
+
+        def tracked_add(self, row, error=""):
+            add_call_records.append({"row": row, "error": error})
+            return original_add(self, row, error=error)
+
+        with patch("src.main.SheetsClient", mc), \
+             patch("src.main.Crawler", mcrw), \
+             patch("src.main.SPREADSHEET_ID", "fake_id"), \
+             patch("src.main.SERVICE_ACCOUNT_JSON", "{}"), \
+             patch.object(RetryQueue, "add", tracked_add):
+            from src.main import run_cycle
+            run_cycle()
+
+        # D-024: 예외 1건 = retry_queue.add 호출 >= 1
+        assert len(add_call_records) >= 1, \
+            f"D-024 위반: 예외 시 retry_queue.add 호출 X (records={add_call_records})"
+
+    def test_summary_d024_skipped_rows_필드_존재(self):
+        """D-024: run_cycle summary 에 d024_skipped_rows 필드 항상 존재 (예외 0건도 0 으로 기록)."""
+        fake_rows = {
+            "샴푸 카외": [],  # 빈 탭 = 예외 없음
+        }
+        mc, mcrw, client_inst = self._patch_run_cycle_deps(fake_rows, raise_exception=False)
+
+        with patch("src.main.SheetsClient", mc), \
+             patch("src.main.Crawler", mcrw), \
+             patch("src.main.SPREADSHEET_ID", "fake_id"), \
+             patch("src.main.SERVICE_ACCOUNT_JSON", "{}"):
+            from src.main import run_cycle
+            summary = run_cycle()
+
+        # D-024: 예외 0건 = d024_skipped_rows = 0 (필드 존재 의무)
+        assert "d024_skipped_rows" in summary, f"D-024 위반: summary 에 d024_skipped_rows 필드 누락 ({summary})"
+        assert summary["d024_skipped_rows"] == 0
+
+
 class TestSlugWhitelistFallback:
     """T-M14.7 폐기 확인 (2026-05-14): slug 매치 fallback 제거 후 동작 검증.
 
