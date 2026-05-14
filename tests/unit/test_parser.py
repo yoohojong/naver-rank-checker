@@ -946,3 +946,134 @@ class TestCafeSlugWhitelistMatch:
         html = f"<html><body>{self._PADDING}{box}</body></html>"
         result = parse_search_result(html, target_url=None)
         assert result.exposure_area == ExposureArea.UNEXPOSED
+
+
+class TestBootstrapJsonFallbackIntegration:
+    """T-M22.1 통합 회귀 test (D-025, 2026-05-14): _extract_bootstrap_json 함수가
+    parse_search_result 안 옵션 A (HTML 우선 + UNEXPOSED 시 JSON fallback) 로 통합.
+
+    회귀 안전 검증:
+    1. HTML 파싱 = UNEXPOSED + JSON 매치 = AB / 정확 매치 검출
+    2. HTML 파싱 = 매치 성공 시 = JSON fallback skip (성능)
+    3. JSON 추출 실패 시 = HTML 결과 그대로 보존 (예외 X)
+    """
+
+    _PADDING = "<div class='pad'>" + ("x" * 600) + "</div>"
+
+    def _make_bootstrap_html(self, urls: list, dom_id: str = "fdr-test") -> str:
+        """entry.bootstrap() JSON payload 안 URL list 가 들어간 동적 박스 HTML 생성."""
+        items_json = ",".join(f'{{"link": "{u}"}}' for u in urls)
+        payload = f'{{"items": [{items_json}]}}'
+        # HTML 정적 파싱에 잡히지 않도록 script 태그 안에만 URL 위치 (api_subject_bx 박스 X)
+        return (
+            f'<html><body>{self._PADDING}'
+            f'<script>entry.bootstrap(document.getElementById("{dom_id}"), {payload});</script>'
+            f'</body></html>'
+        )
+
+    def _make_ab_box(self, cafe_url: str) -> str:
+        """AB 박스 (h2 없음 + cafe link 포함) HTML 조각 생성."""
+        return (
+            f'<div class="fds-default-mode api_subject_bx">'
+            f'<a class="api_txt_lines" href="{cafe_url}">글제목</a>'
+            f'</div>'
+        )
+
+    # --- 1. HTML 파싱 = UNEXPOSED + JSON 매치 성공 ---
+
+    def test_bootstrap_json_fallback_매치_정상(self):
+        """HTML 정적 파싱 = UNEXPOSED, JSON payload 안 target_url 매치 = AB 검출."""
+        target = "https://cafe.naver.com/pusanmommy/1445556"
+        urls = [
+            "https://blog.naver.com/foo/100",
+            target,
+            "https://cafe.naver.com/other/200",
+        ]
+        html = self._make_bootstrap_html(urls)
+        result = parse_search_result(html, target_url=target)
+        # JSON fallback 매치 = AB
+        assert result.exposure_area == ExposureArea.AB
+        assert result.matched_url == target
+        # idx = JSON 안 등장 순서 (광고/사이드바 제외 후)
+        assert result.integrated_rank == 2
+        # cafe_slot_rank = 카페만 카운트 idx (blog 1개 skip)
+        assert result.cafe_slot_rank == 1
+        # JSON fallback 신뢰도 = 0.75
+        assert result.parser_confidence == 0.75
+
+    def test_bootstrap_json_fallback_link_set_매치(self):
+        """target_url=None + link_set 지정 + JSON payload 안 카페 link 매치 = AB."""
+        link_set_url = "https://cafe.naver.com/cosmania/9999"
+        urls = [
+            "https://blog.naver.com/x/1",
+            link_set_url,
+        ]
+        html = self._make_bootstrap_html(urls)
+        result = parse_search_result(html, target_url=None, link_set={link_set_url})
+        assert result.exposure_area == ExposureArea.AB
+        assert result.matched_url == link_set_url
+        assert result.parser_confidence == 0.75
+
+    def test_bootstrap_json_fallback_slug_whitelist_매치(self):
+        """target_url=None + link_set=None + cafe_slug_whitelist + JSON 안 slug 매치 = AB."""
+        url = "https://cafe.naver.com/iroid/5412361"
+        html = self._make_bootstrap_html([url])
+        result = parse_search_result(html, target_url=None, cafe_slug_whitelist={"iroid"})
+        assert result.exposure_area == ExposureArea.AB
+        assert result.matched_url == url
+        # slug 매치 신뢰도 = 0.70
+        assert result.parser_confidence == 0.70
+
+    # --- 2. HTML 파싱 = 매치 성공 시 = JSON fallback skip (성능) ---
+
+    def test_html_파싱_성공_시_json_skip(self):
+        """HTML 정적 파싱 매치 성공 시 = JSON fallback 호출 X (성능 + 결과 보존).
+        검증: HTML 분기 결과 (confidence=0.9) 그대로 = JSON fallback (0.75) 적용 X."""
+        target = "https://cafe.naver.com/pusanmommy/1111"
+        # HTML 박스 안 target_url 매치 = AB 분류
+        ab_box = self._make_ab_box(target)
+        # 동시에 script 안 entry.bootstrap() payload 도 존재 (다른 URL)
+        payload = '{"items": [{"link": "https://cafe.naver.com/other/2222"}]}'
+        html = (
+            f'<html><body>{self._PADDING}{ab_box}'
+            f'<script>entry.bootstrap(document.getElementById("fdr-skip"), {payload});</script>'
+            f'</body></html>'
+        )
+        result = parse_search_result(html, target_url=target)
+        # HTML 분기 매치 = AB + confidence=0.9 (JSON fallback 0.75 적용 X)
+        assert result.exposure_area == ExposureArea.AB
+        assert result.matched_url == target
+        assert result.parser_confidence == 0.9
+
+    # --- 3. JSON 추출 실패 시 = HTML 결과 그대로 보존 (예외 X) ---
+
+    def test_json_추출_실패_시_html_결과_보존(self):
+        """JSON 파싱 실패 (invalid JSON 또는 entry.bootstrap 없음) 시 = HTML 결과 그대로.
+        예외 X. UNEXPOSED 그대로 보존."""
+        # entry.bootstrap = invalid JSON
+        html_invalid = (
+            f'<html><body>{self._PADDING}'
+            f'<script>entry.bootstrap(document.getElementById("fdr-bad"), {{invalid}});</script>'
+            f'</body></html>'
+        )
+        result_invalid = parse_search_result(html_invalid, target_url="https://cafe.naver.com/x/1")
+        # HTML 박스 없음 + JSON 실패 = UNEXPOSED 그대로
+        assert result_invalid.exposure_area == ExposureArea.UNEXPOSED
+        assert result_invalid.matched_url is None
+
+        # entry.bootstrap 자체 없음 (= _extract_bootstrap_json None)
+        html_no_bootstrap = f'<html><body>{self._PADDING}<script>var x = 1;</script></body></html>'
+        result_no_bs = parse_search_result(html_no_bootstrap, target_url="https://cafe.naver.com/x/1")
+        assert result_no_bs.exposure_area == ExposureArea.UNEXPOSED
+        assert result_no_bs.matched_url is None
+
+    def test_json_payload_있어도_매치_X_시_unexposed(self):
+        """JSON payload 추출 성공 + 안에 target_url 매치 X = UNEXPOSED 그대로 (예외 X)."""
+        urls = [
+            "https://blog.naver.com/x/1",
+            "https://cafe.naver.com/other/2",
+        ]
+        html = self._make_bootstrap_html(urls)
+        result = parse_search_result(html, target_url="https://cafe.naver.com/never/9999")
+        assert result.exposure_area == ExposureArea.UNEXPOSED
+        assert result.matched_url is None

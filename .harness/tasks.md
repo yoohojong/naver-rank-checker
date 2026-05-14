@@ -342,3 +342,9 @@ deps = 의존성 (선행 task), parallel = 동시 작업 안전한 다른 task
   - .harness/decisions.md: D-024 entry 추가 + D-005 폐기 명시
   - CLAUDE.md (root): D-024 영구 룰 섹션 명시 + D-023 보호 대상 모순 해소 (유형C = 사장님 입력 정합)
   - 전체 pytest pass 검증 의무
+
+- 2026-05-14: **T-M22.1 통합 완료** — `_extract_bootstrap_json` 함수 (commit d6bb44e) 가 `parse_search_result` 안 통합 (이전 dead code 상태). 옵션 A (HTML 우선, JSON fallback) 적용. 효과 = 네이버 동적 박스 누락 case 차단 = +5~10%p 정확도. test pass 의무.
+  - src/parser.py: `_parse_bootstrap_json_fallback` 신규 함수 + `parse_search_result` 안 UNEXPOSED 분기 후 JSON fallback 호출 통합 + `_collect_urls_from_json` helper 추가
+  - tests/unit/test_parser.py: TestBootstrapJsonFallbackIntegration 신규 6 test (fallback 매치 정상 / link_set fallback / slug whitelist fallback / HTML 성공 시 skip / JSON 추출 실패 시 HTML 결과 보존 / payload 매치 X 시 UNEXPOSED)
+  - 전체 pytest 288 pass (282 → +6 신규, 회귀 X 검증)
+  - .harness/decisions.md: D-025 entry 추가

@@ -74,6 +74,15 @@ def parse_search_result(
     elif _parse_popular(html, target_url, result, link_set, cafe_slug_whitelist):
         result.exposure_area = ExposureArea.POPULAR
 
+    # T-M22.1 통합 (D-025, 2026-05-14): HTML 정적 파싱 = UNEXPOSED 시 = JSON fallback 시도.
+    # 옵션 A 채택 (HTML 우선 + UNEXPOSED 시 JSON fallback):
+    # - HTML 파싱 100% 정확도 검증 (5-14 자동 정확도 측정) = 회귀 X 보장
+    # - 네이버 동적 박스 (entry.bootstrap() JSON payload) 누락 case = +5~10%p 정확도
+    # - HTML 매치 성공 시 = JSON skip = 성능 영향 X
+    # - JSON 추출/파싱 실패 시 = HTML 결과 그대로 보존 (예외 X)
+    if result.exposure_area == ExposureArea.UNEXPOSED:
+        _parse_bootstrap_json_fallback(html, target_url, result, link_set, cafe_slug_whitelist)
+
     _parse_jisikin(html, target_url or "", result)
     return result
 
@@ -666,3 +675,133 @@ def _extract_bootstrap_json(html: str) -> Optional[dict]:
                 except (json.JSONDecodeError, ValueError):
                     return None
     return None
+
+
+# T-M22.1 통합 (D-025, 2026-05-14): JSON payload 안 URL 탐색용 키 후보.
+# 네이버 동적 박스 JSON payload = 중첩 dict/list 혼합. URL 은 보통 'link' / 'url' / 'href'
+# 키 또는 string 값 형태로 등장. 깊이 우선 재귀 탐색 으로 모든 string URL 수집.
+_URL_LIKE_PREFIXES = ("http://", "https://")
+
+
+def _collect_urls_from_json(node, urls: list) -> None:
+    """T-M22.1 통합 (D-025, 2026-05-14): JSON payload 깊이 우선 재귀 탐색,
+    http(s) prefix string 값 = URL 후보로 수집.
+
+    네이버 동적 박스 JSON payload = 키 구조 다양 (link/url/href/contentUrl/...).
+    구조 의존 없이 모든 string 값 중 http(s) prefix 만 수집 = robust.
+
+    중복 dedup = caller (등장 순서 보존).
+    """
+    if isinstance(node, dict):
+        for v in node.values():
+            _collect_urls_from_json(v, urls)
+    elif isinstance(node, list):
+        for v in node:
+            _collect_urls_from_json(v, urls)
+    elif isinstance(node, str):
+        if node.startswith(_URL_LIKE_PREFIXES):
+            urls.append(node)
+
+
+def _parse_bootstrap_json_fallback(
+    html: str,
+    target_url: Optional[str],
+    result: RankResult,
+    link_set: Optional[set[str]] = None,
+    cafe_slug_whitelist: Optional[set[str]] = None,
+) -> bool:
+    """T-M22.1 통합 (D-025, 2026-05-14): HTML 파싱 = UNEXPOSED 시 = JSON fallback.
+
+    옵션 A (HTML 우선 + JSON fallback) 의 fallback 단계 구현.
+    네이버 동적 박스 (entry.bootstrap() JSON payload) 안 URL 후보 추출 후
+    target_url / link_set / cafe_slug_whitelist 매치 시도.
+
+    매치 성공 시:
+    - result.exposure_area = AB (JSON fallback 매치 = 동적 박스 = AB 가정)
+    - result.integrated_rank = JSON 안 URL 등장 순서 idx
+    - result.cafe_slot_rank = 카페 URL 만 카운트한 idx
+    - result.parser_confidence = 0.75 (JSON fallback = HTML 직접 파싱보다 약간 낮음)
+    - result.matched_url = 매치된 URL
+
+    매치 실패 시 = result 변경 X (HTML 결과 그대로 보존, 예외 X).
+
+    매치 우선순위 (HTML 파싱 분기와 동일):
+    1. target_url 정확 매치
+    2. link_set 정확 매치
+    3. cafe_slug_whitelist slug 매치
+    4. 매치 X
+    """
+    if not html:
+        return False
+
+    payload = _extract_bootstrap_json(html)
+    if payload is None:
+        return False
+
+    # JSON payload 안 모든 URL 수집 (등장 순서 보존, dedup)
+    raw_urls: list[str] = []
+    _collect_urls_from_json(payload, raw_urls)
+    if not raw_urls:
+        return False
+
+    # 등장 순서 보존 dedup (광고/사이드바 제외 = HTML 파싱과 정합)
+    seen: set[str] = set()
+    urls: list[str] = []
+    for u in raw_urls:
+        if u in seen:
+            continue
+        if _is_excluded_link(u):
+            continue
+        seen.add(u)
+        urls.append(u)
+
+    if not urls:
+        return False
+
+    cafe_count = 0
+    for idx, url in enumerate(urls, start=1):
+        kind = _classify_item_url(url)
+        if kind == "cafe":
+            cafe_count += 1
+
+        # 1. target_url 정확 매치
+        if target_url is not None:
+            if _urls_match(url, target_url):
+                result.integrated_rank = idx
+                if kind == "cafe":
+                    result.cafe_slot_rank = cafe_count
+                result.exposure_area = ExposureArea.AB
+                result.parser_confidence = 0.75
+                result.matched_url = target_url
+                return True
+            continue
+
+        # target_url=None 이하: link_set / cafe_slug_whitelist 분기
+
+        # 2. link_set 정확 매치 (T-M16 정합: 카페 link 만 매치)
+        if link_set:
+            if kind != "cafe":
+                continue
+            if _urls_match_any(url, link_set):
+                result.integrated_rank = idx
+                result.cafe_slot_rank = cafe_count
+                result.exposure_area = ExposureArea.AB
+                result.parser_confidence = 0.75
+                result.matched_url = url
+                print(f"    [JSON_FALLBACK_MATCH] idx={idx} kind={kind} matched_url={url[:90]}")
+                return True
+            continue
+
+        # 3. cafe_slug_whitelist slug 매치 (T-M14.7 정합)
+        if cafe_slug_whitelist and kind == "cafe":
+            slug = _extract_cafe_slug(url)
+            if slug and slug in cafe_slug_whitelist:
+                result.integrated_rank = idx
+                result.cafe_slot_rank = cafe_count
+                result.exposure_area = ExposureArea.AB
+                result.parser_confidence = 0.70
+                result.matched_url = url
+                print(f"    [JSON_FALLBACK_SLUG_MATCH] idx={idx} slug={slug} matched_url={url[:90]}")
+                return True
+
+    return False

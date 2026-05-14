@@ -434,3 +434,24 @@
 - C 컬럼 자동 갱신 유지 (옵션 A): T-M14.2 동일 사고 패턴 = 사장님 미지적뿐 = 미래 사고 위험
 - main.py 예외 K="삭제" 유지: T-M10.5 학습 무시 = 사고 패턴 재발
 - 사장님 결정 polling: CLAUDE.md gate 6 정합 X (단호 결정 의무) + 직전 사장님 "ㄱ" 단호 시그널 수신 완료
+
+
+### D-025: T-M22.1 통합 — JS JSON fallback (영구 적용)
+
+**결정 (2026-05-14)**: `_extract_bootstrap_json` 함수가 `parse_search_result` 안 통합. 옵션 A (HTML 우선 + JSON fallback) 적용.
+
+**근거**:
+- T-M22.1 (commit d6bb44e) = 함수만 추가, 통합 X = dead code 상태였음
+- D-021 plan = T-M22.1 통합 = +5~10%p 정확도 향상 예상
+- 네이버 동적 박스 (`entry.bootstrap()` JSON payload) = HTML 정적 파싱 누락 case 다수
+
+**구현**:
+- src/parser.py: `_parse_bootstrap_json_fallback` 신규 함수 + `_collect_urls_from_json` helper 추가 + `parse_search_result` 안 UNEXPOSED 분기 후 fallback 호출 통합. 매치 우선순위 = target_url / link_set / cafe_slug_whitelist (HTML 분기와 정합). 신뢰도 = 0.75 (target/link_set 매치) / 0.70 (slug 매치).
+- tests/unit/test_parser.py: TestBootstrapJsonFallbackIntegration 회귀 test 6개 신규 (fallback 매치 정상 / link_set fallback / slug whitelist fallback / HTML 성공 시 skip / JSON 추출 실패 시 HTML 결과 보존 / payload 매치 X 시 UNEXPOSED)
+- .harness/tasks.md: 변경 이력 entry 추가
+- 전체 pytest 288 pass (282 → +6 신규, 회귀 X 검증)
+
+**대안 안 고른 이유**:
+- 옵션 B (JSON 우선): HTML 파싱 100% 정확도 검증됨 (5-14 자동 정확도 측정) = JSON 우선 = 회귀 위험
+- 옵션 C (union): 중복 매치 = 우선순위 결정 복잡 = D-018 모호 결정 회피
+- 통합 안 함: D-021 plan 정합 X + dead code 누적
