@@ -16,6 +16,14 @@ concurrency:
   group: naver-rank-check
   cancel-in-progress: false
 
+# 2026-05-15 알림 fix: GITHUB_TOKEN 권한 명시 — issue #1 자동 댓글 의무.
+# 근거: 직전 run 25873780743 log = "Could not resolve to an issue or pull request with the number of 1"
+# = 기본 GITHUB_TOKEN = issue write 권한 부족 = post_summary_to_issue.py silent fail
+# fix = permissions block 명시 = 사장님 가시성 알림 흐름 복구.
+permissions:
+  issues: write
+  contents: read
+
 jobs:
   # T-M40.3 (2026-05-14): self-hosted runner 폐기 결정 — 사장님 명시.
   # 근거: 사장님 PC 24/7 online 부담 ↑ + 직전 cron success 다수 = ubuntu 환경 충분.
