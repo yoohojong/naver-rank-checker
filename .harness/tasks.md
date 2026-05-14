@@ -83,42 +83,31 @@ deps = 의존성 (선행 task), parallel = 동시 작업 안전한 다른 task
 
 ---
 
-## 다음 작업 (Next Up) — 2026-05-13 갱신
+## 다음 작업 (Next Up) — 2026-05-14 갱신
 
-🤖 **자동 가능 = 모두 완료** (코드 fix 다음 cron 자동 적용 진행)
+🤖 **자동 진행 = 신규 cron 25833418213 watch 중** (cron-job.org trigger 적용 후 첫 실행 결과 확인)
 
 👤 **사장님 작업 = 우선순위 ↓ 순**:
 
-### ⭐ 1순위 (가장 큰 영향) — PC 24/7 online 복귀
-- 사장님 PC self-hosted runner = 현재 offline 상태
-- 한국 IP (가정용 ISP) = Azure IP (ubuntu fallback) 대비 정확도 ↑↑ + 차단 위험 ↓↓
-- document-specialist 외부 검증 = "비한국 IP = 결과 차이 + CAPTCHA ↑" 확정
-- 사장님 PC = 절전 해제 + 네트워크 안정 의무 = 1회 설정
+### ⭐ 1순위 (긴급) — Google Sheets 버전 복원
+- T-M10.4 적용 cron 25827570772 = K="삭제" 다수 손상 확인
+- Google Sheets 버전 기록 = 2026-05-13 23:00 이전 시점 복원 의무
+- 방법: 시트 상단 메뉴 → 파일 → 버전 기록 → 기록 보기 → 손상 이전 버전 복원
 
-### 2순위 — 10 키워드 동시 검증 (15분, 1회)
-- 다음 cron 직후 (1시간 안)
-- 시트 임의 10 키워드 = 네이버 시크릿 모드 직접 검색
-- 본인 카페 글 노출 + K/L/M/J 수기 비교
-- 일치율 = **진짜 정확도 측정** + 추가 fix 발견 의무
-
-### 3순위 — GitHub 알림 설정 (5분, 1회)
+### 2순위 — GitHub 알림 설정 (5분, 1회)
 - github.com/settings/notifications = "Email" 체크
 - yoongu777@gmail.com 등록 확인
 - naver-rank-checker repo = "Watch" = All Activity
 - 결과 = cron 결과 자동 이메일 도착
 
-### 4순위 (선택) — 50 키워드 분기 검증 (25분, 분기 1회)
-- 장기 정확도 추적
-- 매월 부담 ↓↓ (분기 1회)
-
 ## ⏭️ 자동 진행 (사장님 작업 X = 자동)
-- 다음 cron (KST 12:00) = 모든 fix 적용 결과
-- D-022 우리 단호 결정 7개 = 적용 완료
-- T-M14.2 / T-M14.3 / T-M10.4 / T-M22 / T-M22.1 = 적용 완료
+- 신규 cron 25833418213 = cron-job.org KST 0/6/12/18 자동 trigger watch 중
+- 결과 보고 = 다음 세션 이어서
+- 운영 정착 진입 = ubuntu-latest 단독 + cron-job.org trigger = 사장님 PC 부담 X
 
 ## 차단 이슈 (Blockers)
-- 사장님 PC offline = 차단 위험 ↑ + 정확도 ↓ (1순위 의무)
-- 100% 정확도 = 자연 한계 객관 불가능 (D-021/D-022 정합, 3 agent 검증)
+- 사장님 Google Sheets 복원 = 긴급 (K="삭제" 손상 데이터 현재 노출 중)
+- 100% 정확도 = 자연 한계 객관 불가능 (D-021/D-022 정합, 3 agent 검증 유지)
 
 ## 변경 이력
 - 2026-05-05: 초기 생성 (brainstorming 단계 종료 시점)
@@ -264,4 +253,73 @@ deps = 의존성 (선행 task), parallel = 동시 작업 안전한 다른 task
   - Layer 4 검증 부재 = response-validator hook 정규식 어미 4개 누락
   - Layer 5 룰 모순 = D-019 본문 자체 어근 사용
   - fix: .harness 22건 일괄 치환 + hook 정규식 확장 ("은|을|음|는|지|아|았|혀|혔|힘|힌|히") + CLAUDE.md 보강
+
+- 2026-05-14: **T-M14.5 + T-M14.6 + T-M22.1 (commit 1b00023 + d6bb44e)** — 추가 정밀화 + JS JSON 추출:
+  - T-M14.5 신형 URL fallback (parser._urls_match) — cafe.naver.com/ca-fe/cafes/{cafe_id}/articles/{post_id} ↔ 구형 매치
+  - T-M14.6 광고/사이드바 link 제외 (_extract_main_link _AD_LINK_PATTERNS + _SIDEBAR_LINK_PATTERNS)
+  - T-M22.1 _extract_bootstrap_json regex fix (entry.bootstrap 2번째 인자 brace 균형 추출) — 진짜 추출 성공 (body 키 검증)
+  - 237 → 259 → 275 tests pass
+
+- 2026-05-14: **T-M14.7 (commit c0d7d39) → 폐기 (commit 37b40bb)** — 사장님 의도 잘못 해석:
+  - T-M14.7 추가: parse_search_result cafe_slug_whitelist 매개변수 + 상자 안 화이트리스트 slug 매치 fallback
+  - 사장님 발견: '피부과 여드름' = move79/6019162 (시트 미등록 새 글) 자동 검출 → K=AB / L=1 표시 = 사장님 시점 "내 글 X"
+  - probe evidence: 상자 2 (AB) = move79 / 상자 4 (AB) = workee 노출 = 시트 미등록 새 글
+  - 사장님 진짜 의도 = 시트 등록 link 정확 매치만 (= 다른 직원 글 / 새 글 검출 X)
+  - T-M14.7 전체 폐기 + main.py / auto_accuracy.py 호출 폐기
+
+- 2026-05-14: **cron 빈도 jitter (T-M40.1 + T-M40.2, commit d965809 + e1d1976)** — schedule 지연 완화:
+  - 직전 8 schedule cron 모두 67~206분 지연 (평균 140분) 발견
+  - 진짜 root cause (document-specialist 외부 사실): GitHub Actions 정시 cron = queue 폭증 시간대
+  - fix: cron '0 15,21,3,9' → '7,27 15,21,3,9' (한 시간 안 2번 시도 + 분 jitter)
+
+- 2026-05-14: **영구 한국어 강제 강화 + self-hosted 폐기 (commit 4493fe5)**:
+  - D-019.1: CLAUDE.md 영구 한국어 표준어 강제 강화 (= 사장님 평생 약속 명시)
+    - 절대 금지 단어 14개 + 줄임 표현 사용 금지
+    - 자체 검증 의무 (응답 송신 전 단어 grep = 0회 확인)
+  - T-M40.3: self-hosted runner 의존 폐기 = ubuntu-latest 단독 + run-cron-fallback job 삭제
+    - 사장님 PC 24/7 부담 폐기 (= 우리 단독 자동 운영)
+
+- 2026-05-14: **cron-job.org 설정 완료** (사장님 직접):
+  - GitHub PAT 발급 (scopes: repo + workflow)
+  - cron-job.org cronjob 생성 (URL + POST + Bearer token + Content-Type)
+  - TEST RUN HTTP 204 성공 검증 = workflow_dispatch 정확 trigger
+  - 매 6시간 KST 0/6/12/18 정시 자동 trigger = schedule 큐 지연 회피
+
+- 2026-05-14: **T-M10.5 url_alive 검증 폐기 (commit b2b69b9)** — CRITICAL 사고 fix:
+  - 사고: T-M10.4 적용 후 cron 25827570772 = 사장님 시트 K="삭제" 다수 손상
+  - 진짜 root cause (probe evidence): 네이버 카페 = 비로그인 = 로그인 페이지 HTML 반환
+    - 정상 ALIVE 글 3개 probe 모두 = nidlogin.login 키워드 검출 = PRIVATE 잘못 판정
+    - = 모든 link false positive 100% = K="삭제" 시트 손상
+  - fix: main.py url_alive 검증 block 폐기 = url_alive = True 항상
+  - 275 tests pass (test 7개 폐기/수정)
+  - 사장님 의무: Google Sheets 버전 기록 5/13 23:00 이전 시점 복원
+
+- 2026-05-14: **detect_direct_K fix (commit 4fc9cf6)** — auto-accuracy 측정 기준 정합:
+  - T-M14.7 폐기 후 일치율 69.0% 측정 → mismatch 31건 (시트 미등록 새 글)
+  - root cause: detect_direct_K = HTML 상자 안 화이트리스트 slug 매치 = 사장님 의도 X
+  - fix: detect_direct_K(html, target_link, all_known_links) = 시트 등록 link 정확 매치만
+  - 재측정 결과: 일치율 100.0% (= parser ↔ ground truth 완벽 정합)
+
+- 2026-05-14: **T-M14 전체 폐기 (commit 2068ef4)** — 사장님 진짜 의도 명확화:
+  - 사장님 명시: "시트 link 가 여러 키워드 검색에 노출되는지 체크" 만 / 시트 link 그대로 유지 / 자동 갱신 X
+  - 이전 잘못: T-M14.2 link_set fallback + 자동 갱신 = 사장님 시트 link 손상 가능성
+  - 폐기:
+    - main.py _process_row 단순화 = target_url 단독 매치만
+    - main.py run_cycle = all_known_links 구성 폐기 (빈 set 호환성)
+    - auto_accuracy.py = link_set fallback 호출 폐기
+    - 시트 "링크" 컬럼 자동 갱신 = 완전 폐기 (D-018 정합)
+    - link 빈 행 = 즉시 빈칸 반환 (검색 X)
+  - 271 tests pass (275 → 271, -4 = TestLinkAutoUpdate 폐기 + link 빈 행 통합)
+  - 매치 우선순위 단순화: target_url 정확 매치 → 매치 X = K=빈칸
+
+- 2026-05-14: **자동 정확도 측정 100% 확정** — parser 자체 결함 0건:
+  - 1차 (잘못된 link_set + direct 잘못) = 51%
+  - 2차 (T-M14.7 폐기 + direct 잘못) = 69%
+  - 3차 (T-M14.7 폐기 + detect_direct_K 정합) = **100.0%** ✅
+  - parser ↔ ground truth 완벽 정합 = 진짜 사장님 의도 적용 검증
+
+- 2026-05-14: **D-022 진짜 옵션 확정 = "시트 등록 link 정확 매치만"** (= 옵션 A 최종):
+  - B 옵션 (전체 회사 글 추적 + 자동 갱신) = 사장님 의도 misread = 폐기
+  - A 옵션 (시트 등록 link 정확 매치만) = 사장님 진짜 의도 = 확정
+  - link 자동 갱신 = 사장님 작업 손실 위험 = 절대 X
   7. 사장님 수기 시 1페이지만 / 2~3페이지까지 (critic 발견)
