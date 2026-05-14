@@ -49,10 +49,10 @@ def parse_search_result(
 ) -> RankResult:
     """검색 결과 페이지 + target_url 또는 link_set → RankResult.
 
-    target_url 박힘: 기존 동작 — target_url 매치 박은 link 의 순위 표시.
-    target_url=None + link_set 박힘 (T-M14, 2026-05-12): 사장님 시트의 다른 row link set
-    중 검색 결과에 박힌 link 의 순위 표시. 마케터 시점 = "내가 박은 카페글이
-    다른 키워드에도 노출 박혔으면" 즉시 인식.
+    target_url 지정: 기존 동작 — target_url 매치한 link 의 순위 표시.
+    target_url=None + link_set 지정 (T-M14, 2026-05-12): 사장님 시트의 다른 row link set
+    중 검색 결과에 있는 link 의 순위 표시. 마케터 시점 = "내가 작업한 카페글이
+    다른 키워드에도 노출되었으면" 즉시 인식.
 
     T-M14.7 (2026-05-14 D-022 B 옵션): cafe_slug_whitelist 매치 fallback.
     target_url 매치 X + link_set 매치 X 시 = 박스 안 카페 link 의 slug 가
@@ -97,7 +97,7 @@ def _detect_block_order(html: str) -> list[str]:
         h2 = box.find("h2")
         kind: Optional[str] = None
         if h2 is None:
-            # T-M33: 박스 안 cafe link 없으면 AB 분류 X (blog/web 만 박힌 박스 = skip)
+            # T-M33: 박스 안 cafe link 없으면 AB 분류 X (blog/web 만 있는 박스 = skip)
             has_cafe = any("cafe.naver.com" in a.get("href", "") for a in box.find_all("a", href=True))
             if has_cafe and _extract_main_link(box):
                 kind = ExposureArea.AB.value
@@ -146,9 +146,9 @@ def _parse_ab_list(
     - 메인 a[href] 가 있음
 
     매칭 시: integrated_rank, cafe_slot_rank/blog_slot_rank, parser_confidence 채움.
-    target_url 박힘: 기존 동작.
-    target_url=None + link_set 박힘 (T-M14): 사장님 시트의 다른 row link 와 매치된 link 의 순위.
-    target_url=None + link_set 없음 + cafe_slug_whitelist 박힘 (T-M14.7):
+    target_url 지정: 기존 동작.
+    target_url=None + link_set 지정 (T-M14): 사장님 시트의 다른 row link 와 매치된 link 의 순위.
+    target_url=None + link_set 없음 + cafe_slug_whitelist 지정 (T-M14.7):
         박스 안 카페 link slug 가 화이트리스트 안이면 매치 = 새 글 자동 검출.
     매칭 실패 시 False (다음 분기로).
 
@@ -169,7 +169,7 @@ def _parse_ab_list(
         if box.find("h2") is not None:
             continue
         # T-M33 (2026-05-12 D-022): 박스 안 cafe link 0건 = AB 분류 X
-        # blog/web 만 박힌 박스는 AB로 카운트하지 않음 (Case B 11건 fix)
+        # blog/web 만 있는 박스는 AB로 카운트하지 않음 (Case B 11건 fix)
         has_cafe = any("cafe.naver.com" in a.get("href", "") for a in box.find_all("a", href=True))
         if not has_cafe:
             continue
@@ -201,9 +201,9 @@ def _parse_ab_list(
 
         # target_url=None 이하: link_set / cafe_slug_whitelist 분기
 
-        # T-M14 (T-M10 revert): target_url=None + link_set 박힘 = 사장님 시트 link 매치
+        # T-M14 (T-M10 revert): target_url=None + link_set 지정 = 사장님 시트 link 매치
         # T-M16 (2026-05-12): 사장님 의도 = "내 카페 글이 노출되었나" — 카페 link 만 매치.
-        # 사장님 시트의 어떤 row 에 blog link 박혀있어도 매치 시도 X (마케터 = 카페만 작업).
+        # 사장님 시트의 어떤 row 에 blog link 있어도 매치 시도 X (마케터 = 카페만 작업).
         if link_set:
             if kind != "cafe":
                 continue  # T-M16: blog/web 매치 시도 X
@@ -218,7 +218,7 @@ def _parse_ab_list(
             continue
 
         # 3. cafe_slug_whitelist slug 매치 (T-M14.7 신규)
-        # target_url=None + link_set 없음 + cafe_slug_whitelist 박힘 = 새 글 자동 검출
+        # target_url=None + link_set 없음 + cafe_slug_whitelist 지정 = 새 글 자동 검출
         if cafe_slug_whitelist and kind == "cafe":
             slug = _extract_cafe_slug(url)
             if slug and slug in cafe_slug_whitelist:
@@ -379,10 +379,10 @@ def _urls_match(a: str, b: str) -> bool:
 
 
 def _urls_match_any(url: str, link_set: set[str]) -> bool:
-    """T-M14: url 박힌 거가 link_set 안 어떤 link 와 매치 박혀있나.
+    """T-M14: url 이 link_set 안 어떤 link 와 매치되는지 확인.
 
-    naver.me 단축 URL 박힌 link 박을 때 = 매치 X. main.py 에서 link_set 박을 때
-    resolve_short_url 박은 후 박는 것 정합. 여기는 raw _urls_match 박음.
+    naver.me 단축 URL 있는 link 사용 시 = 매치 X. main.py 에서 link_set 사용 시
+    resolve_short_url 처리 후 사용하는 것과 정합. 여기는 raw _urls_match 사용.
     """
     if not url or not link_set:
         return False
@@ -456,7 +456,7 @@ def _parse_popular(
     """인기글 (사장님 컨벤션) — h2 자손 있는 박스 모두 (광고/이미지/AI/쇼핑 제외).
 
     사장님 컨벤션 (2026-05-08 확인): 검색 결과 박스에 h2 헤더 (키워드 변형 또는 '...인기글') 있고
-    안에 본문 묶음 → 모두 '인기글'. 제가 spec 에 박은 'SMART_BLOCK' 은 사장님 컨벤션 X.
+    안에 본문 묶음 → 모두 '인기글'. 제가 spec 에 사용한 'SMART_BLOCK' 은 사장님 컨벤션 X.
 
     매칭 시:
     - integrated_rank (L) = 인기글 박스 안 본문 글 idx (URL 단위 dedup, T-M14.3)
@@ -506,7 +506,7 @@ def _parse_popular(
 
             # target_url=None 이하: link_set / cafe_slug_whitelist 분기
 
-            # T-M14: target_url=None + link_set 박힘 = 사장님 시트 link 매치
+            # T-M14: target_url=None + link_set 지정 = 사장님 시트 link 매치
             # T-M16 (2026-05-12): 카페 link 만 매치 (사장님 의도 = 카페만 작업)
             if link_set:
                 if not is_cafe:
@@ -523,7 +523,7 @@ def _parse_popular(
                 continue
 
             # 3. cafe_slug_whitelist slug 매치 (T-M14.7 신규)
-            # target_url=None + link_set 없음 + cafe_slug_whitelist 박힘 = 새 글 자동 검출
+            # target_url=None + link_set 없음 + cafe_slug_whitelist 지정 = 새 글 자동 검출
             if cafe_slug_whitelist and is_cafe:
                 slug = _extract_cafe_slug(url)
                 if slug and slug in cafe_slug_whitelist:

@@ -175,8 +175,8 @@ def run_cycle() -> dict:
                 circuit_breaker_tripped = True
                 break
             except CrawlerError as e:
-                # 2026-05-11 D-017 fix: 차단/네트워크 실패 → retry queue. 실패 시 K 보존 (시트 안 박음).
-                # 이전 (critic 2026-05-08): 재시도 실패 → "삭제" 박음 — 사장님 작업자 혼란 (차단≠삭제).
+                # 2026-05-11 D-017 fix: 차단/네트워크 실패 → retry queue. 실패 시 K 보존 (시트에 기록하지 않음).
+                # 이전 (critic 2026-05-08): 재시도 실패 → "삭제" 기록 — 사장님 작업자 혼란 (차단≠삭제).
                 # 사장님 시트 손상 사례 (cron 25647821456) 후 폐기.
                 retry_queue.add(row, error=str(e))
                 health.record(parser_confidence=0.0, success=False)
@@ -203,8 +203,8 @@ def run_cycle() -> dict:
             if r["ok"] and r["update"] is not None:
                 tab_updates[tab].append(RowUpdate(row=r["row"]["_row"], columns=r["update"]))
             else:
-                # 2026-05-11 D-017 fix: 재시도도 실패 = K 보존 (시트 안 박음).
-                # 이전 (critic 2026-05-08): "삭제" 박음 — 사장님 작업자 혼란 (차단≠진짜 삭제).
+                # 2026-05-11 D-017 fix: 재시도도 실패 = K 보존 (시트에 기록하지 않음).
+                # 이전 (critic 2026-05-08): "삭제" 기록 — 사장님 작업자 혼란 (차단≠진짜 삭제).
                 # 사장님 시트 손상 사례 후 폐기. 다음 cron 자연 재처리.
                 print(f"  [SKIP-PRESERVE] row={r['row'].get('_row')} kw={r['row'].get('키워드')!r}: retry 실패, K 보존")
 

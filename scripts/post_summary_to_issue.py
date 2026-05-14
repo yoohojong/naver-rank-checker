@@ -32,7 +32,7 @@ Claude 에게 보고 권장."""
 
 def build_success_comment(summary: dict) -> str:
     """2026-05-11 CRITICAL fix: K 분포 + 탭 이름 제거 (사장님 비즈니스 데이터 노출 방지).
-    단순 메타 (시간/행수/셀수/성공률/상태) 만 박음. 자세한 내용 = Actions log 링크 클릭."""
+    단순 메타 (시간/행수/셀수/성공률/상태) 만 기록. 자세한 내용 = Actions log 링크 클릭."""
     success_rate = summary.get("success_rate", 0)
     success_pct = f"{success_rate * 100:.1f}%"
     cells = summary.get("total_cells_written", 0)

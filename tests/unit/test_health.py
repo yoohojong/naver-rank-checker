@@ -100,7 +100,7 @@ class TestHealthMonitorAlerts:
 
         avg_conf = 0.0 + 노출 표본 = 0 → 노출 조건 충족 X. 다만 fetch 성공 success=True 면 rate 조건도 미충족.
         실제 회귀 시나리오 = success=False 누적 (차단/예외). 그건 rate 조건으로 검출.
-        이 test = 노출 0 + success=True 의 boundary 동작 확인 (의도된 boundary: false positive 안 박힘).
+        이 test = 노출 0 + success=True 의 boundary 동작 확인 (의도된 boundary: false positive 발생하지 않음).
         """
         h = HealthMonitor()
         for _ in range(20):

@@ -31,7 +31,7 @@ class TestSheetsClient:
             SheetsClient(spreadsheet_id="abc", service_account_json="not json")
 
     def test_bom_prefix_stripped(self):
-        """2026-05-11 defensive: UTF-8 BOM 가 secret 에 박혀도 인증 통과.
+        """2026-05-11 defensive: UTF-8 BOM 이 secret 에 있어도 인증 통과.
         Reason: PowerShell pipe / 메모장 등이 BOM 추가 가능. GitHub Actions 첫 실행에서 발견된 케이스."""
         fake_creds = "﻿" + json.dumps({
             "type": "service_account",
@@ -510,7 +510,7 @@ class TestSheetsApiRetry:
         return _gs.exceptions.APIError(resp)
 
     def test_retry_503_then_success(self):
-        """503 2회 fail → 3회차 성공 = 결과 박힘."""
+        """503 2회 fail → 3회차 성공 = 결과 기록됨."""
         headers = ["키워드", "노출영역"]
         client, ws = self._make_client_with_ws(headers)
         err = self._make_api_error(503)
@@ -519,7 +519,7 @@ class TestSheetsApiRetry:
             n = client.write_results("샴푸 카외", [RowUpdate(row=2, columns={"노출영역": "AB"})])
         assert n == 1
         assert ws.batch_update.call_count == 3
-        assert mock_sleep.call_count == 2  # 2회 sleep 박힘 (5s, 10s)
+        assert mock_sleep.call_count == 2  # 2회 sleep 실행됨 (5s, 10s)
 
     def test_retry_503_3_times_then_raise(self):
         """503 3회 연속 fail → 마지막 attempt 후 APIError raise."""

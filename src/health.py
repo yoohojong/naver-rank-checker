@@ -52,7 +52,7 @@ class HealthMonitor:
         success_count = sum(1 for r in self.records if r["success"])
         rate = success_count / total
 
-        # 2026-05-11 T-M9.2 fix: 노출된 record (conf > 0) 만 평균에 박음.
+        # 2026-05-11 T-M9.2 fix: 노출된 record (conf > 0) 만 평균에 포함함.
         # UNEXPOSED record (conf = 0 + success=True) = 의도된 정상 상태 = noise 아님.
         # 옛 식 (all records 평균) = 미노출 우세 시트 (832 행 중 다수) 시 평균 자연스럽게 ↓ → false positive 알림.
         # 진단: probe v4 2026-05-11 — 5/5 keyword parser 정확 (4 미노출 + 1 노출), conf 평균 0.18.

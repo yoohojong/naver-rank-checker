@@ -19,8 +19,8 @@ def _sheets_api_retry(func, *, ctx: str = ""):
     """Google Sheets API call wrapper — 503/5xx retry (exponential backoff + jitter).
 
     cron 25683405754 (2026-05-12) 의 batch_update 503 fail 분석 결과 = gspread default
-    retry 박지 X. 한 번 fail 박으면 데이터 손실 (사장님 시트 안 박힘).
-    fix = 5s/10s/20s backoff + jitter. 총 마진 ~35초. 진짜 장기 장애면 cron 다음 schedule 박힘.
+    retry 하지 않음. 한 번 fail 시 데이터 손실 (사장님 시트에 기록되지 않음).
+    fix = 5s/10s/20s backoff + jitter. 총 마진 ~35초. 진짜 장기 장애면 cron 다음 schedule 에 처리됨.
     """
     last_error = None
     for attempt in range(SHEETS_RETRY_MAX_ATTEMPTS):
@@ -66,7 +66,7 @@ class SheetsClient:
     """
 
     def __init__(self, spreadsheet_id: str, service_account_json: str):
-        # 2026-05-11 defensive: PowerShell pipe / Windows 메모장 등이 UTF-8 BOM 을 secret 에 박을 수 있음.
+        # 2026-05-11 defensive: PowerShell pipe / Windows 메모장 등이 UTF-8 BOM 을 secret 에 추가할 수 있음.
         # json.loads 는 BOM 거부 ("Unexpected UTF-8 BOM"). 사장님이 어떻게 set 하든 강건하게 처리.
         if service_account_json.startswith("﻿"):
             service_account_json = service_account_json[1:]
@@ -109,9 +109,9 @@ class SheetsClient:
                 ctx=tab_name,
             )
 
-        # 2026-05-12 T-M14: K="삭제" 박힌 셀 = 노란색 배경 (사장님 시각 ↑)
+        # 2026-05-12 T-M14: K="삭제" 기록된 셀 = 노란색 배경 (사장님 시각 ↑)
         # 사장님 명시: 마케터 시트 봤을 때 즉시 "삭제됐다" 인식.
-        # K = "AB"/"인기글"/빈 박힌 셀 = 흰색 (reset) — 이전 박힌 노란색 정리.
+        # K = "AB"/"인기글"/빈 기록된 셀 = 흰색 (reset) — 이전 노란색 정리.
         if HEADER_AREA in mapping:
             k_col = mapping[HEADER_AREA] + 1  # 1-indexed
             color_formats = []
@@ -218,7 +218,7 @@ def rank_result_to_columns(
     - 지식인탭: 'O' or 빈 칸
 
     T-M14.2 (D-022 보완):
-    - new_link 박힘 시 = "링크" 컬럼도 갱신 (시트 자동 갱신).
+    - new_link 지정 시 = "링크" 컬럼도 갱신 (시트 자동 갱신).
     """
     cols: dict[str, str] = {}
     cols[HEADER_TYPE] = block_order[0] if block_order else ""

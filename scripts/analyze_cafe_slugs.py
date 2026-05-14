@@ -1,12 +1,12 @@
 """T-M18: 사장님 시트 link 의 cafe slug 분포 분석 → 화이트리스트 후보 추출.
 
 입력 1차: .harness/comparison-500-after-fix.json (500행 sample, 2026-05-11 시점)
-- 사장님 시트의 link 박힌 row 만 박혀있음
+- 사장님 시트의 link 있는 row 만 포함됨
 - 카페 slug = link 의 cafe.naver.com 다음 첫 segment
 
 출력: slug 별 행 수 표 (내림차순) + 화이트리스트 후보 (≥ 2 행 기준).
 
-근거: 사장님 회사 카페 = 여러 키워드에 반복 작업되는 슬러그. 1회만 박힌 슬러그 = 외주/타사/실수 가능.
+근거: 사장님 회사 카페 = 여러 키워드에 반복 작업되는 슬러그. 1회만 등장한 슬러그 = 외주/타사/실수 가능.
 """
 from __future__ import annotations
 import json
@@ -66,7 +66,7 @@ def main() -> int:
     total_with_link = len(rows) - empty_count
     print(f"=== T-M18 사장님 시트 cafe slug 분포 분석 ===")
     print(f"입력: {comparison_path.name} ({len(rows)} 행)")
-    print(f"link 박힌 행: {total_with_link} / link 빈 행: {empty_count}")
+    print(f"link 있는 행: {total_with_link} / link 빈 행: {empty_count}")
     print(f"cafe.naver.com: {sum(cafe_counter.values())} 행 ({len(cafe_counter)} distinct slugs)")
     print(f"blog.naver.com: {blog_count} 행")
     print(f"기타: {web_count} 행")
@@ -88,7 +88,7 @@ def main() -> int:
     print(f"= 2 행 ({len([x for x in threshold_2 if x[1] == 2])} slugs): {[s for s, c in threshold_2 if c == 2]}")
     print(f"= 1 행 ({len(threshold_1)} slugs): {[s for s, _ in threshold_1]}")
     print()
-    print(f"=== 1 행만 박힌 slug 의 sample (외주/실수 의심) ===")
+    print(f"=== 1 행만 등장한 slug 의 sample (외주/실수 의심) ===")
     for slug, _ in threshold_1[:20]:
         kw, link = sample_links[slug][0]
         print(f"  {slug:<22} kw={kw!r}  link={link[:80]}")

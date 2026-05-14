@@ -931,7 +931,7 @@ class TestCafeSlugWhitelistMatch:
         assert result.integrated_rank == 1
 
     def test_slug_whitelist_fallback_when_no_target_and_no_link_set(self):
-        """target_url=None + link_set=None + cafe_slug_whitelist 박힘 = slug 매치 동작."""
+        """target_url=None + link_set=None + cafe_slug_whitelist 지정 = slug 매치 동작."""
         whitelist_url = "https://cafe.naver.com/iroid/5412361"
         box = self._make_ab_box(whitelist_url)
         html = f"<html><body>{self._PADDING}{box}</body></html>"

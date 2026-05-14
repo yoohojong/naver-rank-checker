@@ -72,7 +72,7 @@ def main() -> int:
     case_false_pos = [r for r in rows if r.get("m_area") in ("미노출", "", None) and r.get("p_area") in ("AB", "인기글")]
     # case 3: AB ↔ 인기글 cross (분류 잘못)
     case_class_swap = [r for r in rows if (r.get("m_area") == "AB" and r.get("p_area") == "인기글") or (r.get("m_area") == "인기글" and r.get("p_area") == "AB")]
-    # case 4: 사장님 = 빈칸 (작업 안 박힘) — 영향 다름
+    # case 4: 사장님 = 빈칸 (작업 미진행) — 영향 다름
     case_empty_m = [r for r in rows if r.get("m_area") in ("", None)]
 
     print(f"Case 1 - false negative (사장님 노출 → parser 미노출): {len(case_false_neg)}")
@@ -93,9 +93,9 @@ def main() -> int:
     L_ne_M = sum(1 for r in rows if r.get("m_L") != r.get("m_M") and r.get("m_L") is not None and r.get("m_M") is not None)
     M_null_L_some = sum(1 for r in rows if r.get("m_M") is None and r.get("m_L") is not None)
     print(f"=== 사장님 L vs M 컨벤션 분석 ===")
-    print(f"L == M (둘 다 박힘): {L_eq_M}")
-    print(f"L ≠ M (둘 다 박힘): {L_ne_M}")
-    print(f"L 박힘 + M 빈칸: {M_null_L_some}")
+    print(f"L == M (둘 다 있음): {L_eq_M}")
+    print(f"L ≠ M (둘 다 있음): {L_ne_M}")
+    print(f"L 있음 + M 빈칸: {M_null_L_some}")
     print()
 
     # false positive sample (D-020 Case A 검증)
