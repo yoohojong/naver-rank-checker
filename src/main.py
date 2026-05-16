@@ -13,6 +13,7 @@
 - 링크 빈 행: skip (작업자가 글 쓰기 전)
 - 컬럼: 유형 / 노출영역 / L / M / 지식인탭 만 갱신. 그 외 (작업일/작업자/MB/PC/총합/작업아이디/카페게시판) 건드리지 X.
 """
+import gzip
 import json
 import os
 import random
@@ -175,6 +176,10 @@ def run_cycle() -> dict:
 
     cycle_start = time.time()
     print("=== naver-rank-checker cron 사이클 시작 ===")
+    # T-M90 (D-027 보강 2026-05-17) architect Opus C1 fix: CAFE_WHITELIST 미설정 시 = log 안 명시.
+    # 사장님 secrets 미등록 시 = 빈 set = D-026 자동 채움 silent 무력화 위험 mitigation.
+    if not CAFE_WHITELIST:
+        print("[T-M90] ⚠️ CAFE_WHITELIST_SLUGS 환경변수 미설정 — D-026 자동 채움 비활성")
     client = SheetsClient(spreadsheet_id=SPREADSHEET_ID, service_account_json=SERVICE_ACCOUNT_JSON)
     crawler = Crawler(slowdown=SlowdownController(base=NAVER_SLOWDOWN_BASE_SEC, max_=NAVER_SLOWDOWN_MAX_SEC))
     health = HealthMonitor()
@@ -194,16 +199,18 @@ def run_cycle() -> dict:
         backup_ts = datetime.now(kst).strftime("%Y%m%dT%H%M%S")
         backup_dir = ".harness/backups"
         os.makedirs(backup_dir, exist_ok=True)
-        backup_path = f"{backup_dir}/{backup_run_id}_{backup_ts}.json"
+        # T-M90 (D-027 보강 2026-05-17) architect Opus m1 fix: JSON → gzip 압축 (~2.5MB → ~150KB).
+        # 근거: artifact retention × cron 빈도 × 30일 = ~300MB 누적 = GitHub free tier 500MB 근접 위험.
+        backup_path = f"{backup_dir}/{backup_run_id}_{backup_ts}.json.gz"
         backup_payload = {
             "timestamp": datetime.now(kst).isoformat(),
             "run_id": backup_run_id,
             "spreadsheet_id": SPREADSHEET_ID,
             "tabs": {tab_name: list(rows) for tab_name, rows in data.items()},
         }
-        with open(backup_path, "w", encoding="utf-8") as f:
+        with gzip.open(backup_path, "wt", encoding="utf-8") as f:
             json.dump(backup_payload, f, ensure_ascii=False, indent=2)
-        print(f"[T-M81 백업] {backup_path} 저장 (탭 {len(data)}, 행 {sum(len(r) for r in data.values())})")
+        print(f"[T-M81 백업] {backup_path} 저장 (탭 {len(data)}, 행 {sum(len(r) for r in data.values())}) [gzip]")
     except Exception as e:
         # 백업 실패 = log + 진행 (= cron 자체 중단 X). 사장님 가시성 = summary 안 표시.
         print(f"[T-M81 백업] 실패 = {e} (cron 진행)")
@@ -330,6 +337,9 @@ def run_cycle() -> dict:
     summary["tabs_processed"] = list(tab_updates.keys())
     summary["circuit_breaker_tripped"] = circuit_breaker_tripped  # 2026-05-11 architect Major 1
     summary["d024_skipped_rows"] = d024_skipped_rows  # D-024 (2026-05-14): 예외 시 시트 보존 skip 카운트
+    # T-M90 (D-027 보강 2026-05-17) architect Opus C1 fix: 사장님 가시성 = secrets 미설정 시 issue #1 댓글 명시 의무.
+    summary["all_known_links_count"] = len(all_known_links)
+    summary["cafe_whitelist_size"] = len(CAFE_WHITELIST)
     if circuit_breaker_tripped:
         summary["code_change_suspected"] = True  # cron 조기 종료 = 알림 trigger
 

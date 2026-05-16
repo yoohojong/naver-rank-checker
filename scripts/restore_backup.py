@@ -16,6 +16,7 @@
 근거: D-027 + shadow mode 폐기 정합 (= 시트 즉시 갱신 + 사고 시 백업 복원).
 """
 import argparse
+import gzip
 import json
 import os
 import sys
@@ -53,8 +54,13 @@ def restore_backup(backup_path: str, dry_run: bool = False) -> dict:
     if not os.path.exists(backup_path):
         raise FileNotFoundError(f"백업 파일 없음: {backup_path}")
 
-    with open(backup_path, "r", encoding="utf-8") as f:
-        payload = json.load(f)
+    # T-M90 (D-027 보강 2026-05-17) architect Opus m1 fix: gzip 자동 인식 (= 신규 백업 .json.gz + 종전 .json 둘 다 호환).
+    if backup_path.endswith(".gz"):
+        with gzip.open(backup_path, "rt", encoding="utf-8") as f:
+            payload = json.load(f)
+    else:
+        with open(backup_path, "r", encoding="utf-8") as f:
+            payload = json.load(f)
 
     print(f"  timestamp={payload.get('timestamp')}, run_id={payload.get('run_id')}")
     print(f"  spreadsheet_id={payload.get('spreadsheet_id')}")

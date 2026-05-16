@@ -46,8 +46,16 @@ def build_success_comment(summary: dict) -> str:
     retry_left = summary.get("retry_queue_remaining", 0)
     code_change = summary.get("code_change_suspected", False)
     d024_skipped = summary.get("d024_skipped_rows", 0)
+    # T-M90 (D-027 보강 2026-05-17) architect Opus C1 fix: 사장님 가시성 = CAFE_WHITELIST 미설정 시 즉시 인지.
+    cafe_whitelist_size = summary.get("cafe_whitelist_size", 0)
+    all_known_links_count = summary.get("all_known_links_count", 0)
 
     health_status = "🚨 code_change_suspected" if code_change else "✅ 정상"
+
+    if cafe_whitelist_size == 0:
+        whitelist_line = "\n⚠️ **CAFE_WHITELIST_SLUGS secrets 미설정** — D-026 빈 link 자동 채움 비활성 상태. GitHub Settings → Secrets → CAFE_WHITELIST_SLUGS 등록 의무."
+    else:
+        whitelist_line = f"\n**D-026 화이트리스트**: {cafe_whitelist_size} slug / 매치 link {all_known_links_count}건"
 
     return f"""{OWNER_MENTION} ## ✅ cron 완료 — {format_kst()}
 
@@ -57,7 +65,7 @@ def build_success_comment(summary: dict) -> str:
 **성공률**: {success_pct}
 **재시도 큐 남음**: {retry_left}
 **예외 시 시트 보존 (D-024)**: {d024_skipped} 행
-**상태**: {health_status}
+**상태**: {health_status}{whitelist_line}
 
 ---
 자세한 내역 (탭별 / K 분포 등) = Actions log 링크 클릭:

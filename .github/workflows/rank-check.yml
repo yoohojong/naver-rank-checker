@@ -72,15 +72,18 @@ jobs:
           ./.venv/bin/python -u scripts/post_summary_to_issue.py
 
       # T-M86 (D-027 2026-05-17): 백업 artifact upload = 사장님 사고 시점 = 다운로드 + restore_backup.py 즉시 복원.
-      # retention = 30일 (= 사장님 1달 안 사고 검출 의무 시점).
-      # main.py T-M81 = 매 cron 시작 시 .harness/backups/{run_id}_{ts}.json 저장 → artifact 업로드.
+      # T-M90 (D-027 보강 2026-05-17) architect Opus m1 fix: retention 30 → 14일 + .gz 호환.
+      # 근거: ~2.5MB × 4회/일 × 30일 = ~300MB → free tier 500MB 근접 위험. gzip 압축 + retention ↓ = 부담 ↓.
+      # main.py T-M81 = 매 cron 시작 시 .harness/backups/{run_id}_{ts}.json.gz 저장 → artifact 업로드.
       - name: Upload sheet backup artifact
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: sheet-backup-${{ github.run_id }}
-          path: .harness/backups/*.json
-          retention-days: 30
+          path: |
+            .harness/backups/*.json
+            .harness/backups/*.json.gz
+          retention-days: 14
           if-no-files-found: warn
 
       # 2026-05-13: 이메일 step 제거. root cause = GMAIL_USER/GMAIL_APP_PASSWORD secrets 미등록.

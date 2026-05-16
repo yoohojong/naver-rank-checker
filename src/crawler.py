@@ -215,7 +215,11 @@ class Crawler:
             CafeStatus.UNKNOWN — 로그인 페이지 / 404 / 네트워크 fail (= 시트 보존)
             CafeStatus.ALIVE — 200 + 삭제 텍스트 X (= 정상)
         """
-        self.slowdown.wait()
+        # T-M90 (D-027 보강 2026-05-17) architect Opus M1 fix: slowdown.wait() (~4.4초) → time.sleep(1.0)
+        # 근거: 832 행 미노출 30% = 250 행 × 4.4초 = +18분 cron 폭증 + workflow 180분 timeout 근접 위험.
+        # url_status path = 카페 글 GET (= 검색 endpoint 와 분리) = slowdown 의도 X (= 차단 검출 = 검색 path 만).
+        # 1초 fixed sleep = 250 행 × 1초 = +4분 = 안전. 회귀 test 갱신.
+        time.sleep(1.0)
         try:
             r = self.session.get(
                 url,

@@ -167,3 +167,91 @@ class TestProcessRow:
         row = {"키워드": "test", "링크": "https://cafe.naver.com/x/1", "_row": 1}
         with pytest.raises(CrawlerError):
             _process_row(row, c, h)
+
+
+class TestT_M81BackupAutomation:
+    """T-M81 (D-027 2026-05-17) 회귀 test — main.py run_cycle 백업 자동화.
+
+    사장님 명시 컨벤션:
+    - run_cycle 시작 시 = 시트 K/L/M/링크/유형 전체 read → .harness/backups/{run_id}_{ts}.json 저장
+    - 폴더 자동 생성
+    - 백업 실패 = log + 진행 (cron 중단 X)
+    - shadow mode 폐기 정합 (= 시트 즉시 갱신 + 사고 시 백업 복원)
+    """
+
+    def test_run_cycle_creates_backup_file(self, tmp_path, monkeypatch):
+        """run_cycle 호출 시 .harness/backups/{run_id}_{ts}.json 파일 생성 검증."""
+        import os
+        # working dir = tmp_path (= 격리 환경)
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setenv("GITHUB_RUN_ID", "test12345")
+        # SPREADSHEET_ID / SERVICE_ACCOUNT_JSON 환경 = src.config = module-level eval = monkeypatch X
+        # → src.main 안 SPREADSHEET_ID/SERVICE_ACCOUNT_JSON 직접 patch
+        monkeypatch.setattr("src.main.SPREADSHEET_ID", "fake_id")
+        monkeypatch.setattr("src.main.SERVICE_ACCOUNT_JSON", '{"type":"service_account","client_email":"x@x.iam.gserviceaccount.com","private_key":"-----BEGIN PRIVATE KEY-----\\nFAKE\\n-----END PRIVATE KEY-----\\n","token_uri":"https://oauth2.googleapis.com/token"}')
+
+        # SheetsClient = mock = read 결과 = fake 1 탭 + 2 행
+        from unittest.mock import patch as upatch, MagicMock as UMM
+        mock_client = UMM()
+        mock_client.load_all_data_tabs.return_value = {
+            "샴푸 카외": [
+                {"_row": 2, "_tab": "샴푸 카외", "키워드": "kw1", "링크": "https://cafe.naver.com/cosmania/111", "노출영역": "AB"},
+                {"_row": 3, "_tab": "샴푸 카외", "키워드": "kw2", "링크": "", "노출영역": ""},
+            ]
+        }
+        mock_client.write_results.return_value = 0
+        mock_client.write_timestamp.return_value = None
+
+        # crawler = mock = 검색 X (모든 row skip)
+        mock_crawler = UMM()
+        mock_crawler.warmup.return_value = None
+        mock_crawler.fetch_search.side_effect = CrawlerError("dummy = skip")
+
+        with upatch("src.main.SheetsClient", return_value=mock_client), \
+             upatch("src.main.Crawler", return_value=mock_crawler):
+            from src.main import run_cycle
+            summary = run_cycle()
+
+        # 백업 파일 생성 검증 (m1: gzip 압축 = .json.gz)
+        backup_dir = tmp_path / ".harness" / "backups"
+        assert backup_dir.exists(), "백업 디렉토리 생성 X"
+        backup_files = list(backup_dir.glob("test12345_*.json.gz"))
+        assert len(backup_files) == 1, f"백업 파일 수 ≠ 1: {backup_files}"
+
+        # 백업 파일 내용 검증 (m1: gzip read)
+        import gzip
+        with gzip.open(backup_files[0], "rt", encoding="utf-8") as f:
+            payload = json.load(f)
+        assert payload["run_id"] == "test12345"
+        assert payload["spreadsheet_id"] == "fake_id"
+        assert "샴푸 카외" in payload["tabs"]
+        assert len(payload["tabs"]["샴푸 카외"]) == 2
+
+    def test_run_cycle_backup_failure_does_not_stop_cron(self, tmp_path, monkeypatch):
+        """T-M81: 백업 실패 = log + cron 진행 (= cron 자체 중단 X)."""
+        import os
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr("src.main.SPREADSHEET_ID", "fake_id")
+        monkeypatch.setattr("src.main.SERVICE_ACCOUNT_JSON", '{"type":"service_account","client_email":"x@x.iam.gserviceaccount.com","private_key":"-----BEGIN PRIVATE KEY-----\\nFAKE\\n-----END PRIVATE KEY-----\\n","token_uri":"https://oauth2.googleapis.com/token"}')
+
+        from unittest.mock import patch as upatch, MagicMock as UMM
+        mock_client = UMM()
+        # load_all_data_tabs 결과 = json.dump 시 직렬화 불가능 객체 (= 백업 실패 trigger)
+        mock_client.load_all_data_tabs.return_value = {
+            "샴푸 카외": [{"_row": 2, "_tab": "샴푸 카외", "키워드": "kw1", "링크": "x", "fake_obj": object()}],
+        }
+        mock_client.write_results.return_value = 0
+        mock_client.write_timestamp.return_value = None
+
+        mock_crawler = UMM()
+        mock_crawler.warmup.return_value = None
+        mock_crawler.fetch_search.side_effect = CrawlerError("dummy")
+
+        with upatch("src.main.SheetsClient", return_value=mock_client), \
+             upatch("src.main.Crawler", return_value=mock_crawler):
+            from src.main import run_cycle
+            # 백업 실패해도 run_cycle 계속 진행 = summary 반환 의무
+            summary = run_cycle()
+        # cron 안 중단 = summary 반환 확인
+        assert isinstance(summary, dict)
+        assert "tabs_processed" in summary
