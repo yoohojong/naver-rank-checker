@@ -55,6 +55,7 @@ jobs:
         env:
           SPREADSHEET_ID: ${{ secrets.SPREADSHEET_ID }}
           SERVICE_ACCOUNT_JSON: ${{ secrets.SERVICE_ACCOUNT_JSON }}
+          CAFE_WHITELIST_SLUGS: ${{ secrets.CAFE_WHITELIST_SLUGS }}  # T-M90 (2026-05-17): 사장님 운영 카페 slug 콤마 구분
           NAVER_SLOWDOWN_BASE_SEC: '5.0'
           NAVER_SLOWDOWN_MAX_SEC: '120'
           PYTHONIOENCODING: 'utf-8'

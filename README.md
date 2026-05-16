@@ -4,7 +4,7 @@
 
 ## 한 줄 목적
 
-사장님(유호종)이 외주받은 33만원 도구 대체. **자체 제작 + 안정성 ↑ + 노출중지 자동 감지** (외주본엔 없던 차별화).
+사장님이 외주받은 33만원 도구 대체. **자체 제작 + 안정성 ↑ + 노출중지 자동 감지** (외주본엔 없던 차별화).
 
 ---
 
@@ -47,8 +47,11 @@
 ### GitHub Secrets 등록 (1회)
 
 저장소 → Settings → Secrets and variables → Actions → New repository secret:
-- `SPREADSHEET_ID` = 사장님 시트 URL 의 `/d/` 와 `/edit` 사이 (예: `1mGhsPHd-mrH9qy7...`)
+- `SPREADSHEET_ID` = 사장님 시트 URL 의 `/d/` 와 `/edit` 사이 (예: `1AbC123_example...`)
 - `SERVICE_ACCOUNT_JSON` = T-M3.1 다운로드한 JSON 파일 **전체 내용** 그대로
+- `CAFE_WHITELIST_SLUGS` = 사장님 운영 카페 slug 콤마 구분 (예: `cosmania,pusanmommy,iroid,workee`)
+  - T-M90 (D-027 보강 2026-05-17): repo Public 전환 후 사장님 카페 정보 노출 회피 의무.
+  - 미설정 시 = 빈 set = D-026 link_set 매치 X = 빈 link 자동 채움 X (= 안전 default).
 
 ### Cron 자동 동작
 

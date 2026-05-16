@@ -21,13 +21,9 @@ USER_AGENTS = [
 IMPERSONATE_POOL = ["chrome146", "chrome145", "chrome136", "chrome131"]
 
 # T-M25 (2026-05-12): 사장님 운영 카페 slug 화이트리스트.
-# comparison-500 분석 결과 26 slug 발견. link_set 매치 시 = 화이트리스트 안 slug 만 매치.
-# 사장님 추가 카페 시 = 여기 추가 (재배포 의무).
-CAFE_WHITELIST = {
-    "pusanmommy", "iroid", "move79", "culturebloom", "cosmania",
-    "multiroader", "llchyll", "jejutip", "workee", "happyibook",
-    "ite", "allumpc", "mindy7857", "minecraftpe", "0404ab",
-    "tgpia", "engmstudy", "vinpearl", "michiexam", "linchpinedu",
-    "kig", "dokchi", "firenze", "trotkingpjh", "hawaiiphoto",
-    "guamfree",
-}
+# T-M90 (D-027 보강 2026-05-17): repo Public 전환 = CAFE_WHITELIST 환경변수 이전 = 사장님 카페 정보 노출 회피.
+# 환경변수 = CAFE_WHITELIST_SLUGS = "slug1,slug2,slug3" 콤마 구분.
+# 미설정 시 = 빈 set = D-026 link_set 매치 X = 자동 채움 X (= 안전 default).
+CAFE_WHITELIST = frozenset(
+    s.strip() for s in os.environ.get("CAFE_WHITELIST_SLUGS", "").split(",") if s.strip()
+)

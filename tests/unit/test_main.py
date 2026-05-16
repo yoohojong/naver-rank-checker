@@ -3,20 +3,28 @@
 T-M25 (2026-05-12): CAFE_WHITELIST 필터 검증.
 T-M10.2 (2026-05-13): url_alive_cache 중복 호출 방지 검증.
 D-026 Phase C+D+E+F (2026-05-16): 빈 link 자동 채움 + 삭제 텍스트 검출 검증.
+T-M90 (D-027 보강 2026-05-17): CAFE_WHITELIST 환경변수 이전 = test 안 = 사장님 운영 정보 분리 의무.
+                                = _TEST_CAFE_WHITELIST 전용 set 사용 (= 일반 마케팅 slug 예시).
 run_cycle() 전체 흐름 테스트는 외부 의존성(Sheets, Crawler) 이 많아 integration 으로 분리.
 여기서는 화이트리스트 필터 로직 및 캐시 로직만 격리 검증.
 """
 from unittest.mock import MagicMock, patch
 
-from src.config import CAFE_WHITELIST
+from src.config import CAFE_WHITELIST  # noqa: F401 (T-M90: import 호환 유지, test 안 사용 X)
 from src.crawler import parse_cafe_url, CafeStatus
 from src.parser import ExposureArea, RankResult
 
 
-def _build_known_links(rows: list[dict]) -> set:
+# T-M90 (D-027 보강 2026-05-17): test 전용 화이트리스트 = 사장님 운영 정보 X.
+# repo Public 후 = 일반 마케팅 카페 slug 예시 만 노출 = 사장님 카페 보호.
+_TEST_CAFE_WHITELIST = frozenset({"cosmania", "pusanmommy", "iroid", "workee", "move79", "culturebloom"})
+
+
+def _build_known_links(rows: list[dict], whitelist: frozenset = _TEST_CAFE_WHITELIST) -> set:
     """run_cycle 의 all_known_links 구성 로직 추출 (T-M25 화이트리스트 필터 포함).
 
     run_cycle 과 동일한 로직을 여기서 재현해 격리 단위 테스트 가능하게 함.
+    T-M90 (2026-05-17): whitelist 인자 명시 = test 안 = _TEST_CAFE_WHITELIST 직접 전달.
     """
     all_known_links: set = set()
     for row in rows:
@@ -24,7 +32,7 @@ def _build_known_links(rows: list[dict]) -> set:
         if not row_link:
             continue
         slug, _ = parse_cafe_url(row_link)
-        if slug and slug in CAFE_WHITELIST:
+        if slug and slug in whitelist:
             all_known_links.add(row_link)
     return all_known_links
 
@@ -71,11 +79,12 @@ class TestCafeWhitelistFilter:
         assert len(links) == 2
 
     def test_all_whitelist_slugs_are_valid_cafe_slugs(self):
-        """CAFE_WHITELIST 안 slug 전체 = parse_cafe_url 로 추출 가능한 형태인지 확인.
+        """_TEST_CAFE_WHITELIST 안 slug 전체 = parse_cafe_url 로 추출 가능한 형태인지 확인.
 
+        T-M90 (2026-05-17): _TEST_CAFE_WHITELIST 사용 = 사장님 운영 정보 분리.
         실제 URL 을 구성해서 parse_cafe_url 이 정상 파싱하는지 검증.
         """
-        for slug in CAFE_WHITELIST:
+        for slug in _TEST_CAFE_WHITELIST:
             url = f"https://cafe.naver.com/{slug}/12345"
             extracted_slug, post_id = parse_cafe_url(url)
             assert extracted_slug == slug, f"slug {slug!r} parse 실패"
@@ -687,6 +696,40 @@ class TestD026EmptyLinkAutoFill:
         assert cols[HEADER_AREA] == "AB"
         # HEADER_LINK 자동 갱신 X (= D-023 가드 유지)
         assert HEADER_LINK not in cols
+
+    def test_d026_naver_me_short_url_resolved_before_link_set(self):
+        """D-026 Phase C+D + naver.me 정합: 사장님 시트 link = naver.me 단축 URL = resolve_short_url 후 매치 시도.
+
+        근거: 사장님 컨벤션 = 시트에 naver.me 단축 URL 입력 가능. main.py 가 resolve_short_url 호출 후 검색 수행 의무.
+        link 있는 행 = 단축 URL → resolve 후 정상 검색 진행. 빈 link 행 분기 X.
+        """
+        from src.main import _process_row
+        from src.health import HealthMonitor
+        from src.sheets import HEADER_AREA
+
+        crawler = MagicMock()
+        health = HealthMonitor()
+        crawler.fetch_search.return_value = "<html>검색결과</html>"
+        crawler.fetch_cafe_url_status.return_value = CafeStatus.ALIVE
+
+        # 사장님 작업 link = naver.me 단축 URL
+        short_link = "https://naver.me/x9z8y7"
+        resolved_link = "https://cafe.naver.com/cosmania/12345"
+
+        with patch("src.main.resolve_short_url", return_value=resolved_link) as mock_resolve:
+            with patch("src.main.parse_search_result", return_value=self._mock_matched_result(resolved_link, "AB")) as mock_parse:
+                row = self._make_row("탈모샴푸", link=short_link)
+                cols = _process_row(row, crawler, health, all_known_links={resolved_link})
+
+        # naver.me resolve 가 link 있는 행 처리 흐름 안 호출됨 검증
+        mock_resolve.assert_called_once_with(short_link)
+        # parser 호출 시 = resolve 된 link 전달 검증
+        mock_parse.assert_called_once()
+        parser_args, parser_kwargs = mock_parse.call_args
+        # parse_search_result(html, target_url, link_set=...) 시그너처
+        assert parser_args[1] == resolved_link
+        # K = "AB" 정상 노출
+        assert cols[HEADER_AREA] == "AB"
 
 
 class TestD026DeletionTextDetection:
