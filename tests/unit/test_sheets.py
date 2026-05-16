@@ -7,7 +7,7 @@ from src.sheets import (
     SheetsClient, map_headers_to_columns, SPECIAL_TABS,
     RowUpdate, rank_result_to_columns,
     HEADER_TYPE, HEADER_AREA, HEADER_L, HEADER_M, HEADER_JISIKIN,
-    HEADER_LINK, SYSTEM_OUTPUT_COLUMNS,
+    HEADER_LINK, SYSTEM_OUTPUT_COLUMNS, SYSTEM_OUTPUT_COLUMNS_EMPTY_LINK,
 )
 
 
@@ -320,8 +320,10 @@ class TestRankResultToColumns:
         assert cols[HEADER_M] == "3"
         assert cols[HEADER_JISIKIN] == "O"
 
-    def test_미노출_empty_string(self):
-        """사장님 컨벤션: 미노출 = 빈 칸 (모든 컬럼)."""
+    def test_미노출_명시_표기(self):
+        """D-026 Phase B (2026-05-16): '미노출' = 명시 텍스트 표기 (= 빈 칸 X).
+        근거: 사장님 시점 빈 칸 = '조사 안 됨' 혼동 = sheets.py:241 결함 root cause fix.
+        """
         cols = rank_result_to_columns(
             block_order=["AB"],
             exposure_area="미노출",
@@ -329,7 +331,7 @@ class TestRankResultToColumns:
             cafe_slot_rank=None,
             in_jisikin=False,
         )
-        assert cols[HEADER_AREA] == ""  # '미노출' → '' 변환
+        assert cols[HEADER_AREA] == "미노출"  # D-026: 빈 칸 X = 명시 표기
         assert cols[HEADER_L] == ""
         assert cols[HEADER_M] == ""
         assert cols[HEADER_JISIKIN] == ""
@@ -365,6 +367,60 @@ class TestRankResultToColumns:
         assert len(cols) == 4
         assert "노출여부(블로그구좌순위)" not in cols
         assert HEADER_TYPE not in cols
+
+    def test_d026_미노출_명시_텍스트_표기(self):
+        """D-026 Phase B (2026-05-16) 신규 회귀 test: 미노출 = 명시 텍스트 표기.
+        rank_result_to_columns(exposure_area="미노출") → cols[HEADER_AREA] = "미노출" (빈 칸 X).
+        근거: 사장님 시점 빈 칸 = "조사 안 됨" 혼동 회피 root cause fix.
+        """
+        cols = rank_result_to_columns(
+            block_order=[],
+            exposure_area="미노출",
+            integrated_rank=None,
+            cafe_slot_rank=None,
+            in_jisikin=False,
+        )
+        # D-026 핵심: 빈 칸 X (= 사장님 시점 혼동 회피)
+        assert cols[HEADER_AREA] == "미노출"
+        assert cols[HEADER_AREA] != ""
+
+    def test_d026_빈칸_처리_X(self):
+        """D-026 Phase B 회귀: 다양한 exposure_area 케이스 = 빈 칸 처리 X.
+        모든 K enum 값 = 그대로 cols[HEADER_AREA] 에 기록 (= 명시 표기 정합).
+        """
+        for area in ["미노출", "누락", "AB", "스마트블록", "인기글", "삭제"]:
+            cols = rank_result_to_columns(
+                block_order=[],
+                exposure_area=area,
+                integrated_rank=None,
+                cafe_slot_rank=None,
+                in_jisikin=False,
+            )
+            assert cols[HEADER_AREA] == area, f"area={area!r} 케이스 = 빈 칸 처리 X 검증 실패"
+
+    def test_d026_누락_표기(self):
+        """D-026 Phase B 신규: '누락' = 사장님 시각 알림 (= 박스 빠짐) 명시 표기."""
+        cols = rank_result_to_columns(
+            block_order=[],
+            exposure_area="누락",
+            integrated_rank=None,
+            cafe_slot_rank=None,
+            in_jisikin=False,
+        )
+        assert cols[HEADER_AREA] == "누락"
+
+    def test_d026_smart_block_표기(self):
+        """D-026 Phase A 부활: '스마트블록' = 별도 표기 (D-022 ① 폐기 정합)."""
+        cols = rank_result_to_columns(
+            block_order=["스마트블록"],
+            exposure_area="스마트블록",
+            integrated_rank=2,
+            cafe_slot_rank=1,
+            in_jisikin=False,
+        )
+        assert cols[HEADER_AREA] == "스마트블록"
+        assert cols[HEADER_L] == "2"
+        assert cols[HEADER_M] == "1"
 
     def test_d024_rank_result_to_columns_HEADER_TYPE_미포함(self):
         """D-024 (2026-05-14) 신규 회귀 test: 모든 block_order 케이스 = HEADER_TYPE 키 절대 없음.
@@ -762,3 +818,184 @@ class TestD024Guard:
         # batch_update 에 유형 값 "인기글" 포함 X 검증
         written_values = [cell["values"][0][0] for cell in call_args]
         assert "인기글" not in written_values
+
+
+class TestD026EmptyLinkColumnGuard:
+    """D-026 Phase C+D (2026-05-16) 회귀 test — 빈 link 행만 HEADER_LINK write 허용.
+
+    부분 완화 규칙:
+    - 빈 link 행 = SYSTEM_OUTPUT_COLUMNS_EMPTY_LINK 화이트리스트 (HEADER_LINK 포함)
+    - 기존 link 행 = SYSTEM_OUTPUT_COLUMNS 화이트리스트 (HEADER_LINK 제외, D-023 가드 유지)
+    """
+
+    def _make_client_with_link_col(self, headers, link_col_values, ws_title="샴푸 카외"):
+        """헬퍼: ws.col_values 가 link 컬럼 값 반환하도록 mock 구성."""
+        fake_creds = json.dumps({
+            "type": "service_account",
+            "client_email": "x@example.iam.gserviceaccount.com",
+            "private_key": "-----BEGIN PRIVATE KEY-----\nFAKE\n-----END PRIVATE KEY-----\n",
+            "token_uri": "https://oauth2.googleapis.com/token",
+        })
+        with patch("src.sheets.gspread.service_account_from_dict") as mock_auth:
+            mock_gc = MagicMock()
+            mock_sheet = MagicMock()
+            mock_ws = MagicMock()
+            mock_ws.row_values.return_value = headers
+            # link col_values = list 반환 (정상)
+            mock_ws.col_values.return_value = link_col_values
+            mock_sheet.worksheet.return_value = mock_ws
+            mock_gc.open_by_key.return_value = mock_sheet
+            mock_auth.return_value = mock_gc
+            client = SheetsClient(spreadsheet_id="abc", service_account_json=fake_creds)
+        return client, mock_ws
+
+    def test_d026_empty_link_HEADER_LINK_write_allowed(self):
+        """D-026 Phase C+D: 빈 link 행 = HEADER_LINK write 허용 (= 자동 채움 logic)."""
+        headers = ["키워드", "링크", "노출영역"]
+        # link 컬럼: header + row2 빈 + row3 빈
+        link_col_values = ["링크", "", ""]
+        client, ws = self._make_client_with_link_col(headers, link_col_values)
+        upd = RowUpdate(row=2, columns={
+            HEADER_AREA: "중복노출",
+            HEADER_LINK: "https://cafe.naver.com/cosmania/9999",  # 빈 link 행 = 자동 채움
+        })
+        n = client.write_results("샴푸 카외", [upd])
+        # 빈 link 행 = HEADER_LINK write 허용 = 2 셀
+        assert n == 2
+        ws.batch_update.assert_called_once()
+        call_args = ws.batch_update.call_args[0][0]
+        written_values = [cell["values"][0][0] for cell in call_args]
+        # HEADER_LINK 값 (자동 채움) 검증
+        assert "https://cafe.naver.com/cosmania/9999" in written_values
+        assert "중복노출" in written_values
+
+    def test_d026_existing_link_HEADER_LINK_write_rejected(self):
+        """D-026 Phase C+D 정합: 기존 link 행 = HEADER_LINK write 거부 (D-023 가드 유지).
+
+        T-M14.2 사고 (사장님 link silent 덮어쓰기) 재발 방지.
+        """
+        headers = ["키워드", "링크", "노출영역"]
+        # link 컬럼: header + row2 사장님 작업 link + row3 빈
+        existing_link = "https://cafe.naver.com/cosmania/12345"
+        link_col_values = ["링크", existing_link, ""]
+        client, ws = self._make_client_with_link_col(headers, link_col_values)
+        upd = RowUpdate(row=2, columns={  # row=2 = 사장님 link 있는 행
+            HEADER_AREA: "AB",
+            HEADER_LINK: "https://cafe.naver.com/other/9999",  # 사장님 작업 link 덮어쓰기 시도
+        })
+        n = client.write_results("샴푸 카외", [upd])
+        # 기존 link 행 = HEADER_LINK write 거부 = HEADER_AREA 1 셀만
+        assert n == 1
+        ws.batch_update.assert_called_once()
+        call_args = ws.batch_update.call_args[0][0]
+        written_values = [cell["values"][0][0] for cell in call_args]
+        # HEADER_LINK 덮어쓰기 X 검증
+        assert "https://cafe.naver.com/other/9999" not in written_values
+        assert "AB" in written_values
+
+    def test_d026_link_read_fail_strict_mode(self):
+        """D-026 Phase C+D: link read 실패 (예외) = 보수적 = SYSTEM_OUTPUT_COLUMNS 적용 (= HEADER_LINK 거부)."""
+        headers = ["키워드", "링크", "노출영역"]
+        client, ws = self._make_client_with_link_col(headers, ["링크", ""])
+        # col_values 호출 시 예외 raise
+        ws.col_values.side_effect = Exception("API error")
+        upd = RowUpdate(row=2, columns={
+            HEADER_AREA: "중복노출",
+            HEADER_LINK: "https://cafe.naver.com/cosmania/9999",
+        })
+        n = client.write_results("샴푸 카외", [upd])
+        # link read 실패 = 보수적 = HEADER_LINK 거부 = HEADER_AREA 1 셀만
+        assert n == 1
+
+    def test_d026_SYSTEM_OUTPUT_COLUMNS_EMPTY_LINK_constant(self):
+        """D-026 Phase C+D frozenset 정합 검증."""
+        # HEADER_LINK 포함 (= 빈 link 행 자동 채움 허용)
+        assert HEADER_LINK in SYSTEM_OUTPUT_COLUMNS_EMPTY_LINK
+        # 시스템 출력 4 컬럼도 포함
+        assert HEADER_AREA in SYSTEM_OUTPUT_COLUMNS_EMPTY_LINK
+        assert HEADER_L in SYSTEM_OUTPUT_COLUMNS_EMPTY_LINK
+        assert HEADER_M in SYSTEM_OUTPUT_COLUMNS_EMPTY_LINK
+        assert HEADER_JISIKIN in SYSTEM_OUTPUT_COLUMNS_EMPTY_LINK
+        # HEADER_TYPE 포함 X (= D-024 가드 유지)
+        assert HEADER_TYPE not in SYSTEM_OUTPUT_COLUMNS_EMPTY_LINK
+        # 정확히 5 컬럼 (4 시스템 + HEADER_LINK)
+        assert len(SYSTEM_OUTPUT_COLUMNS_EMPTY_LINK) == 5
+
+
+class TestD026ColorFiveTypes:
+    """D-026 Phase C+D+E+F (2026-05-16) 회귀 test — 색상 5종 batch_format 검증.
+
+    사장님 명시 컨벤션:
+    - 삭제 = 노란 (T-M14 정합 유지)
+    - 누락 = 오렌지
+    - 중복노출 = 파란
+    - 미노출 = 회색
+    - AB / 스마트블록 / 인기글 / 빈 = 흰색 (reset)
+    """
+
+    def _make_client_with_link_col(self, headers, link_col_values, ws_title="샴푸 카외"):
+        fake_creds = json.dumps({
+            "type": "service_account",
+            "client_email": "x@example.iam.gserviceaccount.com",
+            "private_key": "-----BEGIN PRIVATE KEY-----\nFAKE\n-----END PRIVATE KEY-----\n",
+            "token_uri": "https://oauth2.googleapis.com/token",
+        })
+        with patch("src.sheets.gspread.service_account_from_dict") as mock_auth:
+            mock_gc = MagicMock()
+            mock_sheet = MagicMock()
+            mock_ws = MagicMock()
+            mock_ws.row_values.return_value = headers
+            mock_ws.col_values.return_value = link_col_values
+            mock_sheet.worksheet.return_value = mock_ws
+            mock_gc.open_by_key.return_value = mock_sheet
+            mock_auth.return_value = mock_gc
+            client = SheetsClient(spreadsheet_id="abc", service_account_json=fake_creds)
+        return client, mock_ws
+
+    def _get_color_for_value(self, ws, k_value):
+        """write_results 호출 후 batch_format 에서 k_value 의 backgroundColor 추출."""
+        headers = ["키워드", "링크", "노출영역"]
+        link_col_values = ["링크", "https://cafe.naver.com/cosmania/12345"]
+        client, ws = self._make_client_with_link_col(headers, link_col_values)
+        upd = RowUpdate(row=2, columns={HEADER_AREA: k_value})
+        client.write_results("샴푸 카외", [upd])
+        # batch_format 호출 1회 (색상 적용)
+        assert ws.batch_format.call_count == 1
+        formats = ws.batch_format.call_args[0][0]
+        assert len(formats) == 1
+        return formats[0]["format"]["backgroundColor"]
+
+    def test_color_삭제_yellow(self):
+        """D-026 Phase E+F: K='삭제' = 노란 (T-M14 정합 유지)."""
+        bg = self._get_color_for_value(None, "삭제")
+        assert bg == {"red": 1.0, "green": 1.0, "blue": 0.0}
+
+    def test_color_누락_orange(self):
+        """D-026 Phase B+C+D: K='누락' = 오렌지 (= 떨어짐 경고)."""
+        bg = self._get_color_for_value(None, "누락")
+        assert bg == {"red": 1.0, "green": 0.6, "blue": 0.2}
+
+    def test_color_중복노출_blue(self):
+        """D-026 Phase C+D: K='중복노출' = 파란 (= 신규 발견)."""
+        bg = self._get_color_for_value(None, "중복노출")
+        assert bg == {"red": 0.6, "green": 0.8, "blue": 1.0}
+
+    def test_color_미노출_gray(self):
+        """D-026 Phase C+D+E+F: K='미노출' = 옅은 회색."""
+        bg = self._get_color_for_value(None, "미노출")
+        assert bg == {"red": 0.9, "green": 0.9, "blue": 0.9}
+
+    def test_color_AB_white(self):
+        """D-026: K='AB' = 흰색 (= reset, 정상 노출)."""
+        bg = self._get_color_for_value(None, "AB")
+        assert bg == {"red": 1.0, "green": 1.0, "blue": 1.0}
+
+    def test_color_스마트블록_white(self):
+        """D-026: K='스마트블록' = 흰색 (= reset)."""
+        bg = self._get_color_for_value(None, "스마트블록")
+        assert bg == {"red": 1.0, "green": 1.0, "blue": 1.0}
+
+    def test_color_인기글_white(self):
+        """D-026: K='인기글' = 흰색 (= reset)."""
+        bg = self._get_color_for_value(None, "인기글")
+        assert bg == {"red": 1.0, "green": 1.0, "blue": 1.0}

@@ -2,6 +2,7 @@
 
 T-M25 (2026-05-12): CAFE_WHITELIST 필터 검증.
 T-M10.2 (2026-05-13): url_alive_cache 중복 호출 방지 검증.
+D-026 Phase C+D+E+F (2026-05-16): 빈 link 자동 채움 + 삭제 텍스트 검출 검증.
 run_cycle() 전체 흐름 테스트는 외부 의존성(Sheets, Crawler) 이 많아 integration 으로 분리.
 여기서는 화이트리스트 필터 로직 및 캐시 로직만 격리 검증.
 """
@@ -9,6 +10,7 @@ from unittest.mock import MagicMock, patch
 
 from src.config import CAFE_WHITELIST
 from src.crawler import parse_cafe_url, CafeStatus
+from src.parser import ExposureArea, RankResult
 
 
 def _build_known_links(rows: list[dict]) -> set:
@@ -81,28 +83,28 @@ class TestCafeWhitelistFilter:
 
 
 class TestUrlAliveCache:
-    """T-M10.5 (2026-05-14): url_alive 검증 폐기 — 비로그인 환경 한계 확인.
+    """D-026 Phase E+F (2026-05-16): 삭제 텍스트 검출 부활 — 검색 미노출 시 fetch_cafe_url_status 호출.
 
-    url_alive_cache 파라미터는 _process_row 시그니처에 유지되나
-    fetch_cafe_url_status 호출 자체가 폐기되어 캐시 동작 테스트는 무의미.
-    대신 url_alive_cache 전달 여부와 무관하게 결과가 동일함을 검증.
+    T-M10.5 폐기 reverse:
+    - 사장님 명시 = "게시글이 삭제되었습니다" exact substring 검출만 → K="삭제"
+    - 로그인 페이지 / 404 / 네트워크 fail = UNKNOWN (= 정상 가정 = 시트 보존)
+    - 검색 노출 = fetch_cafe_url_status 호출 X (= 검색 노출 = 진짜 살아있음)
+    - 검색 미노출 + link 있음 = fetch_cafe_url_status 호출 (= 삭제 텍스트 검출)
+    - 검색 미노출 + link 빈 = fetch_cafe_url_status 호출 X (= link 자체 없음)
     """
 
     def _make_row(self, keyword: str, link: str) -> dict:
         """테스트용 행 dict 생성."""
         return {"키워드": keyword, "링크": link, "유형": "", "_row": 2}
 
-    def test_url_alive_cache_param_has_no_effect_on_result(self):
-        """T-M10.5: url_alive_cache 전달 여부 무관 = 동일 결과 반환 (fetch_cafe_url_status 폐기).
-        검색 미노출 → K="" (url 상태 무관).
-        """
+    def test_unexposed_link_calls_fetch_cafe_url_status(self):
+        """D-026 Phase E+F: 검색 미노출 + link 있음 = fetch_cafe_url_status 호출 (= 삭제 검출)."""
         from src.main import _process_row
         from src.health import HealthMonitor
         from src.sheets import HEADER_AREA
 
         crawler = MagicMock()
         health = HealthMonitor()
-        url_alive_cache: dict = {}
         link = "https://cafe.naver.com/cosmania/12345"
 
         mock_result = MagicMock()
@@ -114,48 +116,23 @@ class TestUrlAliveCache:
         mock_result.in_jisikin = False
 
         crawler.fetch_search.return_value = "<html>검색결과</html>"
+        # 삭제 텍스트 검출 X (= ALIVE 또는 UNKNOWN) = K="미노출"
+        crawler.fetch_cafe_url_status.return_value = CafeStatus.ALIVE
 
         with patch("src.main.parse_search_result", return_value=mock_result):
             row = self._make_row("샴푸", link)
-            cols_with_cache = _process_row(row, crawler, health, url_alive_cache=url_alive_cache)
-            cols_no_cache = _process_row(row, crawler, health, url_alive_cache=None)
+            cols = _process_row(row, crawler, health, url_alive_cache=None)
 
-        # url_alive 폐기 = fetch_cafe_url_status 호출 X
-        crawler.fetch_cafe_url_status.assert_not_called()
-        # 캐시 여부 무관 = 동일 결과
-        assert cols_with_cache[HEADER_AREA] == cols_no_cache[HEADER_AREA] == ""
+        # D-026 Phase E+F: 검색 미노출 + link 있음 = fetch_cafe_url_status 호출
+        crawler.fetch_cafe_url_status.assert_called()
+        # 삭제 텍스트 검출 X + 검색 미노출 + 첫 추적 = K="미노출"
+        assert cols[HEADER_AREA] == "미노출"
 
-    def test_url_alive_cache_not_populated(self):
-        """T-M10.5: fetch_cafe_url_status 폐기 = url_alive_cache 에 아무것도 저장 X."""
+    def test_unexposed_link_deleted_text_detected_K_삭제(self):
+        """D-026 Phase E+F: 검색 미노출 + 삭제 텍스트 검출 = K="삭제"."""
         from src.main import _process_row
         from src.health import HealthMonitor
-
-        crawler = MagicMock()
-        health = HealthMonitor()
-        url_alive_cache: dict = {}
-        link = "https://cafe.naver.com/cosmania/99999"
-
-        mock_result = MagicMock()
-        mock_result.exposure_area.value = "미노출"
-        mock_result.parser_confidence = 1.0
-        mock_result.block_order = []
-        mock_result.integrated_rank = None
-        mock_result.cafe_slot_rank = None
-        mock_result.in_jisikin = False
-
-        crawler.fetch_search.return_value = "<html>검색결과</html>"
-
-        with patch("src.main.parse_search_result", return_value=mock_result):
-            _process_row(self._make_row("샴푸", link), crawler, health, url_alive_cache=url_alive_cache)
-
-        # url_alive 폐기 = 캐시 비어있음
-        assert len(url_alive_cache) == 0
-        crawler.fetch_cafe_url_status.assert_not_called()
-
-    def test_multiple_calls_fetch_status_never_called(self):
-        """T-M10.5: 동일 link 여러 번 _process_row 호출해도 fetch_cafe_url_status 호출 X."""
-        from src.main import _process_row
-        from src.health import HealthMonitor
+        from src.sheets import HEADER_AREA
 
         crawler = MagicMock()
         health = HealthMonitor()
@@ -170,14 +147,47 @@ class TestUrlAliveCache:
         mock_result.in_jisikin = False
 
         crawler.fetch_search.return_value = "<html>검색결과</html>"
+        # D-026 Phase E+F: DELETED 반환 = K="삭제"
+        crawler.fetch_cafe_url_status.return_value = CafeStatus.DELETED
 
         with patch("src.main.parse_search_result", return_value=mock_result):
             row = self._make_row("샴푸", link)
-            _process_row(row, crawler, health, url_alive_cache=None)
-            _process_row(row, crawler, health, url_alive_cache=None)
+            cols = _process_row(row, crawler, health, url_alive_cache=None)
 
-        # url_alive 폐기 = 캐시 없어도 fetch_cafe_url_status 호출 X
-        crawler.fetch_cafe_url_status.assert_not_called()
+        crawler.fetch_cafe_url_status.assert_called_once_with(link)
+        # D-026 핵심: 삭제 텍스트 검출 = K="삭제"
+        assert cols[HEADER_AREA] == "삭제"
+
+    def test_unexposed_link_unknown_keeps_prev_K(self):
+        """D-026 Phase E+F: 검색 미노출 + UNKNOWN (= 로그인/404) = 텍스트 검출 X = 시트 보존."""
+        from src.main import _process_row
+        from src.health import HealthMonitor
+        from src.sheets import HEADER_AREA
+
+        crawler = MagicMock()
+        health = HealthMonitor()
+        link = "https://cafe.naver.com/cosmania/12345"
+
+        mock_result = MagicMock()
+        mock_result.exposure_area.value = "미노출"
+        mock_result.parser_confidence = 1.0
+        mock_result.block_order = []
+        mock_result.integrated_rank = None
+        mock_result.cafe_slot_rank = None
+        mock_result.in_jisikin = False
+
+        crawler.fetch_search.return_value = "<html>검색결과</html>"
+        # D-026 Phase E+F: UNKNOWN = 텍스트 검출 X = 시트 보존
+        crawler.fetch_cafe_url_status.return_value = CafeStatus.UNKNOWN
+
+        row = self._make_row("샴푸", link)
+        row["노출영역"] = ""  # 첫 추적
+
+        with patch("src.main.parse_search_result", return_value=mock_result):
+            cols = _process_row(row, crawler, health)
+
+        # UNKNOWN = 텍스트 검출 X + 첫 추적 = K="미노출"
+        assert cols[HEADER_AREA] == "미노출"
 
 
 class TestUrlAliveOnExposedRows:
@@ -279,14 +289,14 @@ class TestUrlAliveOnExposedRows:
             row = self._make_row("샴푸", link, prev_K="")
             cols = _process_row(row, crawler, health)
 
-        assert cols[HEADER_AREA] == ""
+        # D-026 Phase B (2026-05-16): '미노출' 명시 표기 (= 빈 칸 X)
+        assert cols[HEADER_AREA] == "미노출"
 
-    def test_search_unexposed_link_private_returns_empty(self):
-        """T-M10.5: 검색 미노출 + url 비공개 → K="" (url_alive 검증 폐기).
+    def test_search_unexposed_link_unknown_returns_unexposed(self):
+        """D-026 Phase E+F (2026-05-16): 검색 미노출 + UNKNOWN (= 로그인/404) → K="미노출".
 
-        원래: K="삭제" 기대.
-        폐기 후: fetch_cafe_url_status 호출 X = url 상태 무관 = K="" (검색 미노출).
-        진짜 삭제 = 다음 cron 박스 매치 X = 자연 미노출 표시.
+        D-026: fetch_cafe_url_status 호출 됨 (= 삭제 텍스트 검출 시도).
+        UNKNOWN 반환 = 텍스트 검출 X + 첫 추적 = K="미노출" 명시 표기.
         """
         from src.main import _process_row
         from src.health import HealthMonitor
@@ -297,15 +307,17 @@ class TestUrlAliveOnExposedRows:
         link = "https://cafe.naver.com/pusanmommy/1459022"
 
         crawler.fetch_search.return_value = "<html>검색결과</html>"
-        crawler.fetch_cafe_url_status.return_value = CafeStatus.PRIVATE
+        # D-026 Phase E+F: UNKNOWN = 텍스트 검출 X = 시트 보존
+        crawler.fetch_cafe_url_status.return_value = CafeStatus.UNKNOWN
 
         with patch("src.main.parse_search_result", return_value=self._mock_unexposed_result()):
             row = self._make_row("부산맘", link, prev_K="")
             cols = _process_row(row, crawler, health)
 
-        # url_alive 폐기 = 검색 미노출 → K="" (삭제 판정 X)
-        assert cols[HEADER_AREA] == ""
-        crawler.fetch_cafe_url_status.assert_not_called()
+        # D-026 Phase E+F: UNKNOWN + 검색 미노출 → K='미노출' 명시 표기
+        assert cols[HEADER_AREA] == "미노출"
+        # D-026 Phase E+F: 검색 미노출 + link 있음 = fetch_cafe_url_status 호출
+        crawler.fetch_cafe_url_status.assert_called()
 
     def test_search_exposed_no_link_returns_AB_without_status_check(self):
         """검색 노출 + link 빈칸 → K=AB, fetch_cafe_url_status 호출 X (link 없음 + 폐기)."""
@@ -526,8 +538,8 @@ class TestSlugWhitelistFallback:
             row = self._make_row("부산맘", old_link)
             cols = _process_row(row, crawler, health, all_known_links=all_known_links)
 
-        # slug fallback 폐기 → 미노출 그대로 (K="")
-        assert cols[HEADER_AREA] == ""
+        # D-026 Phase B (2026-05-16): slug fallback 폐기 → '미노출' 명시 표기
+        assert cols[HEADER_AREA] == "미노출"
         # 링크 갱신 없음
         assert HEADER_LINK not in cols
 
@@ -550,7 +562,232 @@ class TestSlugWhitelistFallback:
             row = self._make_row("부산맘", link)
             cols = _process_row(row, crawler, health, all_known_links=all_known_links)
 
-        # slug fallback 폐기 → 미노출 그대로 (K="")
-        assert cols[HEADER_AREA] == ""
+        # D-026 Phase B (2026-05-16): slug fallback 폐기 → '미노출' 명시 표기
+        assert cols[HEADER_AREA] == "미노출"
         # 링크 갱신 없음
         assert HEADER_LINK not in cols
+
+
+class TestD026EmptyLinkAutoFill:
+    """D-026 Phase C+D (2026-05-16) — 빈 link 행 자동 채움 logic 회귀 test.
+
+    사장님 컨벤션 (2026-05-16):
+    - 빈 link 행 + 다른 행 우리 link 매치 = K="중복노출" + HEADER_LINK 자동 채움
+    - 빈 link 행 + 매치 X = K="미노출"
+    - 빈 link 행 + all_known_links 빈 = 검색 X + K="미노출"
+    """
+
+    def _make_row(self, keyword: str, link: str = "", prev_K: str = "") -> dict:
+        return {"키워드": keyword, "링크": link, "노출영역": prev_K, "_row": 7}
+
+    def _mock_matched_result(self, matched_url: str, area: str = "AB"):
+        """parse_search_result 가 매치 성공 시 반환할 RankResult mock."""
+        r = RankResult()
+        r.exposure_area = ExposureArea(area) if area != "미노출" else ExposureArea.UNEXPOSED
+        r.matched_url = matched_url
+        r.parser_confidence = 0.85
+        r.integrated_rank = 3
+        r.cafe_slot_rank = 2
+        r.block_order = [area]
+        r.in_jisikin = False
+        return r
+
+    def _mock_unmatched_result(self):
+        """parse_search_result 가 매치 X 시 반환할 RankResult mock."""
+        r = RankResult()
+        r.exposure_area = ExposureArea.UNEXPOSED
+        r.matched_url = None
+        r.parser_confidence = 0.0
+        r.integrated_rank = None
+        r.cafe_slot_rank = None
+        r.block_order = []
+        r.in_jisikin = False
+        return r
+
+    def test_d026_empty_link_match_fills_link_K_DUPLICATE(self):
+        """D-026 Phase C+D: 빈 link 행 + 다른 행 우리 link 매치 = K='중복노출' + link 자동 채움."""
+        from src.main import _process_row
+        from src.health import HealthMonitor
+        from src.sheets import HEADER_AREA, HEADER_LINK, HEADER_L, HEADER_M
+
+        crawler = MagicMock()
+        health = HealthMonitor()
+        crawler.fetch_search.return_value = "<html>검색결과</html>"
+
+        matched = "https://cafe.naver.com/cosmania/9999"
+        all_known_links = {matched, "https://cafe.naver.com/pusanmommy/1111"}
+
+        with patch("src.main.parse_search_result", return_value=self._mock_matched_result(matched, "AB")):
+            row = self._make_row("탈모샴푸")
+            cols = _process_row(row, crawler, health, all_known_links=all_known_links)
+
+        # D-026 Phase C+D 핵심 검증
+        assert cols[HEADER_AREA] == "중복노출"
+        assert cols[HEADER_LINK] == matched  # 자동 채움
+        assert cols[HEADER_L] == "3"
+        assert cols[HEADER_M] == "2"
+        # 검색 수행됨
+        crawler.fetch_search.assert_called_once_with("탈모샴푸")
+
+    def test_d026_empty_link_no_match_unexposed(self):
+        """D-026 Phase C+D: 빈 link 행 + 매치 X = K='미노출' (link 갱신 X)."""
+        from src.main import _process_row
+        from src.health import HealthMonitor
+        from src.sheets import HEADER_AREA, HEADER_LINK
+
+        crawler = MagicMock()
+        health = HealthMonitor()
+        crawler.fetch_search.return_value = "<html>검색결과</html>"
+
+        all_known_links = {"https://cafe.naver.com/pusanmommy/1111"}
+
+        with patch("src.main.parse_search_result", return_value=self._mock_unmatched_result()):
+            row = self._make_row("탈모샴푸")
+            cols = _process_row(row, crawler, health, all_known_links=all_known_links)
+
+        assert cols[HEADER_AREA] == "미노출"
+        # 매치 X = link 갱신 없음
+        assert HEADER_LINK not in cols
+
+    def test_d026_empty_link_no_known_links_no_search(self):
+        """D-026 Phase C+D: 빈 link 행 + all_known_links 빈 = 검색 X + K='미노출'."""
+        from src.main import _process_row
+        from src.health import HealthMonitor
+        from src.sheets import HEADER_AREA
+
+        crawler = MagicMock()
+        health = HealthMonitor()
+
+        row = self._make_row("탈모샴푸")
+        cols = _process_row(row, crawler, health, all_known_links=set())
+
+        assert cols[HEADER_AREA] == "미노출"
+        # 검색 자체 skip
+        crawler.fetch_search.assert_not_called()
+
+    def test_d026_existing_link_not_overwritten(self):
+        """D-026 Phase C+D 정합: link 있는 행 = 빈 link 분기 X (= 기존 link 보존, HEADER_LINK 갱신 X)."""
+        from src.main import _process_row
+        from src.health import HealthMonitor
+        from src.sheets import HEADER_AREA, HEADER_LINK
+
+        crawler = MagicMock()
+        health = HealthMonitor()
+        crawler.fetch_search.return_value = "<html>검색결과</html>"
+        crawler.fetch_cafe_url_status.return_value = CafeStatus.ALIVE
+
+        # 사장님 작업 link
+        existing_link = "https://cafe.naver.com/cosmania/12345"
+
+        with patch("src.main.parse_search_result", return_value=self._mock_matched_result(existing_link, "AB")):
+            row = self._make_row("탈모샴푸", link=existing_link)
+            cols = _process_row(row, crawler, health, all_known_links={existing_link})
+
+        # K = "AB" (= 정상 노출)
+        assert cols[HEADER_AREA] == "AB"
+        # HEADER_LINK 자동 갱신 X (= D-023 가드 유지)
+        assert HEADER_LINK not in cols
+
+
+class TestD026DeletionTextDetection:
+    """D-026 Phase E+F (2026-05-16) — 삭제 텍스트 검출 회귀 test.
+
+    사장님 명시 컨벤션:
+    - "게시글이 삭제되었습니다" exact substring 검출 → K="삭제"
+    - 우산 패턴 = "삭제된 게시물입니다" / "존재하지 않는 게시글"
+    - 로그인 페이지 / 404 / 네트워크 fail = UNKNOWN (= 시트 보존)
+    """
+
+    def _make_row(self, keyword: str, link: str, prev_K: str = "") -> dict:
+        return {"키워드": keyword, "링크": link, "노출영역": prev_K, "_row": 5}
+
+    def _mock_unexposed_result(self):
+        r = RankResult()
+        r.exposure_area = ExposureArea.UNEXPOSED
+        r.matched_url = None
+        r.parser_confidence = 0.0
+        r.integrated_rank = None
+        r.cafe_slot_rank = None
+        r.block_order = []
+        r.in_jisikin = False
+        return r
+
+    def test_deletion_detected_K_삭제(self):
+        """D-026 Phase E+F: 검색 미노출 + 삭제 텍스트 검출 = K='삭제'."""
+        from src.main import _process_row
+        from src.health import HealthMonitor
+        from src.sheets import HEADER_AREA
+
+        crawler = MagicMock()
+        health = HealthMonitor()
+        crawler.fetch_search.return_value = "<html>검색결과</html>"
+        crawler.fetch_cafe_url_status.return_value = CafeStatus.DELETED
+
+        link = "https://cafe.naver.com/cosmania/12345"
+        with patch("src.main.parse_search_result", return_value=self._mock_unexposed_result()):
+            row = self._make_row("탈모샴푸", link, prev_K="AB")
+            cols = _process_row(row, crawler, health)
+
+        # D-026 Phase E+F 핵심 검증
+        assert cols[HEADER_AREA] == "삭제"
+        crawler.fetch_cafe_url_status.assert_called_once_with(link)
+
+    def test_deletion_text_not_detected_K_preserved(self):
+        """D-026 Phase E+F 위험 1 fix: prev_K='삭제' + 검색 미노출 + 텍스트 검출 X = '삭제' 보존.
+        근거: 사장님 시트 832 행 보호 (= 기존 '삭제' 값 자동 '누락' 마이그레이션 X 의무).
+        """
+        from src.main import _process_row
+        from src.health import HealthMonitor
+        from src.sheets import HEADER_AREA
+
+        crawler = MagicMock()
+        health = HealthMonitor()
+        crawler.fetch_search.return_value = "<html>검색결과</html>"
+        # ALIVE = 텍스트 검출 X = '삭제' 보존 (위험 1 fix)
+        crawler.fetch_cafe_url_status.return_value = CafeStatus.ALIVE
+
+        link = "https://cafe.naver.com/cosmania/12345"
+        with patch("src.main.parse_search_result", return_value=self._mock_unexposed_result()):
+            row = self._make_row("탈모샴푸", link, prev_K="삭제")
+            cols = _process_row(row, crawler, health)
+
+        # 위험 1 fix 핵심: prev='삭제' + 텍스트 검출 X = '삭제' 보존
+        assert cols[HEADER_AREA] == "삭제"
+
+    def test_deletion_unknown_keeps_state(self):
+        """D-026 Phase E+F: 검색 미노출 + UNKNOWN (= 로그인/404) = 텍스트 검출 X = 시트 보존."""
+        from src.main import _process_row
+        from src.health import HealthMonitor
+        from src.sheets import HEADER_AREA
+
+        crawler = MagicMock()
+        health = HealthMonitor()
+        crawler.fetch_search.return_value = "<html>검색결과</html>"
+        crawler.fetch_cafe_url_status.return_value = CafeStatus.UNKNOWN
+
+        link = "https://cafe.naver.com/cosmania/12345"
+        with patch("src.main.parse_search_result", return_value=self._mock_unexposed_result()):
+            row = self._make_row("탈모샴푸", link, prev_K="AB")
+            cols = _process_row(row, crawler, health)
+
+        # UNKNOWN + prev='AB' + 검색 미노출 = '누락' (= 박스 빠짐)
+        assert cols[HEADER_AREA] == "누락"
+
+    def test_deletion_exception_safe_preserves_prev(self):
+        """D-026 Phase E+F 안전 회로: fetch_cafe_url_status 예외 = deletion_detected=False = 보존."""
+        from src.main import _process_row
+        from src.health import HealthMonitor
+        from src.sheets import HEADER_AREA
+
+        crawler = MagicMock()
+        health = HealthMonitor()
+        crawler.fetch_search.return_value = "<html>검색결과</html>"
+        crawler.fetch_cafe_url_status.side_effect = RuntimeError("network down")
+
+        link = "https://cafe.naver.com/cosmania/12345"
+        with patch("src.main.parse_search_result", return_value=self._mock_unexposed_result()):
+            row = self._make_row("탈모샴푸", link, prev_K="삭제")
+            cols = _process_row(row, crawler, health)
+
+        # 예외 = deletion_detected=False = prev '삭제' + 검색 미노출 = '삭제' 보존
+        assert cols[HEADER_AREA] == "삭제"

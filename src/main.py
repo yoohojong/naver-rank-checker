@@ -21,15 +21,15 @@ import time
 from collections import Counter
 from typing import Optional
 
-from src.config import SPREADSHEET_ID, SERVICE_ACCOUNT_JSON, NAVER_SLOWDOWN_BASE_SEC, NAVER_SLOWDOWN_MAX_SEC
-from src.crawler import Crawler, SlowdownController, CrawlerError, CircuitBreakerOpen, resolve_short_url
+from src.config import SPREADSHEET_ID, SERVICE_ACCOUNT_JSON, NAVER_SLOWDOWN_BASE_SEC, NAVER_SLOWDOWN_MAX_SEC, CAFE_WHITELIST
+from src.crawler import Crawler, SlowdownController, CrawlerError, CafeStatus, CircuitBreakerOpen, parse_cafe_url, resolve_short_url
 from src.health import HealthMonitor
 from src.parser import parse_search_result
 from src.retry import RetryQueue
 from src.sheets import (
     SheetsClient, RowUpdate,
     rank_result_to_columns,
-    HEADER_AREA, HEADER_L, HEADER_M, HEADER_JISIKIN,
+    HEADER_AREA, HEADER_L, HEADER_M, HEADER_JISIKIN, HEADER_LINK,
 )
 from src.transitions import compute_new_K
 
@@ -43,15 +43,17 @@ def _process_row(
     row: dict,
     crawler: Crawler,
     health: HealthMonitor,
-    all_known_links: Optional[set] = None,  # 호환성 유지 — 미사용 (T-M14 폐기 2026-05-14)
+    all_known_links: Optional[set] = None,  # D-026 Phase C+D (2026-05-16): 빈 link 자동 채움 logic 활용
     url_alive_cache: Optional[dict] = None,  # 호환성 유지 — 미사용 (T-M10.5 폐기)
 ) -> Optional[dict]:
     """한 행 처리 → 새 컬럼 dict 또는 None (skip).
 
-    T-M14.* 전체 폐기 (2026-05-14): 사장님 진짜 의도 = target_url 단독 매치만.
-    - 시트 link 자동 갱신 X
-    - 다른 행 link fallback X
-    - slug 매치 X
+    D-026 Phase C+D+E+F (2026-05-16) 사장님 컨벤션:
+    - 빈 link 행 + all_known_links 매치 = K="중복노출" + HEADER_LINK 자동 채움
+    - 빈 link 행 + all_known_links 매치 X = K="미노출"
+    - link 있는 행 + 검색 노출 = K=area (AB/스마트블록/인기글)
+    - link 있는 행 + 검색 미노출 + 삭제 텍스트 검출 = K="삭제"
+    - link 있는 행 + 검색 미노출 + 텍스트 검출 X = transitions.compute_new_K (= 누락 / 미노출 / 삭제 보존)
 
     Returns:
         새 column dict (시트 write 용) 또는 None (skip).
@@ -67,10 +69,43 @@ def _process_row(
     if not keyword:
         return None
 
-    # link 빈 행 = 사장님 미작업 = 미노출 빈칸 표시
+    # D-026 Phase C+D (2026-05-16): 빈 link 행 = 키워드 검색 + 다른 행 우리 link 매치 시 자동 채움
     if not link:
+        # all_known_links 없음 (= 호출자가 구성 X) = 종전 동작 (미노출 표기)
+        if not all_known_links:
+            return {
+                HEADER_AREA: "미노출",
+                HEADER_L: "",
+                HEADER_M: "",
+                HEADER_JISIKIN: "",
+            }
+
+        # 키워드 검색 + parser (target_url=None + link_set 매치)
+        html = crawler.fetch_search(keyword)
+        result = parse_search_result(html, target_url=None, link_set=all_known_links)
+
+        if result.matched_url:
+            # D-026 Phase C+D: 다른 행 우리 link 매치 = "중복노출" + link 자동 채움
+            cols = rank_result_to_columns(
+                block_order=result.block_order,
+                exposure_area="중복노출",
+                integrated_rank=result.integrated_rank,
+                cafe_slot_rank=result.cafe_slot_rank,
+                in_jisikin=result.in_jisikin,
+            )
+            cols[HEADER_AREA] = "중복노출"  # rank_result_to_columns 가 area 인자 그대로 적용
+            cols[HEADER_LINK] = result.matched_url  # D-026 자동 채움 (sheets.py 빈 link 행만 허용)
+            health.record(
+                parser_confidence=result.parser_confidence,
+                success=True,
+                block_type="중복노출",
+            )
+            return cols
+
+        # 빈 link 행 + 매치 X = "미노출"
+        health.record(parser_confidence=0.0, success=True, block_type=None)
         return {
-            HEADER_AREA: "",
+            HEADER_AREA: "미노출",
             HEADER_L: "",
             HEADER_M: "",
             HEADER_JISIKIN: "",
@@ -84,28 +119,38 @@ def _process_row(
     html = crawler.fetch_search(keyword)
     result = parse_search_result(html, link)
 
-    # T-M10.5 (2026-05-14): url_alive 검증 폐기 — 비로그인 환경 한계.
-    # 네이버 카페 = 비로그인 접근 시 로그인 페이지 반환 = PRIVATE 오판정.
-    # url_alive = 항상 True 고정.
-    url_alive = True
     search_found = result.exposure_area.value != "미노출"
 
-    # 사장님 컨벤션 K 결정
+    # D-026 Phase E+F (2026-05-16): 검색 미노출 + link 있음 = 삭제 텍스트 검출
+    # 사장님 명시 = "게시글이 삭제되었습니다" exact substring 검출만 → K="삭제"
+    # 로그인 페이지 / 404 / 네트워크 fail = UNKNOWN (= 정상 가정 = transitions 자연 처리)
+    deletion_detected = False
+    if not search_found:
+        try:
+            status = crawler.fetch_cafe_url_status(link)
+            deletion_detected = (status == CafeStatus.DELETED)
+        except Exception:
+            # 텍스트 검출 실패 = 보수적 = 미검출 (= prev_K 보존)
+            deletion_detected = False
+
+    # 사장님 컨벤션 K 결정 (D-026 Phase B+E+F)
     new_K = compute_new_K(
         prev_K=prev_K,
         search_found=search_found,
-        url_alive=url_alive,
+        url_alive=True,  # T-M10.5 폐기 후 = 항상 True
         area=result.exposure_area.value if search_found else None,
+        deletion_detected=deletion_detected,
     )
 
     # health 누적
+    # D-026 Phase A+C+D (2026-05-16): 스마트블록 부활 + 중복노출 정합 = block_type 화이트리스트 확장.
     health.record(
         parser_confidence=result.parser_confidence,
         success=True,
-        block_type=new_K if new_K in {"AB", "인기글"} else None,
+        block_type=new_K if new_K in {"AB", "스마트블록", "인기글", "중복노출"} else None,
     )
 
-    # 시트 컬럼 dict 변환 (시트 "링크" 컬럼 = 자동 갱신 X = new_link 미사용)
+    # 시트 컬럼 dict 변환 (시트 "링크" 컬럼 = 기존 link 행 = 자동 갱신 X = D-023 가드)
     cols = rank_result_to_columns(
         block_order=result.block_order,
         exposure_area=new_K,
@@ -140,13 +185,49 @@ def run_cycle() -> dict:
     data = client.load_all_data_tabs(tab_filter=_carea_filter)
     print(f"대상 탭 {len(data)}개: {list(data.keys())}")
 
+    # 1.5. T-M81 (D-027 2026-05-17): 백업 자동화 — run_cycle 시작 시 시트 K/L/M/링크/유형 전체 read → .harness/backups/{run_id}.json 저장.
+    # 사장님 사고 시 = scripts/restore_backup.py {run_id}.json = 즉시 복원. shadow mode 폐기 정합 (= 시트 즉시 갱신 + 사고 시 백업 복원).
+    from datetime import datetime, timezone, timedelta
+    kst = timezone(timedelta(hours=9))
+    try:
+        backup_run_id = os.environ.get("GITHUB_RUN_ID", "local")
+        backup_ts = datetime.now(kst).strftime("%Y%m%dT%H%M%S")
+        backup_dir = ".harness/backups"
+        os.makedirs(backup_dir, exist_ok=True)
+        backup_path = f"{backup_dir}/{backup_run_id}_{backup_ts}.json"
+        backup_payload = {
+            "timestamp": datetime.now(kst).isoformat(),
+            "run_id": backup_run_id,
+            "spreadsheet_id": SPREADSHEET_ID,
+            "tabs": {tab_name: list(rows) for tab_name, rows in data.items()},
+        }
+        with open(backup_path, "w", encoding="utf-8") as f:
+            json.dump(backup_payload, f, ensure_ascii=False, indent=2)
+        print(f"[T-M81 백업] {backup_path} 저장 (탭 {len(data)}, 행 {sum(len(r) for r in data.values())})")
+    except Exception as e:
+        # 백업 실패 = log + 진행 (= cron 자체 중단 X). 사장님 가시성 = summary 안 표시.
+        print(f"[T-M81 백업] 실패 = {e} (cron 진행)")
+
     # cookie warmup — Crawler 인스턴스 생성 직후 네이버 메인 1회 fetch
     # T-M26 (2026-05-12): Cold session 차단 회피. warmup 실패해도 cron 계속 진행.
     crawler.warmup()
 
-    # T-M14 전체 폐기 (2026-05-14): link_set 구성 불필요.
-    # all_known_links = 빈 set (호환성 유지 — _process_row 매개변수로 전달되나 미사용).
+    # D-026 Phase C+D (2026-05-16): all_known_links 구성 = 전체 시트 link union (CAFE_WHITELIST slug 만)
+    # 빈 link 행 처리 시 = 이 set 안 link 와 검색 결과 매치 시 = K="중복노출" + link 자동 채움.
+    # T-M25 화이트리스트 필터 정합 (= 외주 카페 link 자동 제외).
     all_known_links: set = set()
+    for tab_rows in data.values():
+        for r in tab_rows:
+            row_link = (r.get(HEADER_LINK) or "").strip()
+            if not row_link:
+                continue
+            # naver.me 단축 URL = resolve 비용 ↑ + 차단 위험 = skip (= 사장님 작업 후 풀 URL 입력 가정)
+            if "naver.me" in row_link:
+                continue
+            slug, _ = parse_cafe_url(row_link)
+            if slug and slug in CAFE_WHITELIST:
+                all_known_links.add(row_link)
+    print(f"[D-026] all_known_links 구성: {len(all_known_links)} link (CAFE_WHITELIST 필터)")
 
     # 2. 각 탭 + 행 처리
     # url_alive_cache: T-M10.5 폐기로 미사용. 호환성 유지용 빈 dict.
@@ -222,8 +303,7 @@ def run_cycle() -> dict:
             print(f"  [{tab_name}] {len(updates)} 행 / {n} 셀 갱신")
 
     # 4.5. T-M37: 매 탭에 cron 갱신 timestamp 기록 (사장님 시점 차이 인지)
-    from datetime import datetime, timezone, timedelta
-    kst = timezone(timedelta(hours=9))
+    # (datetime import = 1.5 백업 block 안 이미 함수 scope import. 재사용.)
     kst_iso = datetime.now(kst).strftime("%Y-%m-%d %H:%M KST")
     for tab_name in tab_updates.keys():
         client.write_timestamp(tab_name, kst_iso)

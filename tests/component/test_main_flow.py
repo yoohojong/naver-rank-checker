@@ -34,20 +34,35 @@ class TestProcessRow:
         c.fetch_cafe_url_status = MagicMock(return_value=url_status)
         return c
 
-    def test_link_empty_returns_empty_no_search(self):
-        """T-M14 폐기 (2026-05-14): link 빈 행 = 사장님 미작업 = 검색 X + K/L/M 빈칸.
-        all_known_links 전달 여부 무관하게 동일 결과 (link_set fallback 폐기).
+    def test_link_empty_no_known_links_returns_unexposed(self):
+        """D-026 Phase C+D (2026-05-16): link 빈 행 + all_known_links 빈 = 검색 X + K='미노출'.
+        근거: all_known_links 없으면 매치 가능성 X = 검색 자체 skip.
         """
         crawler = self._make_crawler()
         h = HealthMonitor()
         row = {"키워드": "test", "링크": "", "_row": 5}
-        # all_known_links 전달해도 검색 X + 빈칸 반환
-        result = _process_row(row, crawler, h, all_known_links={"https://cafe.naver.com/pusanmommy/1445556"})
+        # all_known_links 빈 = 검색 X + 미노출 명시 표기
+        result = _process_row(row, crawler, h, all_known_links=set())
         crawler.fetch_search.assert_not_called()
         assert result is not None
-        assert result[HEADER_AREA] == ""
+        assert result[HEADER_AREA] == "미노출"
         assert result[HEADER_L] == ""
         assert result[HEADER_M] == ""
+
+    def test_link_empty_with_known_links_no_match_returns_unexposed(self):
+        """D-026 Phase C+D (2026-05-16): link 빈 행 + all_known_links 있음 + 매치 X = K='미노출'.
+        검색 수행됨 (= all_known_links 매치 시도). 매치 X = 미노출.
+        """
+        crawler = self._make_crawler()  # 기본 html = "<html>fake</html>" = 매치 X (짧음)
+        h = HealthMonitor()
+        row = {"키워드": "test", "링크": "", "_row": 5}
+        all_known_links = {"https://cafe.naver.com/pusanmommy/1445556"}
+        result = _process_row(row, crawler, h, all_known_links=all_known_links)
+        # D-026: all_known_links 있음 = 검색 수행
+        crawler.fetch_search.assert_called_once_with("test")
+        assert result is not None
+        # 매치 X = K="미노출"
+        assert result[HEADER_AREA] == "미노출"
 
     def test_skips_row_with_empty_keyword(self):
         crawler = self._make_crawler()
@@ -73,8 +88,11 @@ class TestProcessRow:
         assert cols[HEADER_L] == "1"
         assert cols[HEADER_M] == "1"
 
-    def test_transition_to_삭제_when_was_exposed_now_missing(self, load_fixture):
-        """이전 인기글 → 지금 검색 0 → '삭제' 자동 표기 (사장님 차별화 D-009)."""
+    def test_transition_to_누락_when_was_exposed_now_missing(self, load_fixture):
+        """D-026 Phase B (2026-05-16): 이전 인기글 → 지금 검색 0 → '누락' 자동 표기.
+        근거: 박스 빠짐 (네이버 search 결과 X) = '누락' (≠ '삭제' = 진짜 URL X).
+        D-022 ① 폐기 정합 (= "삭제" 단일 통합 컨벤션 폐기).
+        """
         html = load_fixture("naver/no_match.html")
         crawler = self._make_crawler(html_to_return=html, url_status=CafeStatus.ALIVE)
         h = HealthMonitor()
@@ -85,18 +103,15 @@ class TestProcessRow:
             "_row": 5,
         }
         cols = _process_row(row, crawler, h)
-        # 검색 미노출 + 이전 노출 (인기글) → transitions.compute_new_K → "삭제"
-        # T-M10.5: url_alive 검증 폐기. url_alive=True 고정 → prev_K=인기글 + search_found=False → "삭제" 정합.
-        assert cols[HEADER_AREA] == "삭제"
+        # D-026: 검색 미노출 + 이전 노출 (인기글) → '누락'
+        assert cols[HEADER_AREA] == "누락"
 
-    def test_url_dead_first_run_search_unexposed_returns_empty(self, load_fixture):
-        """T-M10.5 (2026-05-14): url_alive 검증 폐기 — 비로그인 환경 한계.
-        첫 추적 (prev_K='') + url DELETED + 검색 미노출 → K="" (url 상태 무관).
-        기존 동작: url DELETED → K="삭제". 폐기 후: 검색 미노출만 반영 = K="".
-        fetch_cafe_url_status 호출 X.
+    def test_url_dead_first_run_search_unexposed_returns_deleted(self, load_fixture):
+        """D-026 Phase E+F (2026-05-16): 첫 추적 + 검색 미노출 + 삭제 텍스트 검출 → K='삭제'.
+        근거: fetch_cafe_url_status 부활 (사장님 명시 텍스트 검출 = 진짜 삭제 판정).
         """
         html = load_fixture("naver/no_match.html")
-        # url_status 는 이제 _process_row 에서 호출 X — CafeStatus.DELETED 전달해도 무의미
+        # D-026 Phase E+F: DELETED 반환 = 삭제 텍스트 검출 = K="삭제"
         crawler = self._make_crawler(html_to_return=html, url_status=CafeStatus.DELETED)
         h = HealthMonitor()
         row = {
@@ -106,12 +121,12 @@ class TestProcessRow:
             "_row": 5,
         }
         cols = _process_row(row, crawler, h)
-        # url_alive 폐기 = 검색 미노출 + 첫 추적 → K="" (삭제 판정 X)
-        assert cols[HEADER_AREA] == ""
-        crawler.fetch_cafe_url_status.assert_not_called()
+        # D-026 Phase E+F: 삭제 텍스트 검출 = K='삭제'
+        assert cols[HEADER_AREA] == "삭제"
+        crawler.fetch_cafe_url_status.assert_called_once()
 
     def test_first_run_unexposed(self, load_fixture):
-        """첫 추적 (prev_K = '') + 검색 0 + url 살아있음 → 빈 칸 유지."""
+        """D-026 Phase B (2026-05-16): 첫 추적 + 검색 0 + url 살아있음 → '미노출' 명시 표기."""
         html = load_fixture("naver/no_match.html")
         crawler = self._make_crawler(html_to_return=html, url_status=CafeStatus.ALIVE)
         h = HealthMonitor()
@@ -122,16 +137,14 @@ class TestProcessRow:
             "_row": 2,
         }
         cols = _process_row(row, crawler, h)
-        assert cols[HEADER_AREA] == ""  # 미노출 + url 살아있음 = 빈 칸
+        assert cols[HEADER_AREA] == "미노출"  # D-026: 명시 표기 (빈 칸 X)
 
-    def test_first_run_url_dead_search_unexposed_returns_empty(self, load_fixture):
-        """T-M10.5 (2026-05-14): url_alive 검증 폐기 — 비로그인 환경 한계.
-        첫 추적 (prev_K='') + 검색 미노출 → K="" (url 상태 무관).
-        진짜 삭제 = 다음 cron 박스 매치 X = 자연 미노출 표시.
-        fetch_cafe_url_status 호출 X (폐기).
+    def test_first_run_url_dead_search_unexposed_returns_deleted(self, load_fixture):
+        """D-026 Phase E+F (2026-05-16): 첫 추적 + 검색 미노출 + 삭제 텍스트 검출 → K='삭제'.
+        fetch_cafe_url_status 부활 = DELETED 반환 = K='삭제' 자동 적용.
         """
         html = load_fixture("naver/no_match.html")
-        # url_status 는 이제 _process_row 에서 호출 X — CafeStatus.DELETED 전달해도 무의미
+        # D-026 Phase E+F: DELETED 반환 = 삭제 텍스트 검출
         crawler = self._make_crawler(html_to_return=html, url_status=CafeStatus.DELETED)
         h = HealthMonitor()
         row = {
@@ -141,10 +154,10 @@ class TestProcessRow:
             "_row": 7,
         }
         cols = _process_row(row, crawler, h)
-        # url_alive 폐기 = 검색 미노출 → K="" (삭제 판정 X)
-        assert cols[HEADER_AREA] == ""
-        # fetch_cafe_url_status 호출 X (폐기)
-        crawler.fetch_cafe_url_status.assert_not_called()
+        # D-026 Phase E+F: 삭제 텍스트 검출 = K='삭제'
+        assert cols[HEADER_AREA] == "삭제"
+        # D-026 Phase E+F: fetch_cafe_url_status 호출 (= 삭제 검출)
+        crawler.fetch_cafe_url_status.assert_called_once()
 
     def test_crawler_error_propagates(self):
         """차단 에러는 raise 되어 retry queue 로 흘러감."""

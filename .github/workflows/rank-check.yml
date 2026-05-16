@@ -70,6 +70,18 @@ jobs:
         run: |
           ./.venv/bin/python -u scripts/post_summary_to_issue.py
 
+      # T-M86 (D-027 2026-05-17): 백업 artifact upload = 사장님 사고 시점 = 다운로드 + restore_backup.py 즉시 복원.
+      # retention = 30일 (= 사장님 1달 안 사고 검출 의무 시점).
+      # main.py T-M81 = 매 cron 시작 시 .harness/backups/{run_id}_{ts}.json 저장 → artifact 업로드.
+      - name: Upload sheet backup artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sheet-backup-${{ github.run_id }}
+          path: .harness/backups/*.json
+          retention-days: 30
+          if-no-files-found: warn
+
       # 2026-05-13: 이메일 step 제거. root cause = GMAIL_USER/GMAIL_APP_PASSWORD secrets 미등록.
       # fix = issue #1 댓글 알림 (Step 6) 만 의존. 사장님 GitHub 계정 알림 설정 = 자동 이메일.
 

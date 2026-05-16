@@ -83,22 +83,33 @@ deps = 의존성 (선행 task), parallel = 동시 작업 안전한 다른 task
 
 ---
 
-## 다음 작업 (Next Up) — 2026-05-14 갱신
+## 다음 작업 (Next Up) — 2026-05-17 갱신 (M10 마일스톤 신규)
 
-🤖 **자동 진행 = 신규 cron 25833418213 watch 중** (cron-job.org trigger 적용 후 첫 실행 결과 확인)
+🤖 **마일스톤 M10 = D-026 완성 + 백업 자동화** (사장님 5-17 단호 시그널 정합)
 
-👤 **사장님 작업 = 우선순위 ↓ 순**:
+### M10 task list (= 사장님 검토 후 executor 위임)
 
-### ⭐ 1순위 (긴급) — Google Sheets 버전 복원
-- T-M14.2 시점 (5-13 commit 10c1ca5) ~ T-M10.4 시점 (5-14 새벽) = 시트 link 컬럼 + K="삭제" 다수 손상
-- Google Sheets 버전 기록 = 2026-05-13 14:00 이전 시점 복원 의무 (link + K 동시 복원)
-- 방법: 시트 상단 메뉴 → 파일 → 버전 기록 → 기록 보기 → 손상 이전 버전 복원
+| ID | Title | 담당 | deps | 상태 |
+|----|-------|------|------|------|
+| T-M80 | fixture 다운로드 = iroid/5407226 진짜 삭제 글 HTML → `tests/fixtures/naver/deleted_post.html` | 🤖 | — | pending |
+| T-M81 | 백업 자동화 = run_cycle 시작 시 시트 K/L/M/링크 전체 read → `.harness/backups/{run_id}.json` 저장 | 🤖 | — | pending |
+| T-M82 | UNDO 스크립트 = `scripts/restore_backup.py {run_id}` = 사장님 사고 시점 즉시 복원 | 🤖 | T-M81 | pending |
+| T-M83 | test 4 failure fix = ExposureArea set / EXPOSED_VALUES / SYSTEM_K_VALUES / prev_K="삭제" 보존 정합 | 🤖 | — | pending |
+| T-M84 | Phase C/D/E 회귀 test 21개+ = empty_link_match / filled_link_protected / deletion_exact_substring / login_wall_unknown 등 | 🤖 | T-M80 | pending |
+| T-M85 | crawler.fetch_cafe_url_status 부활 정합 검증 = fixture 기반 회귀 test | 🤖 | T-M80, T-M84 | pending |
+| T-M86 | workflow yml = 백업 dir 생성 step 추가 + .harness/backups 디렉토리 git 추적 (.gitkeep) | 🤖 | T-M81 | pending |
+| T-M87 | pytest 전체 pass 검증 (310 → 350+ 의무) | 🤖 | T-M82~T-M85 | pending |
+| T-M88 | commit + push (= D-026 완성 + 백업 자동화 일괄) | 🤖 | T-M87 | pending |
+| T-M89 | 다음 cron 결과 검증 = 첫 실행 후 사장님 시트 + 백업 파일 정합 확인 | 🤖 | T-M88 | pending |
 
-### 2순위 — GitHub 알림 설정 (5분, 1회)
-- github.com/settings/notifications = "Email" 체크
-- yoongu777@gmail.com 등록 확인
-- naver-rank-checker repo = "Watch" = All Activity
-- 결과 = cron 결과 자동 이메일 도착
+### 사장님 작업 (= 의무 0건, 사장님 5-17 결정 정합)
+- fixture URL 제공 ✅ 완료 (= `https://cafe.naver.com/iroid/5407226`)
+- shadow mode 폐기 ✅ 확정 (= 시트 즉시 적용)
+- 백업 자동화 의무 신규 ✅ 명시
+
+### 사장님 사고 시 복원 가이드 (= 백업 자동화 의무)
+1. 즉시 = `python scripts/restore_backup.py {run_id}` (= 우리 자동 백업 복원)
+2. 또는 Google Sheets 버전 기록 (= 이중 안전망)
 
 ## ⏭️ 자동 진행 (사장님 작업 X = 자동)
 - 신규 cron 25833418213 = cron-job.org KST 0/6/12/18 자동 trigger watch 중

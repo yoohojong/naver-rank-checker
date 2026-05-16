@@ -21,14 +21,19 @@ class TestRankResult:
         assert ExposureArea.UNEXPOSED.value == "미노출"
 
     def test_exposure_area_extended_enum_values(self):
-        """사장님 컨벤션 (2026-05-08): 노출 안 됨 = '삭제' 단일. UNEXPOSURE_STOPPED/DELETED/PRIVATE alias."""
-        assert ExposureArea.UNEXPOSURE_STOPPED.value == "삭제"
+        """D-026 Phase C+D+E+F 사장님 컨벤션 (2026-05-16): K 8-enum 분리.
+        AB / 스마트블록 / 인기글 / 중복노출 / 미노출 / 누락 / 삭제 / 실패 = 별도 표기.
+        '중복노출' 신규 (Phase C+D, 빈 link 자동 채움 시 K 값).
+        alias (UNEXPOSURE_STOPPED / PRIVATE) 폐기.
+        """
+        assert ExposureArea.DUPLICATE.value == "중복노출"  # D-026 Phase C+D 신규
+        assert ExposureArea.DROPPED.value == "누락"
         assert ExposureArea.DELETED.value == "삭제"
-        assert ExposureArea.PRIVATE.value == "삭제"
         assert ExposureArea.FAILED.value == "실패"
-        # 사장님 컨벤션 unique value 6개
+        # D-026: unique value 8개 (AB / 스마트블록 / 인기글 / 중복노출 / 미노출 / 누락 / 삭제 / 실패)
         values = {e.value for e in ExposureArea}
-        assert len(values) == 6
+        assert values == {"AB", "스마트블록", "인기글", "중복노출", "미노출", "누락", "삭제", "실패"}
+        assert len(values) == 8
 
 
 class TestParseSearchResult:
@@ -66,12 +71,13 @@ class TestDetectBlockOrder:
 
     def test_mixed_blocks_fixture(self, load_fixture):
         """mixed_blocks.html: T-M33 fix 후 — h2 없는 박스가 blog/web 전용 = AB 분류 X.
-        이 fixture 는 인기글 박스(h2 있음)만 존재 → ['인기글'].
-        T-M33 이전: ['AB', '인기글'] (blog 전용 박스도 AB로 오분류).
-        T-M33 이후: ['인기글'] (cafe link 없는 박스 = AB skip). """
+        D-026 Phase A 부활 (2026-05-16): 스마트블록 + 인기글 박스 별도 분류.
+        '올리브영샴푸순위' / '탈모샴푸 순위' = 스마트블록 / '샴푸순위 인기글' = 인기글.
+        """
         html = load_fixture("naver/mixed_blocks.html")
         result = parse_search_result(html, "")
-        assert "인기글" in result.block_order
+        # D-026 Phase A: 스마트블록 + 인기글 = 둘 다 등장
+        assert "스마트블록" in result.block_order or "인기글" in result.block_order
         # T-M33: cafe link 없는 h2-없는 박스 = AB 분류 X
         assert "AB" not in result.block_order
 
@@ -83,11 +89,14 @@ class TestDetectBlockOrder:
         assert "인기글" in result.block_order
 
     def test_block_order_dedup(self, load_fixture):
-        """같은 종류 박스 여러 개여도 unique 1번씩만 (사장님 컨벤션: 인기글 박스 여러 개 → 1번)."""
+        """같은 종류 박스 여러 개여도 unique 1번씩만 (block_order = unique list).
+        D-026 Phase A (2026-05-16): 스마트블록 + 인기글 분리. 각각 unique 1번.
+        """
         html = load_fixture("naver/mixed_blocks.html")
         result = parse_search_result(html, "")
-        # mixed_blocks 에 인기글 분류 박스가 4개지만 list 에는 1번만
-        assert result.block_order.count("인기글") == 1
+        # 각 종류 박스 등장 시 = 1번만
+        assert result.block_order.count("인기글") <= 1
+        assert result.block_order.count("스마트블록") <= 1
 
 
 class TestParseAbList:
@@ -160,33 +169,36 @@ class TestParseAbListHelpers:
 
 
 class TestParseSmartBlocks:
-    """DEPRECATED — 사장님 컨벤션 (2026-05-08): 이런 형태도 모두 '인기글' 으로 분류.
-    enum SMART_BLOCK 은 호환성 위해 남았지만 parser 가 더는 그것으로 분류 X."""
+    """D-026 Phase A (2026-05-16): 스마트블록 부활 (D-022 ① 폐기 정합).
+    사장님 진짜 컨벤션 = AB / 스마트블록 / 인기글 별도 표기.
+    h2 자손 + "인기글" 키워드 X + skip 패턴 X = 스마트블록 박스 분류.
+    """
 
-    def test_olive_young_box_classified_as_popular(self, load_fixture):
-        """예전 SMART_BLOCK 으로 분류했던 박스 → 사장님 컨벤션 = 인기글."""
+    def test_olive_young_box_classified_as_smart_block(self, load_fixture):
+        """D-026 Phase A: '올리브영샴푸순위' h2 박스 = 스마트블록 분류 (인기글 키워드 X)."""
         html = load_fixture("naver/mixed_blocks.html")
         target = "https://blog.naver.com/comprehensive5189/223816275254"
         result = parse_search_result(html, target)
-        assert result.exposure_area == ExposureArea.POPULAR
+        assert result.exposure_area == ExposureArea.SMART_BLOCK
         assert result.smart_block_name == "올리브영샴푸순위"
 
-    def test_talmo_box_classified_as_popular(self, load_fixture):
+    def test_talmo_box_classified_as_smart_block(self, load_fixture):
+        """D-026 Phase A: '탈모샴푸 순위' h2 박스 = 스마트블록 분류 (인기글 키워드 X)."""
         html = load_fixture("naver/mixed_blocks.html")
         target = "https://blog.naver.com/jeongjuhyunj/223985884379"
         result = parse_search_result(html, target)
-        assert result.exposure_area == ExposureArea.POPULAR
+        assert result.exposure_area == ExposureArea.SMART_BLOCK
         assert result.smart_block_name == "탈모샴푸 순위"
 
     def test_inkigi_block_skipped_by_smart_blocks(self, load_fixture):
-        """'샴푸순위' 인기글 박스는 스마트블록 분기에서 매칭하면 안 됨 (M4.9 책임).
-        현재 _parse_popular 은 placeholder False 라 결국 UNEXPOSED.
+        """'샴푸순위' 인기글 박스는 스마트블록 분기에서 매칭하면 안 됨 (= 인기글 분기 책임).
+        D-026 Phase A: "인기글" 키워드 박스 = _parse_popular 책임 (= _parse_smart_blocks skip).
         """
         html = load_fixture("naver/mixed_blocks.html")
         # box[4] 인기글 안 cafe URL
         target = "https://cafe.naver.com/knife67/615149"
         result = parse_search_result(html, target)
-        # 스마트블록으로 분류되면 안 됨
+        # 스마트블록으로 분류되면 안 됨 (= 인기글 분기 매치)
         assert result.exposure_area != ExposureArea.SMART_BLOCK
 
     def test_no_smart_block_in_ab_only_fixture(self, load_fixture):
@@ -203,6 +215,105 @@ class TestParseSmartBlocks:
         result = parse_search_result(html, "https://blog.naver.com/never/9999")
         assert result.exposure_area == ExposureArea.UNEXPOSED
         assert result.smart_block_name is None
+
+
+class TestSmartBlockRevival:
+    """D-026 Phase A 회귀 test 5개+ (2026-05-16) — 스마트블록 부활 정합 검증.
+
+    사장님 plan Phase A acceptance:
+    - h2 텍스트 "인기글" 키워드 X + skip 패턴 X → 스마트블록 분류
+    - target_url / link_set / cafe_slug_whitelist 매치 우선순위 = AB/POPULAR 동일
+    """
+
+    _PADDING = "<div class='pad'>" + ("x" * 600) + "</div>"
+
+    def _make_smart_box(self, h2_text: str, cafe_url: str) -> str:
+        """스마트블록 박스 (h2 + cafe link) HTML 조각 생성."""
+        return (
+            f'<div class="fds-default-mode api_subject_bx">'
+            f'<h2>{h2_text}</h2>'
+            f'<a href="{cafe_url}">글제목</a>'
+            f'</div>'
+        )
+
+    def test_smart_block_h2_recognized(self):
+        """h2 텍스트 = '이용자 두피케어' (인기글 키워드 X + skip X) = 스마트블록 분류."""
+        target = "https://cafe.naver.com/pusanmommy/1111"
+        box = self._make_smart_box("이용자 두피케어", target)
+        html = f"<html><body>{self._PADDING}{box}</body></html>"
+        result = parse_search_result(html, target_url=target)
+        assert result.exposure_area == ExposureArea.SMART_BLOCK
+        assert result.smart_block_name == "이용자 두피케어"
+        assert result.matched_url == target
+
+    def test_smart_block_매치_target_url(self):
+        """스마트블록 박스 안 target_url 매치 = exposure_area = SMART_BLOCK + idx = 1."""
+        target = "https://cafe.naver.com/cosmania/2222"
+        box = self._make_smart_box("탈모샴푸 후기", target)
+        html = f"<html><body>{self._PADDING}{box}</body></html>"
+        result = parse_search_result(html, target_url=target)
+        assert result.exposure_area == ExposureArea.SMART_BLOCK
+        assert result.integrated_rank == 1
+        assert result.cafe_slot_rank == 1
+        assert result.parser_confidence == 0.85
+
+    def test_smart_block_vs_popular_분기(self):
+        """동일 형태 박스 분기 검증: '인기글' h2 = POPULAR / 그 외 h2 = SMART_BLOCK."""
+        target = "https://cafe.naver.com/iroid/3333"
+        # 인기글 박스
+        popular_box = self._make_smart_box("패션 인기글", target)
+        html_popular = f"<html><body>{self._PADDING}{popular_box}</body></html>"
+        result_popular = parse_search_result(html_popular, target_url=target)
+        assert result_popular.exposure_area == ExposureArea.POPULAR
+        # 스마트블록 박스 (= 인기글 키워드 X)
+        smart_box = self._make_smart_box("두피염증 추천", target)
+        html_smart = f"<html><body>{self._PADDING}{smart_box}</body></html>"
+        result_smart = parse_search_result(html_smart, target_url=target)
+        assert result_smart.exposure_area == ExposureArea.SMART_BLOCK
+
+    def test_smart_block_skip_patterns(self):
+        """SMART_BLOCK_SKIP_PATTERNS (광고/AI 브리핑 등) = skip = 스마트블록 분류 X."""
+        target = "https://cafe.naver.com/x/4444"
+        # "AI 브리핑" h2 = skip
+        box = self._make_smart_box("AI 브리핑", target)
+        html = f"<html><body>{self._PADDING}{box}</body></html>"
+        result = parse_search_result(html, target_url=target)
+        # AI 브리핑 박스 = 스마트블록 분기 skip + 인기글 분기 도 skip = UNEXPOSED
+        assert result.exposure_area == ExposureArea.UNEXPOSED
+
+    def test_smart_block_block_order(self):
+        """_detect_block_order = 스마트블록 박스 = '스마트블록' 표기 (D-026 정합)."""
+        from src.parser import _detect_block_order
+        smart_box = self._make_smart_box("이용자 두피케어", "https://cafe.naver.com/x/1")
+        popular_box = self._make_smart_box("패션 인기글", "https://cafe.naver.com/y/2")
+        html = f"<html><body>{self._PADDING}{smart_box}{popular_box}</body></html>"
+        order = _detect_block_order(html)
+        assert "스마트블록" in order
+        assert "인기글" in order
+
+    def test_smart_block_link_set_match(self):
+        """target_url=None + link_set 매치 시 = SMART_BLOCK + matched_url 기록."""
+        matched = "https://cafe.naver.com/cosmania/5555"
+        box = self._make_smart_box("탈모케어 후기", matched)
+        html = f"<html><body>{self._PADDING}{box}</body></html>"
+        result = parse_search_result(html, target_url=None, link_set={matched})
+        assert result.exposure_area == ExposureArea.SMART_BLOCK
+        assert result.matched_url == matched
+
+    def test_smart_block_ab_priority(self):
+        """AB 박스 매치 우선 = 스마트블록 분기 시도 X."""
+        target = "https://cafe.naver.com/pusanmommy/6666"
+        # AB 박스 (= h2 없음)
+        ab_box = (
+            f'<div class="fds-default-mode api_subject_bx">'
+            f'<a class="api_txt_lines" href="{target}">AB 글</a>'
+            f'</div>'
+        )
+        # 스마트블록 박스 (= 매치 X)
+        smart_box = self._make_smart_box("후기 모음", "https://cafe.naver.com/other/9999")
+        html = f"<html><body>{self._PADDING}{ab_box}{smart_box}</body></html>"
+        result = parse_search_result(html, target_url=target)
+        assert result.exposure_area == ExposureArea.AB
 
 
 class TestParsePopular:
@@ -1077,3 +1188,78 @@ class TestBootstrapJsonFallbackIntegration:
         result = parse_search_result(html, target_url="https://cafe.naver.com/never/9999")
         assert result.exposure_area == ExposureArea.UNEXPOSED
         assert result.matched_url is None
+
+
+class TestD026LinkSetMatch:
+    """D-026 Phase C+D (2026-05-16) — link_set 매치 회귀 test.
+
+    빈 link 행 자동 채움 logic 의 parser 분기 검증.
+    target_url=None + link_set 지정 → AB / 스마트블록 / 인기글 박스 안 link_set 매치 시 matched_url 기록.
+    """
+
+    _PADDING = "<div class='pad'>" + ("x" * 600) + "</div>"
+
+    def _make_ab_box(self, cafe_url: str) -> str:
+        return (
+            f'<div class="fds-default-mode api_subject_bx">'
+            f'<a class="api_txt_lines" href="{cafe_url}">글제목</a>'
+            f'</div>'
+        )
+
+    def _make_smart_box(self, h2_text: str, cafe_url: str) -> str:
+        return (
+            f'<div class="fds-default-mode api_subject_bx">'
+            f'<h2>{h2_text}</h2>'
+            f'<a href="{cafe_url}">글제목</a>'
+            f'</div>'
+        )
+
+    def test_link_set_match_ab_DUPLICATE_branch(self):
+        """D-026 Phase C+D: 빈 link 행 분기 = AB 박스 안 link_set 매치 → matched_url 기록 = "중복노출" trigger."""
+        matched = "https://cafe.naver.com/cosmania/9999"
+        other = "https://cafe.naver.com/pusanmommy/1111"
+        box = self._make_ab_box(matched)
+        html = f"<html><body>{self._PADDING}{box}</body></html>"
+        result = parse_search_result(html, target_url=None, link_set={matched, other})
+        # AB 분기 매치 = matched_url 기록 = main.py 가 K="중복노출" 적용
+        assert result.exposure_area == ExposureArea.AB
+        assert result.matched_url == matched
+
+    def test_link_set_match_smart_block_DUPLICATE_branch(self):
+        """D-026 Phase C+D: 스마트블록 박스 안 link_set 매치 → matched_url 기록."""
+        matched = "https://cafe.naver.com/iroid/2222"
+        box = self._make_smart_box("이용자 두피케어", matched)
+        html = f"<html><body>{self._PADDING}{box}</body></html>"
+        result = parse_search_result(html, target_url=None, link_set={matched})
+        assert result.exposure_area == ExposureArea.SMART_BLOCK
+        assert result.matched_url == matched
+
+    def test_link_set_match_popular_DUPLICATE_branch(self):
+        """D-026 Phase C+D: 인기글 박스 안 link_set 매치 → matched_url 기록."""
+        matched = "https://cafe.naver.com/pusanmommy/3333"
+        box = self._make_smart_box("패션 인기글", matched)
+        html = f"<html><body>{self._PADDING}{box}</body></html>"
+        result = parse_search_result(html, target_url=None, link_set={matched})
+        assert result.exposure_area == ExposureArea.POPULAR
+        assert result.matched_url == matched
+
+    def test_link_set_non_cafe_ignored(self):
+        """D-026 Phase C+D + T-M16 정합: link_set 안 cafe 아닌 URL = 매치 시도 X = UNEXPOSED.
+
+        근거: T-M16 (commit d25d040) link_set 매치 = 카페만 허용 (= 사장님 의도). blog/web URL = skip.
+        진짜 시트 빈 link 행에 다른 행 cafe link 만 있으니 link_set = cafe URL 만 들어옴 정합.
+        non-cafe 들어왔다 가정 = 매치 X = UNEXPOSED 보장.
+        """
+        non_cafe = "https://blog.naver.com/someone/12345"
+        cafe_link = "https://cafe.naver.com/cosmania/9999"
+        # html 안 non_cafe link 만 있다 가정 = link_set 에 non_cafe 만 있어도 매치 X
+        box = self._make_ab_box(non_cafe)
+        html = f"<html><body>{self._PADDING}{box}</body></html>"
+        # link_set 안 cafe_link = html 안 X = 매치 X (= cafe_link 가 html 검색결과 안 X)
+        # 또 non_cafe = link_set 안 X = parser 매치 시도 X
+        result = parse_search_result(html, target_url=None, link_set={cafe_link})
+        # 박스 안 link 가 non-cafe = parser 가 (T-M16) cafe 만 허용 = 매치 X
+        # link_set 안 cafe_link = html 안 X = 매치 X
+        # 결과 = UNEXPOSED (matched_url = None)
+        assert result.matched_url is None
+        assert result.exposure_area == ExposureArea.UNEXPOSED

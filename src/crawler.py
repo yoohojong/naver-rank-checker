@@ -201,11 +201,19 @@ class Crawler:
         return r.text
 
     def fetch_cafe_url_status(self, url: str) -> CafeStatus:
-        """카페 URL이 살아있는지 / 삭제됐는지 / 비공개인지 판정.
+        """카페 URL 의 삭제 텍스트 검출 (D-026 Phase E+F 2026-05-16 부활 + 정밀화).
 
-        2026-05-13 T-M10.3 (D-021 정합): HEAD 1차 fallback 폐기.
-        근거: document-specialist 실측 = 네이버 카페 = 404 미반환 (200 + body 키워드) = HEAD 효과 0.
-        GET 단독 + body 파싱 = 진짜 판정 방식.
+        T-M10.5 폐기 reverse (D-026 정합 2026-05-16):
+        - 사장님 명시 = "게시글이 삭제되었습니다" exact substring 검출만 → DELETED
+        - 로그인 페이지 (nidlogin.login) / 404 / 네트워크 fail = UNKNOWN (= 정상 가정)
+        - 우산 패턴 = "삭제된 게시물입니다" / "존재하지 않는 게시글" (= 안전 보강)
+
+        T-M10.5 학습 정합: 비로그인 환경 한계 = 로그인 페이지 ≠ 삭제. UNKNOWN 반환 = 시트 보존.
+
+        Returns:
+            CafeStatus.DELETED — 진짜 삭제 텍스트 검출 (사장님 시트 K="삭제" 적용 trigger)
+            CafeStatus.UNKNOWN — 로그인 페이지 / 404 / 네트워크 fail (= 시트 보존)
+            CafeStatus.ALIVE — 200 + 삭제 텍스트 X (= 정상)
         """
         self.slowdown.wait()
         try:
@@ -218,23 +226,30 @@ class Crawler:
         except requests.RequestsError:
             return CafeStatus.UNKNOWN
 
+        # D-026 Phase E+F (2026-05-16): 404 = UNKNOWN (= 시트 보존, T-M10.5 학습 정합)
         if r.status_code == 404:
-            return CafeStatus.DELETED
+            return CafeStatus.UNKNOWN
 
         if r.status_code == 200:
+            # D-026 Phase E+F (2026-05-16): 로그인 페이지 = UNKNOWN (= 시트 보존)
+            # T-M10.5 학습 = 비로그인 = 로그인 페이지 = PRIVATE 오판정 사고 재발 방지
             text_lower = r.text.lower()
             if "nidlogin.login" in text_lower or "로그인이 필요합니다" in r.text:
-                return CafeStatus.PRIVATE
-            # T-M10.4 (2026-05-13 architect 발견): 등급 제한 / 권한 없음 = PRIVATE
-            if any(k in r.text for k in ["등급이 부족", "권한이 없", "회원등급이"]):
-                return CafeStatus.PRIVATE
-            # 2026-05-13: document-specialist 실측 = 네이버 카페 404 페이지 = 200 + 키워드 반환
-            if any(k in r.text for k in ["존재하지 않", "삭제된", "없는 게시물"]):
+                return CafeStatus.UNKNOWN
+
+            # D-026 Phase E+F (2026-05-16): 사장님 명시 exact substring "게시글이 삭제되었습니다" 검출
+            # 우산 패턴 (= 안전 보강) = "삭제된 게시물입니다" / "존재하지 않는 게시글"
+            DELETION_PATTERNS = (
+                "게시글이 삭제되었습니다",
+                "삭제된 게시물입니다",
+                "존재하지 않는 게시글",
+            )
+            if any(p in r.text for p in DELETION_PATTERNS):
                 return CafeStatus.DELETED
-            if "삭제" in r.text and "게시글" in r.text and len(r.text) < 5000:
-                return CafeStatus.DELETED
+
             return CafeStatus.ALIVE
 
+        # 그 외 status_code = UNKNOWN (= 시트 보존)
         return CafeStatus.UNKNOWN
 
     @staticmethod

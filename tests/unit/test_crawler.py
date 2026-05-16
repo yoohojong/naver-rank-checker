@@ -183,8 +183,15 @@ class TestCrawlerFetchSearch:
 
 
 class TestCrawlerFetchCafeUrlStatus:
+    """D-026 Phase E+F (2026-05-16) — 삭제 텍스트 정밀 검출 부활.
+
+    사장님 명시 = "게시글이 삭제되었습니다" exact substring 검출만 → DELETED.
+    로그인 페이지 / 404 / 네트워크 fail = UNKNOWN (= 정상 가정, 시트 보존).
+    T-M10.5 학습 정합 (= PRIVATE 오판정 사고 재발 방지).
+    """
+
     def test_alive_on_normal_200(self):
-        """GET 200 (정상 글) = ALIVE."""
+        """GET 200 (정상 글, 삭제 텍스트 X) = ALIVE."""
         c = Crawler()
         c.session = MagicMock()
         c.session.get.return_value = MagicMock(
@@ -196,18 +203,22 @@ class TestCrawlerFetchCafeUrlStatus:
         c.slowdown.adaptive_base = 0
         assert c.fetch_cafe_url_status("https://cafe.naver.com/foo/123") == CafeStatus.ALIVE
 
-    def test_404_treated_as_deleted(self):
-        """GET 404 = DELETED."""
+    def test_404_treated_as_unknown(self):
+        """D-026 Phase E+F: GET 404 = UNKNOWN (= 시트 보존, T-M10.5 학습 정합).
+        404 = 네이버 카페 미반환 + 다른 사유 가능 = 단정 X = UNKNOWN.
+        """
         c = Crawler()
         c.session = MagicMock()
         c.session.get.return_value = MagicMock(status_code=404, text="")
         c.slowdown.base = 0
         c.slowdown.current_interval = 0
         c.slowdown.adaptive_base = 0
-        assert c.fetch_cafe_url_status("https://cafe.naver.com/foo/9999") == CafeStatus.DELETED
+        assert c.fetch_cafe_url_status("https://cafe.naver.com/foo/9999") == CafeStatus.UNKNOWN
 
-    def test_login_wall_treated_as_private(self):
-        """GET 200 (로그인 필요) = PRIVATE."""
+    def test_login_wall_treated_as_unknown(self):
+        """D-026 Phase E+F: GET 200 (로그인 페이지) = UNKNOWN (= 시트 보존).
+        T-M10.5 학습 정합 (= 비로그인 = 로그인 페이지 = PRIVATE 오판정 사고 재발 방지).
+        """
         c = Crawler()
         c.session = MagicMock()
         c.session.get.return_value = MagicMock(
@@ -217,23 +228,25 @@ class TestCrawlerFetchCafeUrlStatus:
         c.slowdown.base = 0
         c.slowdown.current_interval = 0
         c.slowdown.adaptive_base = 0
-        assert c.fetch_cafe_url_status("https://cafe.naver.com/private/1") == CafeStatus.PRIVATE
+        assert c.fetch_cafe_url_status("https://cafe.naver.com/private/1") == CafeStatus.UNKNOWN
 
-    def test_status_200_with_존재하지않_returns_deleted(self):
-        """GET 200 + '존재하지 않' 키워드 = DELETED (document-specialist 실측 추가)."""
+    def test_deletion_exact_substring_returns_deleted(self):
+        """D-026 Phase E+F (2026-05-16): "게시글이 삭제되었습니다" exact substring → DELETED.
+        사장님 명시 컨벤션.
+        """
         c = Crawler()
         c.session = MagicMock()
         c.session.get.return_value = MagicMock(
             status_code=200,
-            text="<html>존재하지 않는 게시물입니다.</html>",
+            text="<html>게시글이 삭제되었습니다.</html>",
         )
         c.slowdown.base = 0
         c.slowdown.current_interval = 0
         c.slowdown.adaptive_base = 0
         assert c.fetch_cafe_url_status("https://cafe.naver.com/foo/1") == CafeStatus.DELETED
 
-    def test_status_200_with_삭제된_returns_deleted(self):
-        """GET 200 + '삭제된' 키워드 = DELETED (document-specialist 실측 추가)."""
+    def test_deletion_umbrella_삭제된_게시물_returns_deleted(self):
+        """D-026 Phase E+F: 우산 패턴 "삭제된 게시물입니다" = DELETED (= 안전 보강)."""
         c = Crawler()
         c.session = MagicMock()
         c.session.get.return_value = MagicMock(
@@ -245,21 +258,23 @@ class TestCrawlerFetchCafeUrlStatus:
         c.slowdown.adaptive_base = 0
         assert c.fetch_cafe_url_status("https://cafe.naver.com/foo/2") == CafeStatus.DELETED
 
-    def test_status_200_with_없는게시물_returns_deleted(self):
-        """GET 200 + '없는 게시물' 키워드 = DELETED (document-specialist 실측 추가)."""
+    def test_deletion_umbrella_존재하지_않는_게시글_returns_deleted(self):
+        """D-026 Phase E+F: 우산 패턴 "존재하지 않는 게시글" = DELETED (= 안전 보강)."""
         c = Crawler()
         c.session = MagicMock()
         c.session.get.return_value = MagicMock(
             status_code=200,
-            text="<html>없는 게시물입니다.</html>",
+            text="<html>존재하지 않는 게시글입니다.</html>",
         )
         c.slowdown.base = 0
         c.slowdown.current_interval = 0
         c.slowdown.adaptive_base = 0
         assert c.fetch_cafe_url_status("https://cafe.naver.com/foo/3") == CafeStatus.DELETED
 
-    def test_status_200_with_등급이부족_returns_private(self):
-        """GET 200 + '등급이 부족' 키워드 = PRIVATE (T-M10.4 architect 발견)."""
+    def test_status_200_no_deletion_text_returns_alive(self):
+        """D-026 Phase E+F: GET 200 + 삭제 텍스트 X = ALIVE (= 진짜 정상).
+        T-M10.4 등급 키워드는 ALIVE (= 등급 부족 ≠ 삭제, 비로그인 환경 한계 = 단정 X).
+        """
         c = Crawler()
         c.session = MagicMock()
         c.session.get.return_value = MagicMock(
@@ -269,33 +284,72 @@ class TestCrawlerFetchCafeUrlStatus:
         c.slowdown.base = 0
         c.slowdown.current_interval = 0
         c.slowdown.adaptive_base = 0
-        assert c.fetch_cafe_url_status("https://cafe.naver.com/foo/4") == CafeStatus.PRIVATE
+        # 등급 키워드 ≠ 삭제 = ALIVE (= 시트 보존, deletion_detected X)
+        assert c.fetch_cafe_url_status("https://cafe.naver.com/foo/4") == CafeStatus.ALIVE
 
-    def test_status_200_with_권한이없_returns_private(self):
-        """GET 200 + '권한이 없' 키워드 = PRIVATE (T-M10.4 architect 발견)."""
+    def test_network_error_returns_unknown(self):
+        """D-026 Phase E+F: 네트워크 fail = UNKNOWN (= 시트 보존)."""
+        from curl_cffi.requests import RequestsError
         c = Crawler()
         c.session = MagicMock()
-        c.session.get.return_value = MagicMock(
-            status_code=200,
-            text="<html>권한이 없는 게시물입니다.</html>",
-        )
+        c.session.get.side_effect = RequestsError("network down")
         c.slowdown.base = 0
         c.slowdown.current_interval = 0
         c.slowdown.adaptive_base = 0
-        assert c.fetch_cafe_url_status("https://cafe.naver.com/foo/5") == CafeStatus.PRIVATE
+        assert c.fetch_cafe_url_status("https://cafe.naver.com/foo/5") == CafeStatus.UNKNOWN
 
-    def test_status_200_with_회원등급이_returns_private(self):
-        """GET 200 + '회원등급이' 키워드 = PRIVATE (T-M10.4 architect 발견)."""
+    def test_fixture_deleted_post_returns_deleted(self):
+        """T-M80 + T-M85 (D-027 2026-05-17): synthetic deleted_post.html fixture = DELETED 검증.
+
+        사장님 5-17 컨텍스트 = "tests/fixtures/naver/deleted_post.html 의 '게시글이 삭제되었습니다' 텍스트 정확 검출 검증 의무".
+        synthetic fixture (= login wall fixture 와 분리) = '게시글이 삭제되었습니다' substring 포함.
+
+        근거: 사장님 제공 URL (iroid/5407226) = 비로그인 환경에서 = 로그인 페이지 HTML 반환 (= login wall fixture).
+        진짜 deletion HTML 확보 불가 (= 사장님 제공 URL 자체 로그인 wall) = synthetic fixture 보강.
+        """
+        import os
+        fixture_path = os.path.join(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+            "fixtures", "naver", "deleted_post.html",
+        )
+        with open(fixture_path, "r", encoding="utf-8") as f:
+            html = f.read()
+        assert "게시글이 삭제되었습니다" in html  # fixture sanity
+
         c = Crawler()
         c.session = MagicMock()
-        c.session.get.return_value = MagicMock(
-            status_code=200,
-            text="<html>회원등급이 낮아 열람이 제한됩니다.</html>",
-        )
+        c.session.get.return_value = MagicMock(status_code=200, text=html)
         c.slowdown.base = 0
         c.slowdown.current_interval = 0
         c.slowdown.adaptive_base = 0
-        assert c.fetch_cafe_url_status("https://cafe.naver.com/foo/6") == CafeStatus.PRIVATE
+        assert c.fetch_cafe_url_status("https://cafe.naver.com/iroid/5407226") == CafeStatus.DELETED
+
+    def test_fixture_login_wall_returns_unknown(self):
+        """T-M80 + T-M85 (D-027 2026-05-17): 실 login wall fixture (iroid/5407226 비로그인) = UNKNOWN 검증.
+
+        사장님 제공 URL (cafe.naver.com/iroid/5407226) 직접 fetch 결과 = 로그인 페이지 HTML (1.4MB).
+        '게시글이 삭제되었습니다' 텍스트 X = nidlogin.login 키워드 검출 = UNKNOWN (T-M10.5 학습 정합).
+
+        근거: 비로그인 환경 한계 = 로그인 페이지 ≠ 삭제 = UNKNOWN 반환 = 시트 보존.
+        """
+        import os
+        fixture_path = os.path.join(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+            "fixtures", "naver", "login_wall.html",
+        )
+        with open(fixture_path, "r", encoding="utf-8") as f:
+            html = f.read()
+        assert "nidlogin.login" in html.lower()  # fixture sanity
+        assert "게시글이 삭제되었습니다" not in html  # fixture sanity (login wall ≠ deletion)
+
+        c = Crawler()
+        c.session = MagicMock()
+        c.session.get.return_value = MagicMock(status_code=200, text=html)
+        c.slowdown.base = 0
+        c.slowdown.current_interval = 0
+        c.slowdown.adaptive_base = 0
+        # 로그인 wall = UNKNOWN (= 시트 보존, T-M10.5 학습 정합)
+        assert c.fetch_cafe_url_status("https://cafe.naver.com/iroid/5407226") == CafeStatus.UNKNOWN
 
 
 class TestCrawlerImpersonatePool:

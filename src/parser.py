@@ -10,21 +10,38 @@ from bs4 import BeautifulSoup
 
 
 class ExposureArea(str, Enum):
-    """spec 4.2 K 컬럼 8개 enum. parser 가 직접 채우는 건 AB/SMART_BLOCK/POPULAR/UNEXPOSED.
+    """spec 4.2 K 컬럼 enum (D-026 Phase C+D+E+F 2026-05-16 — 중복노출 추가).
 
-    UNEXPOSURE_STOPPED 는 transitions.py (M7.1) 가 이전 K 비교로 채움.
-    DELETED/PRIVATE 는 main.py (M7.2) 가 crawler.fetch_cafe_url_status 결과로 매핑.
-    FAILED 는 main.py 가 CrawlerError 캐치 시 채움.
+    parser 가 직접 채우는 값:
+    - AB / SMART_BLOCK / POPULAR (= 검색 노출, 본인 link 매치)
+    - UNEXPOSED (= 검색 미노출)
+
+    main.py 가 D-026 빈 link 자동 채움 logic 에서 채우는 값 (Phase C+D 2026-05-16):
+    - DUPLICATE (= 빈 link 행 + 키워드 검색 결과에 다른 행 link 매치 = "추가 노출 발견")
+
+    transitions.py 가 prev_K 비교로 채우는 값:
+    - DROPPED (= 이전 노출 → 현재 미노출, "박스 빠짐")
+
+    main.py 가 텍스트 판정 결과로 채울 값 (Phase E+F 2026-05-16):
+    - DELETED (= "게시글이 삭제되었습니다" exact substring 검출 시)
+    - FAILED (= 예외 발생 시, 다만 D-024 정합 = 시트 보존 우선)
+
+    D-022 ① 폐기 (2026-05-16): 사장님 진짜 컨벤션 = AB / 스마트블록 / 인기글 별도 표기.
+    이전 (2026-05-08): "노출 안 됨 = 모두 '삭제' 단일" = 잘못 misread.
+    D-026 사장님 컨벤션 (2026-05-16):
+    - 미노출 = search 결과 0건
+    - 누락 = 이전 노출 → 지금 검색 결과 X (박스 안에서 빠짐)
+    - 중복노출 = 빈 link 행 + 다른 행 우리 link 가 키워드에 매치 (= 신규 발견)
+    - 삭제 = "게시글이 삭제되었습니다" exact substring 텍스트 검출 (= 진짜 글 사라짐)
+    UNEXPOSURE_STOPPED / PRIVATE alias = 폐기 (T-M10.5 학습 정합).
     """
     AB = "AB"
     SMART_BLOCK = "스마트블록"
     POPULAR = "인기글"
+    DUPLICATE = "중복노출"  # D-026 Phase C+D (2026-05-16): 빈 link 행 자동 채움 시 K 값
     UNEXPOSED = "미노출"
-    # 사장님 컨벤션 (2026-05-08 확인): 노출 안 됨 케이스 모두 "삭제" 단일 단어.
-    # UNEXPOSURE_STOPPED / DELETED / PRIVATE 셋 다 "삭제" — Python enum alias.
-    UNEXPOSURE_STOPPED = "삭제"
-    DELETED = "삭제"
-    PRIVATE = "삭제"
+    DROPPED = "누락"  # D-026 Phase B: 이전 노출 → 현재 미노출 (transitions.py 가 채움)
+    DELETED = "삭제"  # D-026 Phase E+F (2026-05-16): "게시글이 삭제되었습니다" 텍스트 검출 시
     FAILED = "실패"
 
 
@@ -69,7 +86,7 @@ def parse_search_result(
 
     if _parse_ab_list(html, target_url, result, link_set, cafe_slug_whitelist):
         result.exposure_area = ExposureArea.AB
-    elif _parse_smart_blocks(html, target_url, result):
+    elif _parse_smart_blocks(html, target_url, result, link_set, cafe_slug_whitelist):
         result.exposure_area = ExposureArea.SMART_BLOCK
     elif _parse_popular(html, target_url, result, link_set, cafe_slug_whitelist):
         result.exposure_area = ExposureArea.POPULAR
@@ -90,11 +107,12 @@ def parse_search_result(
 def _detect_block_order(html: str) -> list[str]:
     """페이지 위→아래로 등장하는 블록 종류 unique list (C 컬럼 용).
 
-    분류 규칙 (T-M33 2026-05-12 D-022 갱신):
+    분류 규칙 (D-026 Phase A 2026-05-16 갱신 — 스마트블록 부활):
     - h2 자손 없음 + 박스 안 cafe link ≥ 1 → 'AB'
     - h2 자손 없음 + cafe link 0 (blog/web 만) → skip (AB 아님)
     - h2 자손 있음 + h2 텍스트 POPULAR_SKIP (광고/이미지/AI 브리핑/쇼핑/네이버 클립/브랜드) → skip
-    - h2 자손 있음 + 그 외 → '인기글'
+    - h2 자손 있음 + h2 텍스트 = '인기글' 키워드 → '인기글'
+    - h2 자손 있음 + 그 외 (= 스마트블록) → '스마트블록' (D-022 ① 폐기 정합)
     """
     if not html:
         return []
@@ -112,10 +130,15 @@ def _detect_block_order(html: str) -> list[str]:
                 kind = ExposureArea.AB.value
         else:
             h2_text = h2.get_text(strip=True)
+            # _POPULAR_SKIP_PATTERNS = 광고/이미지/AI/쇼핑 등 = "인기글" 키워드 X 항목들.
+            # = "인기글" 박스 와 충돌 X (= 사장님 fixture 정합)
             if any(p in h2_text for p in _POPULAR_SKIP_PATTERNS):
                 continue
-            # h2 자손 있고 광고/이미지/AI/쇼핑 외 = 사장님 컨벤션 = '인기글'
-            kind = ExposureArea.POPULAR.value
+            # D-026 Phase A (2026-05-16): "인기글" 키워드 = 인기글, 그 외 h2 = 스마트블록
+            if "인기글" in h2_text:
+                kind = ExposureArea.POPULAR.value
+            else:
+                kind = ExposureArea.SMART_BLOCK.value
         if kind and kind not in seen:
             seen.append(kind)
     return seen
@@ -409,9 +432,105 @@ _SMART_BLOCK_SKIP_PATTERNS = (
 )
 
 
-def _parse_smart_blocks(html: str, target_url: str, result: RankResult) -> bool:
-    """DEPRECATED — 사장님 컨벤션 (2026-05-08 확인): 이런 형태도 모두 '인기글'.
-    _parse_popular 가 흡수. 호환성 위해 함수는 남기되 항상 False 리턴."""
+def _parse_smart_blocks(
+    html: str,
+    target_url: Optional[str],
+    result: RankResult,
+    link_set: Optional[set[str]] = None,
+    cafe_slug_whitelist: Optional[set[str]] = None,
+) -> bool:
+    """스마트블록 박스 매치 (D-026 Phase A 2026-05-16 부활 — D-022 ① 폐기 정합).
+
+    사장님 진짜 컨벤션 = AB / 스마트블록 / 인기글 별도 표기.
+    이전 (2026-05-08 D-022 ①): "이런 형태도 모두 인기글" = 잘못 misread = 폐기.
+
+    스마트블록 박스 정의:
+    - h2 자손 있음
+    - h2 텍스트 POPULAR_SKIP (광고/이미지/AI/쇼핑 등) X
+    - h2 텍스트 "인기글" 키워드 X (= 인기글 박스 = _parse_popular 책임)
+    - h2 자손 = h2 텍스트 (예: "이용자 두피케어" / "탈모샴푸 순위" 등)
+
+    매칭 시:
+    - integrated_rank (L) = 박스 안 모든 항목 idx (URL 단위 dedup)
+    - cafe_slot_rank (M) = 박스 안 카페 항목만 idx
+    - smart_block_name = 박스 h2 텍스트
+    - parser_confidence = 0.85
+
+    매치 우선순위:
+    1. target_url 정확 매치
+    2. link_set 정확 매치 (T-M14.2 정합)
+    3. cafe_slug_whitelist slug 매치 (T-M14.7 정합)
+    4. 매치 X
+    """
+    if not html:
+        return False
+
+    soup = BeautifulSoup(html, "lxml")
+    boxes = soup.select(".desktop_mode.api_subject_bx, .fds-default-mode.api_subject_bx")
+
+    for box in boxes:
+        h2 = box.find("h2")
+        if h2 is None:
+            continue
+        h2_text = h2.get_text(strip=True)
+        # 스킵 패턴 (광고/이미지/AI/쇼핑 등) = skip — 두 set 통합 적용 (D-026 Phase A 정합).
+        # _SMART_BLOCK_SKIP_PATTERNS = 기본 + _POPULAR_SKIP_PATTERNS = T-M22 확장 (AI 추천/숏폼/쇼핑 등).
+        if any(p in h2_text for p in _SMART_BLOCK_SKIP_PATTERNS):
+            continue
+        if any(p in h2_text for p in _POPULAR_SKIP_PATTERNS):
+            continue
+        # "인기글" 키워드 = 인기글 박스 = _parse_popular 책임 (= skip)
+        if "인기글" in h2_text:
+            continue
+
+        # 박스 안 모든 항목 추출 (= _extract_popular_items 동일 logic)
+        items = _extract_popular_items(box)
+        cafe_count = 0
+        for idx, url in enumerate(items, start=1):
+            is_cafe = "cafe.naver.com" in url
+            if is_cafe:
+                cafe_count += 1
+
+            # 1. target_url 정확 매치
+            if target_url is not None:
+                if _urls_match(url, target_url):
+                    result.integrated_rank = idx
+                    if is_cafe:
+                        result.cafe_slot_rank = cafe_count
+                    result.smart_block_name = h2_text
+                    result.parser_confidence = 0.85
+                    result.matched_url = target_url
+                    return True
+                continue
+
+            # target_url=None 이하: link_set / cafe_slug_whitelist 분기
+
+            # 2. link_set 정확 매치 (T-M16 정합: 카페만)
+            if link_set:
+                if not is_cafe:
+                    continue
+                if _urls_match_any(url, link_set):
+                    result.integrated_rank = idx
+                    result.cafe_slot_rank = cafe_count
+                    result.smart_block_name = h2_text
+                    result.parser_confidence = 0.85
+                    result.matched_url = url
+                    print(f"    [SMART_BLOCK_MATCH] idx={idx} h2={h2_text!r} matched_url={url[:90]}")
+                    return True
+                continue
+
+            # 3. cafe_slug_whitelist slug 매치 (T-M14.7 정합)
+            if cafe_slug_whitelist and is_cafe:
+                slug = _extract_cafe_slug(url)
+                if slug and slug in cafe_slug_whitelist:
+                    result.integrated_rank = idx
+                    result.cafe_slot_rank = cafe_count
+                    result.smart_block_name = h2_text
+                    result.parser_confidence = 0.85
+                    result.matched_url = url
+                    print(f"    [SMART_BLOCK_SLUG_MATCH] idx={idx} slug={slug} h2={h2_text!r} matched_url={url[:90]}")
+                    return True
+
     return False
 
 
@@ -491,6 +610,10 @@ def _parse_popular(
             continue
         h2_text = h2.get_text(strip=True)
         if any(p in h2_text for p in _POPULAR_SKIP_PATTERNS):
+            continue
+        # D-026 Phase A (2026-05-16): 인기글 박스 = h2 텍스트 "인기글" 키워드 명시 포함.
+        # 그 외 h2 박스 = 스마트블록 박스 = _parse_smart_blocks 책임 (= skip).
+        if "인기글" not in h2_text:
             continue
 
         items = _extract_popular_items(box)

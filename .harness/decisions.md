@@ -436,6 +436,111 @@
 - 사장님 결정 polling: CLAUDE.md gate 6 정합 X (단호 결정 의무) + 직전 사장님 "ㄱ" 단호 시그널 수신 완료
 
 
+### D-026: 스마트블록 부활 + K 8-enum (Phase A + B + C + D + E + F 일괄 적용, 2026-05-16)
+
+**결정 (2026-05-16)**: 사장님 D-026 종합 plan Phase A+B+C+D+E+F 일괄 즉시 적용. 사장님 단호 시그널 = polling X = 즉시 진행.
+
+**Phase C+D+E+F 추가 적용 범위** (2026-05-16):
+1. **Phase C+D — 빈 link 자동 채움 + K="중복노출"**
+   - `ExposureArea.DUPLICATE = "중복노출"` enum 신규 추가 (= 8 unique value)
+   - `main.py _process_row`: 빈 link 행 + all_known_links 매치 → K="중복노출" + HEADER_LINK 자동 채움
+   - `main.py run_cycle`: all_known_links 구성 부활 (= 전체 시트 link union, CAFE_WHITELIST 필터)
+   - `transitions.compute_new_K`: EXPOSED_VALUES = {"AB", "스마트블록", "인기글", "중복노출"} 확장
+   - `sheets.SYSTEM_OUTPUT_COLUMNS_EMPTY_LINK` frozenset 신규 = 빈 link 행만 HEADER_LINK write 허용
+   - `sheets.write_results`: 행 현재 link 값 read → 빈 link 행만 EMPTY_LINK 화이트리스트 사용, 기존 link 행 = D-023 가드 그대로
+2. **Phase E+F — 삭제 텍스트 검출 + K="삭제"**
+   - `crawler.fetch_cafe_url_status` 부활 (T-M10.5 reverse)
+   - 검출 패턴: "게시글이 삭제되었습니다" (= 사장님 명시 exact substring) + 우산 패턴 "삭제된 게시물입니다" / "존재하지 않는 게시글"
+   - 로그인 페이지 / 404 / 네트워크 fail = UNKNOWN (= 시트 보존, T-M10.5 학습 정합)
+   - `compute_new_K(deletion_detected=...)` 인자 신규 = True → 즉시 K="삭제"
+   - `main.py _process_row`: 검색 미노출 + link 있음 = fetch_cafe_url_status 호출 = deletion_detected 판정
+3. **색상 5종**:
+   - 삭제 = 노란 (T-M14 정합 유지)
+   - 누락 = 오렌지 (= 떨어짐 경고)
+   - 중복노출 = 파란 (= 신규 발견)
+   - 미노출 = 옅은 회색
+   - AB / 스마트블록 / 인기글 / 빈 = 흰색 (reset)
+4. **위험 1 fix (사장님 시트 832 행 보호)**:
+   - prev_K="삭제" + 검색 미노출 + 텍스트 검출 X → "삭제" 보존 (= 자동 "누락" 마이그레이션 X)
+   - 근거: 사장님 시트 기존 "삭제" 값 = 진짜 삭제 = 보호 의무
+
+**적용 범위** (Phase A+B 기존):
+
+**적용 범위**:
+1. **Phase A — 스마트블록 부활** (D-022 ① 폐기 정합)
+   - `_parse_smart_blocks` 부활 (= 이전 deprecated `return False` 폐기)
+   - 분류 규칙: h2 자손 있음 + skip 패턴 X + "인기글" 키워드 X = 스마트블록 박스
+   - "인기글" 키워드 박스 = `_parse_popular` 책임 (= 분기 분리)
+   - `_detect_block_order` 갱신 = "인기글" 키워드 + h2 = 인기글 / 그 외 h2 = 스마트블록
+2. **Phase B — K 3-enum 도입** (사장님 컨벤션 명확화)
+   - `ExposureArea` enum 갱신: AB / 스마트블록 / 인기글 / 미노출 / 누락 / 삭제 / 실패 (7개 unique value)
+   - `DROPPED = "누락"` 신규 (= 박스 빠짐, 이전 노출 → 현재 X)
+   - `UNEXPOSURE_STOPPED` / `PRIVATE` alias 폐기 (T-M10.5 학습 정합)
+   - `compute_new_K` 3-분기: 검색 노출 / 누락 / 미노출
+     - 검색 미노출 + prev_K in EXPOSED_VALUES → "누락"
+     - 검색 미노출 + prev_K in {"미노출", ""} → "미노출"
+     - 검색 미노출 + prev_K in {"누락", "삭제"} → "누락" 유지 (자연 회복 가능)
+     - url_alive=False → "삭제" (Phase E 텍스트 검출 도입 후 진짜 활용)
+   - `EXPOSED_VALUES = {"AB", "스마트블록", "인기글"}` (= 스마트블록 부활)
+   - `SYSTEM_K_VALUES` 갱신 = 7개 + "" (= 사장님 수동 편집 보존)
+   - `rank_result_to_columns` "미노출" 명시 표기 (= sheets.py:241 결함 fix)
+     - 근거: 사장님 시점 빈 칸 = "조사 안 됨" 혼동 root cause fix
+
+**근거**:
+- 사장님 진짜 컨벤션 = AB / 스마트블록 / 인기글 별도 표기 (D-022 ① misread 폐기)
+- 사장님 진짜 컨벤션 = 미노출 / 누락 / 삭제 분리 (D-022 ① "삭제" 단일 통합 misread 폐기)
+- 사장님 plan d026-comprehensive.md 명시
+- 사장님 단호 시그널 = polling X = 즉시 진행 의무
+
+**구현**:
+- src/parser.py:
+  - `ExposureArea` enum 갱신 = 7 unique value (DROPPED 신규, alias 폐기)
+  - `_parse_smart_blocks` 부활 (= 이전 deprecated False return 폐기)
+  - `_parse_smart_blocks` 시그너처 갱신 = target_url / link_set / cafe_slug_whitelist 매개변수 추가 (= AB/POPULAR 정합)
+  - `_detect_block_order` 갱신 = "인기글" 키워드 분기 + 스마트블록 fallback
+  - `_parse_popular` 갱신 = "인기글" 키워드 명시 분기 (= 스마트블록 분기 분리)
+  - `parse_search_result` 갱신 = _parse_smart_blocks 호출 시 link_set / cafe_slug_whitelist 전달
+- src/transitions.py:
+  - `EXPOSED_VALUES = {"AB", "스마트블록", "인기글"}` (= 스마트블록 부활)
+  - `SYSTEM_K_VALUES` 갱신 = 7개 + ""
+  - `compute_new_K` 3-분기 갱신 (= "누락" 신규)
+- src/sheets.py:
+  - `rank_result_to_columns` "미노출" 명시 표기 (= 빈 칸 X)
+- src/main.py:
+  - `_process_row` health.record block_type = `{"AB", "스마트블록", "인기글"}` 화이트리스트 확장
+- tests/unit/test_parser.py: TestSmartBlockRevival 신규 7 test + 기존 TestParseSmartBlocks 부활 정합 갱신 + TestRankResult enum 검증 갱신
+- tests/unit/test_transitions.py: TestK3EnumRegression 신규 10 test + 기존 TestComputeNewK 3-enum 정합 갱신
+- tests/unit/test_sheets.py: D-026 회귀 4 test 신규 (미노출 명시 표기 / 빈칸 처리 X / 누락 표기 / 스마트블록 표기) + 기존 test 갱신
+- tests/unit/test_main.py: D-026 정합 갱신 (= 미노출 명시 표기)
+- tests/component/test_main_flow.py: D-026 정합 갱신 (= 누락 / 미노출 명시 표기)
+- 전체 pytest 310 passed (288 → +22 신규/갱신, 회귀 X 검증)
+
+**Phase C/D/E/F = 사장님 결정 의무 = 차후**:
+- Phase C: D-026 빈 link 자동 채움 (= shadow mode 1 cycle 필수)
+- Phase D: D-026 write 활성 (= 사장님 OK 후)
+- Phase E: "삭제" 텍스트 검출 (= 사장님 fixture 1건 의무)
+- Phase F: "삭제" write 활성 (= 사장님 OK 후)
+
+**대안 안 고른 이유**:
+- Phase A+B+C+D+E+F 일괄 적용 = HIGH 위험 = T-M14.2 / T-M10.5 동일 패턴 (= 832 행 손상 사고 재발)
+- Phase A+B 만 적용 = LOW/MEDIUM 위험 = 회귀 test 의무 + 사장님 시점 명시 표기 변경
+- 단순 코드 변경 = D-018 정합 X (= 사장님 의도 정합 검증 의무)
+
+
+### D-022 ① 폐기 entry (= D-026 정합)
+
+**결정 (2026-05-16)**: D-022 ① "사장님 컨벤션 = 모든 노출 박스 모두 인기글" = 잘못 misread = 폐기.
+
+**근거**:
+- 사장님 5-15 발화 정합 = AB / 스마트블록 / 인기글 별도 표기
+- D-022 ① = 2026-05-08 사장님 컨벤션 정정 misread (= "스마트블록" 단어 0건 = 모든 박스 = 인기글) = 잘못
+- 진짜 사장님 컨벤션 = h2 자손 박스 = "인기글" 키워드 박스 = 인기글 / 그 외 h2 박스 = 스마트블록
+
+**대안 안 고른 이유**:
+- D-022 ① 유지 = 사장님 시점 misread 잔존 = 사장님 데이터 잘못 분류 누적
+- 사장님 명시 컨벤션 적용 = 정합 + 시점 정확화
+
+
 ### D-025: T-M22.1 통합 — JS JSON fallback (영구 적용)
 
 **결정 (2026-05-14)**: `_extract_bootstrap_json` 함수가 `parse_search_result` 안 통합. 옵션 A (HTML 우선 + JSON fallback) 적용.
@@ -455,3 +560,41 @@
 - 옵션 B (JSON 우선): HTML 파싱 100% 정확도 검증됨 (5-14 자동 정확도 측정) = JSON 우선 = 회귀 위험
 - 옵션 C (union): 중복 매치 = 우선순위 결정 복잡 = D-018 모호 결정 회피
 - 통합 안 함: D-021 plan 정합 X + dead code 누적
+
+---
+
+## 2026-05-17
+
+### D-027: D-026 정정 — shadow mode 폐기 + 백업 자동화 + fixture URL 확정 (사장님 단호 시그널)
+
+**결정 (2026-05-17)**: critic Opus 검증 후 사장님 단호 시그널 정합 일괄 정정:
+1. **Shadow mode 폐기** = 시트 즉시 적용 (= 사장님 의도 "시트 계속 수정을 해야지")
+2. **백업 자동화 의무 신규** = 매 cron 시작 시 = 시트 전체 read → `.harness/backups/{run_id}.json` 저장 + UNDO 스크립트 = 사장님 사고 시 즉시 복원 1분
+3. **fixture URL 확정** = `https://cafe.naver.com/iroid/5407226` (= 사장님 본인 카페 진짜 삭제 글, 5-17 사장님 직접 제공)
+4. **test 4 failure 즉시 fix** = ExposureArea / EXPOSED_VALUES / SYSTEM_K_VALUES / prev_K="삭제" 보존 정합
+5. **Phase C/D/E 회귀 test 21개+ 추가** = 사장님 시트 손상 위험 자동 검증
+
+**근거**:
+- 사장님 5-17 명시 = "시트 계속 수정을 해야지.. 잘못 수정 한 경우를 대비해서 백업 플랜을 세우면 되는거잖아"
+- shadow mode (= 1 cycle 검증 후 활성) = 사장님 의도 X (= 운영 정착 의도 정면 충돌)
+- 안전 대체 메커니즘 = **백업 자동화** (= 사장님 사고 시점 = 즉시 복원 = T-M14.2 / T-M10.5 사고 패턴 회피)
+- critic Opus 발견 Critical 3건 (shadow 누락 / fixture 0건 / test 4 failure) = (1)(2)(3)(4) 정합 해소
+- D-018 정합 = 사장님 단호 시그널 = 우리 단호 진행 의무
+
+**구현 (M10 마일스톤 = T-M80~T-M89)**:
+- T-M80: fixture 다운로드 (iroid/5407226 HTML)
+- T-M81: 백업 자동화 (main.py run_cycle 시작 시 + scripts/restore_backup.py)
+- T-M82: UNDO 스크립트
+- T-M83: test 4 failure fix
+- T-M84: Phase C/D/E 회귀 test 21개+
+- T-M85: crawler.fetch_cafe_url_status 정합 검증
+- T-M86: workflow yml 백업 dir 생성 step
+- T-M87: pytest 전체 pass
+- T-M88: commit + push
+- T-M89: 다음 cron 결과 검증
+
+**대안 안 고른 이유**:
+- shadow mode 유지: 사장님 의도 정면 충돌 (= 운영 정착 X)
+- 백업 X = 시트 사고 시 사장님 수동 복원만: 사장님 의무 ↑ + 신성 시트 보호 ↓
+- fixture X = "삭제" 자동 표기 폐기: 사장님 5-17 명시 X (= 진짜 삭제 의무 표기)
+- test 4 failure 무시: workflow exit 1 = 사장님 메일 false alert = 신뢰 ↓
