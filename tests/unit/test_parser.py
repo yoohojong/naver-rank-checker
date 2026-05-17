@@ -21,19 +21,28 @@ class TestRankResult:
         assert ExposureArea.UNEXPOSED.value == "미노출"
 
     def test_exposure_area_extended_enum_values(self):
-        """D-026 Phase C+D+E+F 사장님 컨벤션 (2026-05-16): K 8-enum 분리.
-        AB / 스마트블록 / 인기글 / 중복노출 / 미노출 / 누락 / 삭제 / 실패 = 별도 표기.
-        '중복노출' 신규 (Phase C+D, 빈 link 자동 채움 시 K 값).
+        """D-029 사장님 컨벤션 (2026-05-18 — D-026 정정): K 11-enum 분리.
+        AB / 스마트블록 / 인기글 / 중복노출 / 중복노출(AB) / 중복노출(스마트블록) / 중복노출(인기글)
+        / 미노출 / 누락 / 삭제 / 실패 = 별도 표기.
+        '중복노출(구좌)' 3종 신규 (D-029 양방향 갱신용 = 사장님 시점 구좌 즉시 인지).
+        '중복노출' 호환 유지 (D-026 단일 값, Pass 2 갱신 전 또는 구좌 미상).
         alias (UNEXPOSURE_STOPPED / PRIVATE) 폐기.
         """
-        assert ExposureArea.DUPLICATE.value == "중복노출"  # D-026 Phase C+D 신규
+        assert ExposureArea.DUPLICATE.value == "중복노출"  # D-026 호환 유지
+        assert ExposureArea.DUPLICATE_AB.value == "중복노출(AB)"  # D-029 신규
+        assert ExposureArea.DUPLICATE_SMART_BLOCK.value == "중복노출(스마트블록)"  # D-029 신규
+        assert ExposureArea.DUPLICATE_POPULAR.value == "중복노출(인기글)"  # D-029 신규
         assert ExposureArea.DROPPED.value == "누락"
         assert ExposureArea.DELETED.value == "삭제"
         assert ExposureArea.FAILED.value == "실패"
-        # D-026: unique value 8개 (AB / 스마트블록 / 인기글 / 중복노출 / 미노출 / 누락 / 삭제 / 실패)
+        # D-029: unique value 11개
         values = {e.value for e in ExposureArea}
-        assert values == {"AB", "스마트블록", "인기글", "중복노출", "미노출", "누락", "삭제", "실패"}
-        assert len(values) == 8
+        assert values == {
+            "AB", "스마트블록", "인기글",
+            "중복노출", "중복노출(AB)", "중복노출(스마트블록)", "중복노출(인기글)",
+            "미노출", "누락", "삭제", "실패",
+        }
+        assert len(values) == 11
 
 
 class TestParseSearchResult:

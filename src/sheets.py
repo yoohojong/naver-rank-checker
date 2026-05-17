@@ -168,10 +168,10 @@ class SheetsClient:
                 ctx=tab_name,
             )
 
-        # D-026 Phase C+D+E+F (2026-05-16) 색상 5종:
+        # D-029 (2026-05-18 — D-026 정정) 색상:
         # - 삭제 = 노란 (T-M14 정합 유지)
         # - 누락 = 오렌지 (= 떨어짐 경고)
-        # - 중복노출 = 파란 (= 신규 발견)
+        # - 중복노출 / 중복노출(AB) / 중복노출(스마트블록) / 중복노출(인기글) = 파란 (= 신규 발견)
         # - 미노출 = 회색 (옅은 회색)
         # - AB / 스마트블록 / 인기글 / 빈 = 흰색 (= 정상 노출, reset)
         if HEADER_AREA in mapping:
@@ -179,13 +179,17 @@ class SheetsClient:
             color_formats = []
             yellow = {"red": 1.0, "green": 1.0, "blue": 0.0}    # 삭제
             orange = {"red": 1.0, "green": 0.6, "blue": 0.2}    # 누락
-            blue = {"red": 0.6, "green": 0.8, "blue": 1.0}      # 중복노출
+            blue = {"red": 0.6, "green": 0.8, "blue": 1.0}      # 중복노출 (전 sub-enum 포함)
             gray = {"red": 0.9, "green": 0.9, "blue": 0.9}      # 미노출
             white = {"red": 1.0, "green": 1.0, "blue": 1.0}     # AB / 스마트블록 / 인기글 / 빈
             color_map = {
                 "삭제": yellow,
                 "누락": orange,
+                # D-026 호환 유지 + D-029 sub-enum 3종 = 모두 파란 (= 신규 발견 일관)
                 "중복노출": blue,
+                "중복노출(AB)": blue,
+                "중복노출(스마트블록)": blue,
+                "중복노출(인기글)": blue,
                 "미노출": gray,
             }
             for upd in updates:

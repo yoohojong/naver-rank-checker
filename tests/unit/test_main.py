@@ -614,7 +614,10 @@ class TestD026EmptyLinkAutoFill:
         return r
 
     def test_d026_empty_link_match_fills_link_K_DUPLICATE(self):
-        """D-026 Phase C+D: 빈 link 행 + 다른 행 우리 link 매치 = K='중복노출' + link 자동 채움."""
+        """D-029 (2026-05-18 — D-026 정정): 빈 link 행 + 다른 행 우리 link 매치 (AB 구좌)
+        = K='중복노출(AB)' + link 자동 채움.
+        매치 구좌 명시 = 사장님 시점 = 어디 구좌 노출인지 즉시 인지.
+        """
         from src.main import _process_row
         from src.health import HealthMonitor
         from src.sheets import HEADER_AREA, HEADER_LINK, HEADER_L, HEADER_M
@@ -630,11 +633,13 @@ class TestD026EmptyLinkAutoFill:
             row = self._make_row("탈모샴푸")
             cols = _process_row(row, crawler, health, all_known_links=all_known_links)
 
-        # D-026 Phase C+D 핵심 검증
-        assert cols[HEADER_AREA] == "중복노출"
+        # D-029 핵심 검증 — 매치 구좌 명시
+        assert cols[HEADER_AREA] == "중복노출(AB)"
         assert cols[HEADER_LINK] == matched  # 자동 채움
         assert cols[HEADER_L] == "3"
         assert cols[HEADER_M] == "2"
+        # D-029 Pass 2 메타 키 — 양방향 갱신용 (sheets.write_results 가 mapping 없으면 자동 skip)
+        assert cols.get("_matched_area") == "AB"
         # 검색 수행됨
         crawler.fetch_search.assert_called_once_with("탈모샴푸")
 
@@ -834,3 +839,232 @@ class TestD026DeletionTextDetection:
 
         # 예외 = deletion_detected=False = prev '삭제' + 검색 미노출 = '삭제' 보존
         assert cols[HEADER_AREA] == "삭제"
+
+
+class TestD029DuplicateSubEnumAutoFill:
+    """D-029 (2026-05-18 — D-026 정정) 회귀 test — Pass 1 빈 link 자동 채움 + 매치 구좌 명시.
+
+    사장님 5-18 명확 의도:
+    - 빈 link 행 + AB 구좌 매치 = K='중복노출(AB)' + link 자동 채움
+    - 빈 link 행 + 스마트블록 구좌 매치 = K='중복노출(스마트블록)'
+    - 빈 link 행 + 인기글 구좌 매치 = K='중복노출(인기글)'
+    - cols["_matched_area"] 메타 키 = Pass 2 양방향 갱신용
+    """
+
+    def _make_row(self, keyword: str, link: str = "", prev_K: str = "") -> dict:
+        return {"키워드": keyword, "링크": link, "노출영역": prev_K, "_row": 7}
+
+    def _mock_matched_result(self, matched_url: str, area: str = "AB"):
+        r = RankResult()
+        r.exposure_area = ExposureArea(area) if area != "미노출" else ExposureArea.UNEXPOSED
+        r.matched_url = matched_url
+        r.parser_confidence = 0.85
+        r.integrated_rank = 3
+        r.cafe_slot_rank = 2
+        r.block_order = [area]
+        r.in_jisikin = False
+        return r
+
+    def test_d029_empty_link_AB_match_K_중복노출_AB(self):
+        """D-029: 빈 link 행 + AB 구좌 매치 = K='중복노출(AB)' + 메타 키 'AB'."""
+        from src.main import _process_row
+        from src.health import HealthMonitor
+        from src.sheets import HEADER_AREA, HEADER_LINK
+
+        crawler = MagicMock()
+        health = HealthMonitor()
+        crawler.fetch_search.return_value = "<html></html>"
+        matched = "https://cafe.naver.com/cosmania/9999"
+
+        with patch("src.main.parse_search_result", return_value=self._mock_matched_result(matched, "AB")):
+            row = self._make_row("탈모샴푸")
+            cols = _process_row(row, crawler, health, all_known_links={matched})
+
+        assert cols[HEADER_AREA] == "중복노출(AB)"
+        assert cols[HEADER_LINK] == matched
+        assert cols.get("_matched_area") == "AB"
+
+    def test_d029_empty_link_smart_block_match_K_중복노출_스마트블록(self):
+        """D-029: 빈 link 행 + 스마트블록 매치 = K='중복노출(스마트블록)' + 메타 키 '스마트블록'."""
+        from src.main import _process_row
+        from src.health import HealthMonitor
+        from src.sheets import HEADER_AREA, HEADER_LINK
+
+        crawler = MagicMock()
+        health = HealthMonitor()
+        crawler.fetch_search.return_value = "<html></html>"
+        matched = "https://cafe.naver.com/iroid/8888"
+
+        with patch("src.main.parse_search_result", return_value=self._mock_matched_result(matched, "스마트블록")):
+            row = self._make_row("두피염증")
+            cols = _process_row(row, crawler, health, all_known_links={matched})
+
+        assert cols[HEADER_AREA] == "중복노출(스마트블록)"
+        assert cols[HEADER_LINK] == matched
+        assert cols.get("_matched_area") == "스마트블록"
+
+    def test_d029_empty_link_popular_match_K_중복노출_인기글(self):
+        """D-029: 빈 link 행 + 인기글 구좌 매치 = K='중복노출(인기글)' (사장님 5-18 사례 정합).
+        사례: '도브바디스크럽' 키워드 = 빈 link + '일본도브바디스크럽' 행 link (move79/6015653) 매치.
+        그 link 의 노출 구좌 = 인기글 → 새 K = '중복노출(인기글)'.
+        """
+        from src.main import _process_row
+        from src.health import HealthMonitor
+        from src.sheets import HEADER_AREA, HEADER_LINK
+
+        crawler = MagicMock()
+        health = HealthMonitor()
+        crawler.fetch_search.return_value = "<html></html>"
+        matched = "https://cafe.naver.com/move79/6015653"  # 사장님 사례 link
+
+        with patch("src.main.parse_search_result", return_value=self._mock_matched_result(matched, "인기글")):
+            row = self._make_row("도브바디스크럽")
+            cols = _process_row(row, crawler, health, all_known_links={matched})
+
+        assert cols[HEADER_AREA] == "중복노출(인기글)"
+        assert cols[HEADER_LINK] == matched
+        assert cols.get("_matched_area") == "인기글"
+
+
+class TestD029Pass2BidirectionalUpdate:
+    """D-029 (2026-05-18 — D-026 정정) 회귀 test — Pass 2 양방향 갱신 logic.
+
+    사장님 5-18 사례 (=직접 시나리오):
+    - '일본도브바디스크럽' 행 (link=move79/6015653, K=인기글) — Pass 1 = 정상 노출
+    - '도브바디스크럽' 행 (빈 link, 매치 = move79/6015653 인기글) — Pass 1 = 중복노출(인기글) + link 자동 채움
+    - Pass 2 = 같은 link 검출 = 양쪽 K = '중복노출(인기글)' 양방향 갱신
+    """
+
+    def test_d029_pass2_양방향_갱신_사장님_사례(self):
+        """D-029 핵심 사례: 빈 link 매치 + 원본 link 행 = 양쪽 K='중복노출(인기글)'.
+
+        사장님 시점 = "이 link 가 어디 구좌 노출인지 + 여러 키워드에 노출됨" 즉시 인지.
+        """
+        from src.main import _d029_apply_pass2_duplicate
+        from src.sheets import RowUpdate, HEADER_AREA, HEADER_LINK, HEADER_L, HEADER_M
+
+        # Pass 1 결과 시뮬:
+        # row 2 = '일본도브바디스크럽' (link=move79/6015653, K=인기글, _row_link=move79/6015653)
+        # row 3 = '도브바디스크럽' (빈 link 자동 채움 결과, K=중복노출(인기글), HEADER_LINK + _matched_area=인기글)
+        link = "https://cafe.naver.com/move79/6015653"
+        cols_row2 = {
+            HEADER_AREA: "인기글",
+            HEADER_L: "5",
+            HEADER_M: "2",
+            "_row_link": link,
+        }
+        cols_row3 = {
+            HEADER_AREA: "중복노출(인기글)",
+            HEADER_L: "5",
+            HEADER_M: "2",
+            HEADER_LINK: link,
+            "_matched_area": "인기글",
+        }
+        tab_updates = {
+            "스킨케어 카외": [
+                RowUpdate(row=2, columns=cols_row2),
+                RowUpdate(row=3, columns=cols_row3),
+            ]
+        }
+
+        updated_count = _d029_apply_pass2_duplicate(tab_updates)
+
+        # D-029 양방향 핵심 검증
+        assert updated_count == 2  # 양쪽 갱신
+        # row 2 K = '인기글' → '중복노출(인기글)'
+        assert cols_row2[HEADER_AREA] == "중복노출(인기글)"
+        # row 3 K = '중복노출(인기글)' → '중복노출(인기글)' (= 이미 갱신, 같은 값)
+        assert cols_row3[HEADER_AREA] == "중복노출(인기글)"
+        # 메타 키 cleanup
+        assert "_matched_area" not in cols_row3
+        assert "_row_link" not in cols_row2
+
+    def test_d029_pass2_단일_매치_갱신_X(self):
+        """D-029: 단일 매치 (= 한 link 가 한 행만) = Pass 2 갱신 X (= 기존 K 유지)."""
+        from src.main import _d029_apply_pass2_duplicate
+        from src.sheets import RowUpdate, HEADER_AREA, HEADER_L, HEADER_M
+
+        cols = {
+            HEADER_AREA: "AB",
+            HEADER_L: "1",
+            HEADER_M: "1",
+            "_row_link": "https://cafe.naver.com/cosmania/12345",
+        }
+        tab_updates = {"샴푸 카외": [RowUpdate(row=2, columns=cols)]}
+
+        updated_count = _d029_apply_pass2_duplicate(tab_updates)
+
+        assert updated_count == 0
+        assert cols[HEADER_AREA] == "AB"  # 그대로
+
+    def test_d029_pass2_AB_구좌_매치_갱신(self):
+        """D-029: AB 구좌 매치 (= 같은 link 2 행) = 양쪽 K = '중복노출(AB)'."""
+        from src.main import _d029_apply_pass2_duplicate
+        from src.sheets import RowUpdate, HEADER_AREA, HEADER_LINK
+
+        link = "https://cafe.naver.com/cosmania/12345"
+        cols_a = {HEADER_AREA: "AB", "_row_link": link}
+        cols_b = {HEADER_AREA: "중복노출(AB)", HEADER_LINK: link, "_matched_area": "AB"}
+        tab_updates = {
+            "샴푸 카외": [
+                RowUpdate(row=2, columns=cols_a),
+                RowUpdate(row=3, columns=cols_b),
+            ]
+        }
+
+        updated_count = _d029_apply_pass2_duplicate(tab_updates)
+
+        assert updated_count == 2
+        assert cols_a[HEADER_AREA] == "중복노출(AB)"
+        assert cols_b[HEADER_AREA] == "중복노출(AB)"
+
+    def test_d029_pass2_meta_keys_cleaned_up(self):
+        """D-029: Pass 2 종료 후 메타 키 ('_matched_area' / '_row_link') = cols 에서 제거."""
+        from src.main import _d029_apply_pass2_duplicate
+        from src.sheets import RowUpdate, HEADER_AREA, HEADER_LINK
+
+        link = "https://cafe.naver.com/pusanmommy/9999"
+        cols_a = {HEADER_AREA: "스마트블록", "_row_link": link}
+        cols_b = {HEADER_AREA: "중복노출(스마트블록)", HEADER_LINK: link, "_matched_area": "스마트블록"}
+        tab_updates = {
+            "스킨케어 카외": [
+                RowUpdate(row=2, columns=cols_a),
+                RowUpdate(row=3, columns=cols_b),
+            ]
+        }
+
+        _d029_apply_pass2_duplicate(tab_updates)
+
+        # 메타 키 모두 제거 (= sheets.write_results 가 noise 없이 처리)
+        assert "_matched_area" not in cols_b
+        assert "_row_link" not in cols_a
+
+    def test_d029_pass2_cross_tab_매치_무시(self):
+        """D-029: 다른 탭 같은 link = 그대로 매치 (탭 무관 link 키 정합).
+
+        다만 사장님 시트 컨벤션 = 보통 같은 탭 안 = cross-tab case 희박.
+        본 test = link 키만 보고 갱신하는 logic 회귀 방지 검증.
+        """
+        from src.main import _d029_apply_pass2_duplicate
+        from src.sheets import RowUpdate, HEADER_AREA, HEADER_LINK
+
+        link = "https://cafe.naver.com/iroid/7777"
+        cols_a = {HEADER_AREA: "인기글", "_row_link": link}
+        cols_b = {HEADER_AREA: "중복노출(인기글)", HEADER_LINK: link, "_matched_area": "인기글"}
+        # 다른 탭 = 같은 link
+        tab_updates = {
+            "스킨케어 카외": [RowUpdate(row=2, columns=cols_a)],
+            "메이크업 카외": [RowUpdate(row=3, columns=cols_b)],
+        }
+
+        updated_count = _d029_apply_pass2_duplicate(tab_updates)
+
+        assert updated_count == 2  # 양쪽 갱신
+        assert cols_a[HEADER_AREA] == "중복노출(인기글)"
+        assert cols_b[HEADER_AREA] == "중복노출(인기글)"
+
+    def test_d029_pass2_빈_tab_updates_안전(self):
+        """D-029: tab_updates 빈 dict = 갱신 0건 (= 예외 X)."""
+        from src.main import _d029_apply_pass2_duplicate
+        updated_count = _d029_apply_pass2_duplicate({})
+        assert updated_count == 0

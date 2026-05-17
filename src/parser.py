@@ -10,14 +10,16 @@ from bs4 import BeautifulSoup
 
 
 class ExposureArea(str, Enum):
-    """spec 4.2 K 컬럼 enum (D-026 Phase C+D+E+F 2026-05-16 — 중복노출 추가).
+    """spec 4.2 K 컬럼 enum (D-029 2026-05-18 — D-026 정정 = 중복노출 구좌 명시).
 
     parser 가 직접 채우는 값:
     - AB / SMART_BLOCK / POPULAR (= 검색 노출, 본인 link 매치)
     - UNEXPOSED (= 검색 미노출)
 
-    main.py 가 D-026 빈 link 자동 채움 logic 에서 채우는 값 (Phase C+D 2026-05-16):
-    - DUPLICATE (= 빈 link 행 + 키워드 검색 결과에 다른 행 link 매치 = "추가 노출 발견")
+    main.py 가 D-029 빈 link 자동 채움 + Pass 2 양방향 갱신 logic 에서 채우는 값:
+    - DUPLICATE_AB / DUPLICATE_SMART_BLOCK / DUPLICATE_POPULAR
+      (= 빈 link 행 + 키워드 검색 결과에 다른 행 link 매치 = "추가 노출 발견" + 구좌 명시)
+    - DUPLICATE (D-026 단일 값, 호환성 유지 — Pass 2 갱신 전 또는 구좌 미상)
 
     transitions.py 가 prev_K 비교로 채우는 값:
     - DROPPED (= 이전 노출 → 현재 미노출, "박스 빠짐")
@@ -28,17 +30,20 @@ class ExposureArea(str, Enum):
 
     D-022 ① 폐기 (2026-05-16): 사장님 진짜 컨벤션 = AB / 스마트블록 / 인기글 별도 표기.
     이전 (2026-05-08): "노출 안 됨 = 모두 '삭제' 단일" = 잘못 misread.
-    D-026 사장님 컨벤션 (2026-05-16):
+    D-029 사장님 컨벤션 (2026-05-18 명확 의도):
     - 미노출 = search 결과 0건
     - 누락 = 이전 노출 → 지금 검색 결과 X (박스 안에서 빠짐)
-    - 중복노출 = 빈 link 행 + 다른 행 우리 link 가 키워드에 매치 (= 신규 발견)
+    - 중복노출(AB) / 중복노출(스마트블록) / 중복노출(인기글) = 같은 link 가 여러 키워드 매치 (= 구좌 명시)
     - 삭제 = "게시글이 삭제되었습니다" exact substring 텍스트 검출 (= 진짜 글 사라짐)
     UNEXPOSURE_STOPPED / PRIVATE alias = 폐기 (T-M10.5 학습 정합).
     """
     AB = "AB"
     SMART_BLOCK = "스마트블록"
     POPULAR = "인기글"
-    DUPLICATE = "중복노출"  # D-026 Phase C+D (2026-05-16): 빈 link 행 자동 채움 시 K 값
+    DUPLICATE = "중복노출"  # D-026 Phase C+D (2026-05-16) 호환 유지 — Pass 1 단계 또는 구좌 미상
+    DUPLICATE_AB = "중복노출(AB)"  # D-029 (2026-05-18): 같은 link 가 여러 키워드 매치 (AB 구좌)
+    DUPLICATE_SMART_BLOCK = "중복노출(스마트블록)"  # D-029 (2026-05-18): 스마트블록 구좌
+    DUPLICATE_POPULAR = "중복노출(인기글)"  # D-029 (2026-05-18): 인기글 구좌
     UNEXPOSED = "미노출"
     DROPPED = "누락"  # D-026 Phase B: 이전 노출 → 현재 미노출 (transitions.py 가 채움)
     DELETED = "삭제"  # D-026 Phase E+F (2026-05-16): "게시글이 삭제되었습니다" 텍스트 검출 시

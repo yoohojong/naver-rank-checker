@@ -50,14 +50,27 @@ class TestComputeNewK:
         assert compute_new_K(prev_K="AB", search_found=False, url_alive=False, status="deleted") == "삭제"
 
     def test_exposed_values_constant(self):
-        """D-026 Phase C+D (2026-05-16): 노출 단어 = 'AB' + '스마트블록' + '인기글' + '중복노출'."""
-        assert EXPOSED_VALUES == {"AB", "스마트블록", "인기글", "중복노출"}
+        """D-029 (2026-05-18 — D-026 정정): 노출 단어 = AB / 스마트블록 / 인기글
+        + 중복노출 (호환) + 중복노출(AB) / 중복노출(스마트블록) / 중복노출(인기글) (D-029 구좌 명시).
+        모든 중복노출 sub-enum 도 EXPOSED 로 간주 = transitions = "누락" 자연 분기.
+        """
+        assert EXPOSED_VALUES == {
+            "AB", "스마트블록", "인기글",
+            "중복노출",
+            "중복노출(AB)", "중복노출(스마트블록)", "중복노출(인기글)",
+        }
 
     def test_system_k_values_constant(self):
-        """D-026 Phase C+D+E+F: SYSTEM_K_VALUES = 우리 시스템 출력 값 (사장님 수동 편집 외 인식용).
-        '중복노출' 신규 추가 (= 빈 link 행 자동 채움 시 K 값).
+        """D-029 (2026-05-18 — D-026 정정): SYSTEM_K_VALUES = 우리 시스템 출력 값 (사장님 수동 편집 외 인식용).
+        '중복노출(구좌)' 3종 신규 추가 (= 빈 link 행 자동 채움 + Pass 2 양방향 갱신 시 K 값).
+        '중복노출' 호환 유지 (D-026 단일 값).
         """
-        assert SYSTEM_K_VALUES == {"AB", "스마트블록", "인기글", "중복노출", "미노출", "누락", "삭제", "실패", ""}
+        assert SYSTEM_K_VALUES == {
+            "AB", "스마트블록", "인기글",
+            "중복노출",
+            "중복노출(AB)", "중복노출(스마트블록)", "중복노출(인기글)",
+            "미노출", "누락", "삭제", "실패", "",
+        }
 
     def test_exposure_persists(self):
         """이전 AB + 지금도 AB → AB 유지 (찾았으면 area 그대로)."""
@@ -214,3 +227,71 @@ class TestD026PhaseCDEF:
         assert compute_new_K(
             prev_K="확인중", search_found=False, url_alive=True, deletion_detected=True
         ) == "확인중"
+
+
+class TestD029DuplicateSubEnumTransitions:
+    """D-029 (2026-05-18 — D-026 정정) 회귀 test — 중복노출(구좌) 3종 transitions 분기.
+
+    사장님 5-18 명확 의도:
+    - prev_K = "중복노출(AB)" / "중복노출(스마트블록)" / "중복노출(인기글)" = EXPOSED 로 간주
+    - 검색 미노출 시 = "누락" 자연 분기 (= 박스 빠짐)
+    - 검색 노출 회복 시 = area 그대로 (AB / 스마트블록 / 인기글)
+    - SYSTEM_K_VALUES 안 = 사장님 수동 편집 X (= 자동 처리)
+    """
+
+    def test_d029_duplicate_AB_to_dropped(self):
+        """이전 중복노출(AB) → 검색 미노출 → '누락' (= EXPOSED_VALUES 안)."""
+        assert compute_new_K(
+            prev_K="중복노출(AB)", search_found=False, url_alive=True
+        ) == "누락"
+
+    def test_d029_duplicate_smart_block_to_dropped(self):
+        """이전 중복노출(스마트블록) → 검색 미노출 → '누락'."""
+        assert compute_new_K(
+            prev_K="중복노출(스마트블록)", search_found=False, url_alive=True
+        ) == "누락"
+
+    def test_d029_duplicate_popular_to_dropped(self):
+        """이전 중복노출(인기글) → 검색 미노출 → '누락'."""
+        assert compute_new_K(
+            prev_K="중복노출(인기글)", search_found=False, url_alive=True
+        ) == "누락"
+
+    def test_d029_duplicate_AB_recovers_to_AB(self):
+        """이전 중복노출(AB) → 검색 노출 AB → 'AB' 그대로 회복 (Pass 2 가 다시 갱신 가능)."""
+        assert compute_new_K(
+            prev_K="중복노출(AB)", search_found=True, url_alive=True, area="AB"
+        ) == "AB"
+
+    def test_d029_duplicate_popular_recovers_to_popular(self):
+        """이전 중복노출(인기글) → 검색 노출 인기글 → '인기글' 그대로."""
+        assert compute_new_K(
+            prev_K="중복노출(인기글)", search_found=True, url_alive=True, area="인기글"
+        ) == "인기글"
+
+    def test_d029_duplicate_smart_block_deletion_detected(self):
+        """이전 중복노출(스마트블록) + 삭제 텍스트 검출 = '삭제' (즉시 적용)."""
+        assert compute_new_K(
+            prev_K="중복노출(스마트블록)", search_found=False, url_alive=True, deletion_detected=True
+        ) == "삭제"
+
+    def test_d029_duplicate_sub_enums_in_SYSTEM_K_VALUES(self):
+        """D-029 sub-enum 3종 + 호환 단일 = 모두 SYSTEM_K_VALUES 안 (= 사장님 수동 편집 X 인식)."""
+        assert "중복노출(AB)" in SYSTEM_K_VALUES
+        assert "중복노출(스마트블록)" in SYSTEM_K_VALUES
+        assert "중복노출(인기글)" in SYSTEM_K_VALUES
+        assert "중복노출" in SYSTEM_K_VALUES  # D-026 호환 유지
+
+    def test_d029_duplicate_sub_enums_in_EXPOSED_VALUES(self):
+        """D-029 sub-enum 3종 + 호환 단일 = 모두 EXPOSED_VALUES 안 (= "누락" 분기 정합)."""
+        assert "중복노출(AB)" in EXPOSED_VALUES
+        assert "중복노출(스마트블록)" in EXPOSED_VALUES
+        assert "중복노출(인기글)" in EXPOSED_VALUES
+        assert "중복노출" in EXPOSED_VALUES  # D-026 호환 유지
+
+    def test_d029_DUPLICATE_to_DUPLICATE_persists(self):
+        """이전 중복노출(AB) → 검색 노출 area = 중복노출(AB) → 그대로 유지 (Pass 2 결과 정합)."""
+        # search_found=True + area="중복노출(AB)" = 그대로 (사장님 수동 편집 X = SYSTEM_K_VALUES 안)
+        assert compute_new_K(
+            prev_K="중복노출(AB)", search_found=True, url_alive=True, area="중복노출(AB)"
+        ) == "중복노출(AB)"

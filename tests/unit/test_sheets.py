@@ -999,3 +999,62 @@ class TestD026ColorFiveTypes:
         """D-026: K='인기글' = 흰색 (= reset)."""
         bg = self._get_color_for_value(None, "인기글")
         assert bg == {"red": 1.0, "green": 1.0, "blue": 1.0}
+
+
+class TestD029DuplicateSubEnumColors:
+    """D-029 (2026-05-18 — D-026 정정) 회귀 test — 중복노출(구좌) 3종 = 모두 파란.
+
+    사장님 5-18 명확 의도:
+    - 중복노출(AB) / 중복노출(스마트블록) / 중복노출(인기글) = 모두 파란 (= 신규 발견 일관)
+    - 색상 = "구좌 무관 = 중복노출 자체가 신규 발견" 통합 가시성.
+    """
+
+    def _make_client_with_link_col(self, headers, link_col_values, ws_title="샴푸 카외"):
+        fake_creds = json.dumps({
+            "type": "service_account",
+            "client_email": "x@example.iam.gserviceaccount.com",
+            "private_key": "-----BEGIN PRIVATE KEY-----\nFAKE\n-----END PRIVATE KEY-----\n",
+            "token_uri": "https://oauth2.googleapis.com/token",
+        })
+        with patch("src.sheets.gspread.service_account_from_dict") as mock_auth:
+            mock_gc = MagicMock()
+            mock_sheet = MagicMock()
+            mock_ws = MagicMock()
+            mock_ws.row_values.return_value = headers
+            mock_ws.col_values.return_value = link_col_values
+            mock_sheet.worksheet.return_value = mock_ws
+            mock_gc.open_by_key.return_value = mock_sheet
+            mock_auth.return_value = mock_gc
+            client = SheetsClient(spreadsheet_id="abc", service_account_json=fake_creds)
+        return client, mock_ws
+
+    def _get_color_for_value(self, k_value):
+        headers = ["키워드", "링크", "노출영역"]
+        link_col_values = ["링크", "https://cafe.naver.com/cosmania/12345"]
+        client, ws = self._make_client_with_link_col(headers, link_col_values)
+        upd = RowUpdate(row=2, columns={HEADER_AREA: k_value})
+        client.write_results("샴푸 카외", [upd])
+        assert ws.batch_format.call_count == 1
+        formats = ws.batch_format.call_args[0][0]
+        assert len(formats) == 1
+        return formats[0]["format"]["backgroundColor"]
+
+    def test_color_중복노출_AB_blue(self):
+        """D-029: K='중복노출(AB)' = 파란 (= 신규 발견)."""
+        bg = self._get_color_for_value("중복노출(AB)")
+        assert bg == {"red": 0.6, "green": 0.8, "blue": 1.0}
+
+    def test_color_중복노출_스마트블록_blue(self):
+        """D-029: K='중복노출(스마트블록)' = 파란."""
+        bg = self._get_color_for_value("중복노출(스마트블록)")
+        assert bg == {"red": 0.6, "green": 0.8, "blue": 1.0}
+
+    def test_color_중복노출_인기글_blue(self):
+        """D-029: K='중복노출(인기글)' = 파란 (사장님 사례 = '도브바디스크럽' 키워드)."""
+        bg = self._get_color_for_value("중복노출(인기글)")
+        assert bg == {"red": 0.6, "green": 0.8, "blue": 1.0}
+
+    def test_color_중복노출_legacy_blue(self):
+        """D-026 호환 유지: K='중복노출' (단일 값) = 파란 (= D-029 sub-enum 과 일관)."""
+        bg = self._get_color_for_value("중복노출")
+        assert bg == {"red": 0.6, "green": 0.8, "blue": 1.0}
