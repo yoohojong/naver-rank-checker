@@ -231,6 +231,56 @@ class TestDetectKAnomalyNaturalNewEnumMitigation:
         assert h.detect_k_anomaly(prev, curr) is True
 
 
+class TestD030KStampBaseExtraction:
+    """D-030 (2026-05-18) 회귀 test — detect_k_anomaly = K 시점 무관 base 추출 정합.
+
+    사장님 결정 정합 (= K = "AB (5/10 03:00~)" 형식):
+    - 분포 비교 = base 만 (= 시점 다를 뿐 같은 base = 동일 분포 의미)
+    - main.py 가 base 누적하지만 외부 호출자 호환 정합 = 함수 안 base 추출 방어
+    """
+
+    def test_d030_same_base_different_stamps_no_anomaly(self):
+        """D-030: prev "AB" + curr "AB (5/18 03:00~)" = base 동일 = anomaly X."""
+        h = HealthMonitor()
+        prev = {"AB": 30, "미노출": 70}
+        curr = {"AB (5/18 03:00~)": 30, "미노출 (5/18 03:00~)": 70}
+        assert h.detect_k_anomaly(prev, curr) is False
+
+    def test_d030_mixed_legacy_and_stamp_base_aggregation(self):
+        """D-030: prev base 만 + curr base + 시점 혼재 = base 통합 후 비교 = anomaly X."""
+        h = HealthMonitor()
+        prev = {"AB": 30, "미노출": 70}
+        # curr = "AB" + "AB (5/18~)" + "미노출 (5/18~)" 혼재 = base 집계 = AB 30 + 미노출 70
+        curr = {"AB": 10, "AB (5/18 03:00~)": 20, "미노출 (5/18 03:00~)": 70}
+        assert h.detect_k_anomaly(prev, curr) is False
+
+    def test_d030_stamp_anomaly_still_detected(self):
+        """D-030: 시점 포함 K 도 base 추출 후 = AB 30% → 5% 급변 = anomaly True."""
+        h = HealthMonitor()
+        prev = {"AB (5/10 03:00~)": 30, "미노출 (5/10 03:00~)": 70}
+        curr = {"AB (5/18 03:00~)": 5, "미노출 (5/18 03:00~)": 95}
+        # base 추출 후 = AB 30% → 5% = -25% 급변 = anomaly True 유지
+        assert h.detect_k_anomaly(prev, curr) is True
+
+    def test_d030_natural_new_enum_with_stamp_no_alert(self):
+        """D-030: 신규 _NATURAL_NEW_ENUM (= "중복노출(AB)") + 시점 형식 = base 추출 후 = anomaly X."""
+        h = HealthMonitor()
+        prev = {"AB (5/10 03:00~)": 30, "미노출 (5/10 03:00~)": 70}
+        # 시점 다르지만 base = AB / 미노출 / 중복노출(AB)
+        curr = {"AB (5/18 03:00~)": 30, "미노출 (5/18 03:00~)": 40, "중복노출(AB) (5/18 03:00~)": 30}
+        # base 집계 = prev {AB:30, 미노출:70} vs curr {AB:30, 미노출:40, 중복노출(AB):30}
+        # 중복노출(AB) = _NATURAL_NEW_ENUM = 미노출 흡수 = anomaly X
+        assert h.detect_k_anomaly(prev, curr) is False
+
+    def test_d030_삭제_single_stamp_format_no_alert(self):
+        """D-030: "삭제 (5/16 03:00)" = ~ 없음 형식 = base 추출 정합."""
+        h = HealthMonitor()
+        prev = {"AB (5/10 03:00~)": 30, "미노출 (5/10 03:00~)": 70}
+        # 신규 "삭제 (5/16 03:00)" 등장 = base "삭제" = _NATURAL_NEW_ENUM = anomaly X
+        curr = {"AB (5/18 03:00~)": 30, "미노출 (5/18 03:00~)": 40, "삭제 (5/18 03:00)": 30}
+        assert h.detect_k_anomaly(prev, curr) is False
+
+
 class TestHealthMonitorLogOutput:
     def test_log_summary_prints_warning_when_suspected(self, capsys):
         h = HealthMonitor()

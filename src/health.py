@@ -111,9 +111,28 @@ class HealthMonitor:
         prev 에 0 + curr 에 등장한 _NATURAL_NEW_ENUM 키 = 시스템 진화 (= 누락/중복노출/삭제 등).
         그 신규 enum 등장 = 기존 enum (예: 미노출) 자연 감소 = 자연 변경 = anomaly 판정 X.
         구현 = 신규 _NATURAL_NEW_ENUM 등장 시 = prev 분포 안 미노출 (등) 에 그 양 만큼 가상 분배 후 비교.
+
+        D-030 (2026-05-18): K 값 + 시점 통합 표기 = "AB (5/10 03:00~)" 형식.
+        분포 비교 = base 만 (= 시점 제거) — 시점 다를 뿐 같은 base = 동일 분포 의미.
+        main.py 가 base 누적하지만, 외부 호출자 호환 정합 = 함수 안 base 추출 방어.
         """
         if not prev_k_distribution or not current_k_distribution:
             return False
+
+        # D-030 (2026-05-18): base 추출 후 분포 재집계 (= 시점 다를 뿐 같은 base 통합)
+        # parse_K_with_stamp import (= 순환 import 회피 = 함수 안 local import)
+        from src.transitions import parse_K_with_stamp
+
+        def _aggregate_by_base(dist: dict) -> dict:
+            result: dict = {}
+            for k_full, v in dist.items():
+                base, _ = parse_K_with_stamp(k_full)
+                base = base or "미노출"
+                result[base] = result.get(base, 0) + v
+            return result
+
+        prev_k_distribution = _aggregate_by_base(prev_k_distribution)
+        current_k_distribution = _aggregate_by_base(current_k_distribution)
 
         # 운영 1: curr 안 신규 _NATURAL_NEW_ENUM 키 검출 = 시스템 진화 흡수
         normalized_curr = dict(current_k_distribution)

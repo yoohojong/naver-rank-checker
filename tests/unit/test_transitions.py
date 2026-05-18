@@ -1,7 +1,13 @@
 """transitions 단위 테스트."""
 import pytest
 
-from src.transitions import compute_new_K, EXPOSED_VALUES, SYSTEM_K_VALUES
+from src.transitions import (
+    compute_new_K,
+    EXPOSED_VALUES,
+    SYSTEM_K_VALUES,
+    parse_K_with_stamp,
+    compute_new_K_with_stamp,
+)
 
 
 class TestComputeNewK:
@@ -295,3 +301,151 @@ class TestD029DuplicateSubEnumTransitions:
         assert compute_new_K(
             prev_K="중복노출(AB)", search_found=True, url_alive=True, area="중복노출(AB)"
         ) == "중복노출(AB)"
+
+
+class TestD030ParseKWithStamp:
+    """D-030 (2026-05-18) parse_K_with_stamp helper 회귀 test.
+
+    사장님 결정 (= AskUserQuestion 답 3) 정합:
+    - "AB (5/10 03:00~)" → ("AB", "5/10 03:00")
+    - "삭제 (5/16 03:00)" → ("삭제", "5/16 03:00")  # ~ 없음
+    - "중복노출(AB) (5/10 03:00~)" → ("중복노출(AB)", "5/10 03:00")
+    - "AB" → ("AB", None)
+    - "확인중" → ("확인중", None)
+    - "" → ("", None)
+    """
+
+    def test_parse_AB_with_tilde(self):
+        """일반 enum + "~" 시점."""
+        assert parse_K_with_stamp("AB (5/10 03:00~)") == ("AB", "5/10 03:00")
+
+    def test_parse_미노출_with_tilde(self):
+        """미노출 + "~" 시점 (= 사장님 결정 정합 = 명시 일관성)."""
+        assert parse_K_with_stamp("미노출 (5/10 03:00~)") == ("미노출", "5/10 03:00")
+
+    def test_parse_누락_with_tilde(self):
+        """누락 + "~" 시점."""
+        assert parse_K_with_stamp("누락 (5/14 03:00~)") == ("누락", "5/14 03:00")
+
+    def test_parse_삭제_without_tilde(self):
+        """삭제 = ~ 없음 (= 단일 시점)."""
+        assert parse_K_with_stamp("삭제 (5/16 03:00)") == ("삭제", "5/16 03:00")
+
+    def test_parse_duplicate_sub_enum_with_tilde(self):
+        """중복노출(AB) sub-enum + 시점 = 정확 분리 (= sub-enum 괄호 보호)."""
+        assert parse_K_with_stamp("중복노출(AB) (5/10 03:00~)") == ("중복노출(AB)", "5/10 03:00")
+        assert parse_K_with_stamp("중복노출(스마트블록) (5/10 03:00~)") == ("중복노출(스마트블록)", "5/10 03:00")
+        assert parse_K_with_stamp("중복노출(인기글) (5/10 03:00~)") == ("중복노출(인기글)", "5/10 03:00")
+
+    def test_parse_base_only_legacy(self):
+        """기존 사장님 시트 = base 만 (= 시점 X) = (base, None) 반환."""
+        assert parse_K_with_stamp("AB") == ("AB", None)
+        assert parse_K_with_stamp("미노출") == ("미노출", None)
+        assert parse_K_with_stamp("누락") == ("누락", None)
+        assert parse_K_with_stamp("삭제") == ("삭제", None)
+        assert parse_K_with_stamp("중복노출(AB)") == ("중복노출(AB)", None)
+
+    def test_parse_manual_edit(self):
+        """사장님 수동 편집 = 그대로 (= 시점 X)."""
+        assert parse_K_with_stamp("확인중") == ("확인중", None)
+        assert parse_K_with_stamp("보류") == ("보류", None)
+        assert parse_K_with_stamp("작업중") == ("작업중", None)
+
+    def test_parse_empty(self):
+        """빈 문자열 = ("", None)."""
+        assert parse_K_with_stamp("") == ("", None)
+
+    def test_parse_실패(self):
+        """실패 = 시점 X = ("실패", None)."""
+        assert parse_K_with_stamp("실패") == ("실패", None)
+
+    def test_parse_strips_whitespace(self):
+        """양 끝 공백 = strip 적용."""
+        assert parse_K_with_stamp("  AB (5/10 03:00~)  ") == ("AB", "5/10 03:00")
+        assert parse_K_with_stamp("  AB  ") == ("AB", None)
+
+
+class TestD030ComputeNewKWithStamp:
+    """D-030 (2026-05-18) compute_new_K_with_stamp wrapper 회귀 test.
+
+    사장님 결정 정합:
+    - prev base == new base + prev stamp 있음 → prev 그대로 (= 시점 보존)
+    - prev base != new base → "{new_base} ({today}~)" (= 새 시점 기록)
+    - "삭제" → "{new_base} ({today})" (= ~ 없음, 단일 시점)
+    - "실패" → "실패" (= 시점 X)
+    - SYSTEM_K_VALUES 외 (사장님 수동) → 그대로 (= 시점 X)
+    """
+
+    def test_first_run_AB_new_stamp(self):
+        """첫 추적 = prev 빈 = new 시점 기록."""
+        assert compute_new_K_with_stamp("", "AB", "5/18 03:00") == "AB (5/18 03:00~)"
+
+    def test_same_base_preserves_stamp(self):
+        """base 동일 = prev 시점 보존 (= 상태 지속 의미)."""
+        assert compute_new_K_with_stamp("AB (5/10 03:00~)", "AB", "5/18 03:00") == "AB (5/10 03:00~)"
+        assert compute_new_K_with_stamp("미노출 (5/10 03:00~)", "미노출", "5/18 03:00") == "미노출 (5/10 03:00~)"
+        assert compute_new_K_with_stamp("누락 (5/14 03:00~)", "누락", "5/18 03:00") == "누락 (5/14 03:00~)"
+
+    def test_base_change_new_stamp(self):
+        """base 전환 = new 시점 기록 (= 상태 전환)."""
+        assert compute_new_K_with_stamp("AB (5/10 03:00~)", "누락", "5/18 03:00") == "누락 (5/18 03:00~)"
+        assert compute_new_K_with_stamp("누락 (5/14 03:00~)", "AB", "5/18 03:00") == "AB (5/18 03:00~)"
+
+    def test_삭제_single_stamp(self):
+        """'삭제' = ~ 없음 (= 단일 시점, 사장님 결정 정합)."""
+        assert compute_new_K_with_stamp("AB (5/10 03:00~)", "삭제", "5/18 03:00") == "삭제 (5/18 03:00)"
+        assert compute_new_K_with_stamp("", "삭제", "5/18 03:00") == "삭제 (5/18 03:00)"
+
+    def test_삭제_preserves_first_detected_stamp(self):
+        """이미 '삭제' = 첫 검출 시점 보존 (= 새 today 시점 X)."""
+        assert compute_new_K_with_stamp("삭제 (5/16 03:00)", "삭제", "5/18 03:00") == "삭제 (5/16 03:00)"
+
+    def test_실패_no_stamp(self):
+        """'실패' = 시점 X (= 일시 상태)."""
+        assert compute_new_K_with_stamp("AB (5/10 03:00~)", "실패", "5/18 03:00") == "실패"
+        assert compute_new_K_with_stamp("", "실패", "5/18 03:00") == "실패"
+
+    def test_manual_edit_preserved(self):
+        """사장님 수동 = SYSTEM_K_VALUES 외 = 그대로 (= 시점 X)."""
+        # compute_new_K 가 "확인중" 보존 후 = wrapper 입력 = ("확인중", "확인중", ...) = 그대로
+        assert compute_new_K_with_stamp("확인중", "확인중", "5/18 03:00") == "확인중"
+        assert compute_new_K_with_stamp("보류", "보류", "5/18 03:00") == "보류"
+
+    def test_migration_legacy_base_only_gets_today_stamp(self):
+        """사장님 결정 (= AskUserQuestion 답 3): 832 행 마이그레이션 = today 자동 기록.
+        기존 시트 = base 만 (= 시점 X) → 첫 D-030 cron = today 시점 기록.
+        """
+        # prev = "AB" (= 기존 시트 시점 X)
+        assert compute_new_K_with_stamp("AB", "AB", "5/18 03:00") == "AB (5/18 03:00~)"
+        # prev = "미노출"
+        assert compute_new_K_with_stamp("미노출", "미노출", "5/18 03:00") == "미노출 (5/18 03:00~)"
+        # prev = "누락"
+        assert compute_new_K_with_stamp("누락", "누락", "5/18 03:00") == "누락 (5/18 03:00~)"
+
+    def test_duplicate_sub_enum_with_stamp(self):
+        """중복노출(AB) sub-enum 시점 통합 = 정확 분리 + 시점 기록."""
+        # base 전환 = new 시점
+        assert compute_new_K_with_stamp("AB (5/10 03:00~)", "중복노출(AB)", "5/18 03:00") == "중복노출(AB) (5/18 03:00~)"
+        # base 동일 = 시점 보존
+        assert compute_new_K_with_stamp(
+            "중복노출(AB) (5/10 03:00~)", "중복노출(AB)", "5/18 03:00"
+        ) == "중복노출(AB) (5/10 03:00~)"
+        # 인기글 sub-enum
+        assert compute_new_K_with_stamp(
+            "인기글 (5/10 03:00~)", "중복노출(인기글)", "5/18 03:00"
+        ) == "중복노출(인기글) (5/18 03:00~)"
+
+    def test_empty_base_returns_empty(self):
+        """new_K_raw_base 빈 = "" 반환 (= 호출처 처리)."""
+        assert compute_new_K_with_stamp("AB (5/10 03:00~)", "", "5/18 03:00") == ""
+
+    def test_삭제_to_other_state(self):
+        """prev '삭제' → new base 다름 (회복 시나리오는 compute_new_K 가 보존하지만 wrapper 단독 호출도 안전)."""
+        # wrapper 단독 = new_K_raw_base 가 "삭제" 외 → "~" 시점 기록
+        # 다만 compute_new_K = "삭제" 보존 = 실 호출 흐름은 이 case 보다 prev base = "삭제" 입력.
+        # 여기는 wrapper 자체 동작 검증.
+        assert compute_new_K_with_stamp("삭제 (5/16 03:00)", "AB", "5/18 03:00") == "AB (5/18 03:00~)"
+
+    def test_first_run_삭제_today(self):
+        """첫 추적 + new = "삭제" = today 시점 (= ~ 없음)."""
+        assert compute_new_K_with_stamp("", "삭제", "5/18 03:00") == "삭제 (5/18 03:00)"

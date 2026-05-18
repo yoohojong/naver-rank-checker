@@ -10,6 +10,13 @@ from src.main import _process_row, _carea_filter
 from src.crawler import Crawler, SlowdownController, CafeStatus, CrawlerError
 from src.health import HealthMonitor
 from src.sheets import HEADER_AREA, HEADER_L, HEADER_M, HEADER_TYPE, HEADER_JISIKIN
+from src.transitions import parse_K_with_stamp  # D-030 (2026-05-18): K base 추출 헬퍼
+
+
+def _K_base(k_value: str) -> str:
+    """D-030 (2026-05-18) test 헬퍼: K full → base 추출."""
+    base, _ = parse_K_with_stamp(k_value or "")
+    return base
 
 
 class TestCareaFilter:
@@ -45,7 +52,7 @@ class TestProcessRow:
         result = _process_row(row, crawler, h, all_known_links=set())
         crawler.fetch_search.assert_not_called()
         assert result is not None
-        assert result[HEADER_AREA] == "미노출"
+        assert _K_base(result[HEADER_AREA]) == "미노출"
         assert result[HEADER_L] == ""
         assert result[HEADER_M] == ""
 
@@ -62,7 +69,7 @@ class TestProcessRow:
         crawler.fetch_search.assert_called_once_with("test")
         assert result is not None
         # 매치 X = K="미노출"
-        assert result[HEADER_AREA] == "미노출"
+        assert _K_base(result[HEADER_AREA]) == "미노출"
 
     def test_skips_row_with_empty_keyword(self):
         crawler = self._make_crawler()
@@ -84,7 +91,7 @@ class TestProcessRow:
         }
         cols = _process_row(row, crawler, h)
         assert cols is not None
-        assert cols[HEADER_AREA] == "AB"
+        assert _K_base(cols[HEADER_AREA]) == "AB"
         assert cols[HEADER_L] == "1"
         assert cols[HEADER_M] == "1"
 
@@ -104,7 +111,7 @@ class TestProcessRow:
         }
         cols = _process_row(row, crawler, h)
         # D-026: 검색 미노출 + 이전 노출 (인기글) → '누락'
-        assert cols[HEADER_AREA] == "누락"
+        assert _K_base(cols[HEADER_AREA]) == "누락"
 
     def test_url_dead_first_run_search_unexposed_returns_deleted(self, load_fixture):
         """D-026 Phase E+F (2026-05-16): 첫 추적 + 검색 미노출 + 삭제 텍스트 검출 → K='삭제'.
@@ -122,7 +129,7 @@ class TestProcessRow:
         }
         cols = _process_row(row, crawler, h)
         # D-026 Phase E+F: 삭제 텍스트 검출 = K='삭제'
-        assert cols[HEADER_AREA] == "삭제"
+        assert _K_base(cols[HEADER_AREA]) == "삭제"
         crawler.fetch_cafe_url_status.assert_called_once()
 
     def test_first_run_unexposed(self, load_fixture):
@@ -137,7 +144,7 @@ class TestProcessRow:
             "_row": 2,
         }
         cols = _process_row(row, crawler, h)
-        assert cols[HEADER_AREA] == "미노출"  # D-026: 명시 표기 (빈 칸 X)
+        assert _K_base(cols[HEADER_AREA]) == "미노출"  # D-026: 명시 표기 (빈 칸 X) + D-030: base 추출
 
     def test_first_run_url_dead_search_unexposed_returns_deleted(self, load_fixture):
         """D-026 Phase E+F (2026-05-16): 첫 추적 + 검색 미노출 + 삭제 텍스트 검출 → K='삭제'.
@@ -155,7 +162,7 @@ class TestProcessRow:
         }
         cols = _process_row(row, crawler, h)
         # D-026 Phase E+F: 삭제 텍스트 검출 = K='삭제'
-        assert cols[HEADER_AREA] == "삭제"
+        assert _K_base(cols[HEADER_AREA]) == "삭제"
         # D-026 Phase E+F: fetch_cafe_url_status 호출 (= 삭제 검출)
         crawler.fetch_cafe_url_status.assert_called_once()
 

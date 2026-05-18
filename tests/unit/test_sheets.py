@@ -1058,3 +1058,98 @@ class TestD029DuplicateSubEnumColors:
         """D-026 호환 유지: K='중복노출' (단일 값) = 파란 (= D-029 sub-enum 과 일관)."""
         bg = self._get_color_for_value("중복노출")
         assert bg == {"red": 0.6, "green": 0.8, "blue": 1.0}
+
+
+class TestD030ColorStartswithMatching:
+    """D-030 (2026-05-18) 회귀 test — K 값 + 시점 통합 = startswith 색상 매핑 정합.
+
+    사장님 결정 정합 (= K = "AB (5/10 03:00~)" 형식 = exact match X):
+    - "AB (5/10 03:00~)" prefix "AB" → white
+    - "미노출 (5/10 03:00~)" prefix "미노출" → gray
+    - "누락 (5/14 03:00~)" prefix "누락" → orange
+    - "삭제 (5/16 03:00)" prefix "삭제" → yellow
+    - "중복노출(AB) (5/10 03:00~)" prefix "중복노출" → blue
+    """
+
+    def _make_client_with_link_col(self, headers, link_col_values, ws_title="샴푸 카외"):
+        fake_creds = json.dumps({
+            "type": "service_account",
+            "client_email": "x@example.iam.gserviceaccount.com",
+            "private_key": "-----BEGIN PRIVATE KEY-----\nFAKE\n-----END PRIVATE KEY-----\n",
+            "token_uri": "https://oauth2.googleapis.com/token",
+        })
+        with patch("src.sheets.gspread.service_account_from_dict") as mock_auth:
+            mock_gc = MagicMock()
+            mock_sheet = MagicMock()
+            mock_ws = MagicMock()
+            mock_ws.row_values.return_value = headers
+            mock_ws.col_values.return_value = link_col_values
+            mock_sheet.worksheet.return_value = mock_ws
+            mock_gc.open_by_key.return_value = mock_sheet
+            mock_auth.return_value = mock_gc
+            client = SheetsClient(spreadsheet_id="abc", service_account_json=fake_creds)
+        return client, mock_ws
+
+    def _get_color_for_value(self, k_value):
+        headers = ["키워드", "링크", "노출영역"]
+        link_col_values = ["링크", "https://cafe.naver.com/cosmania/12345"]
+        client, ws = self._make_client_with_link_col(headers, link_col_values)
+        upd = RowUpdate(row=2, columns={HEADER_AREA: k_value})
+        client.write_results("샴푸 카외", [upd])
+        assert ws.batch_format.call_count == 1
+        formats = ws.batch_format.call_args[0][0]
+        assert len(formats) == 1
+        return formats[0]["format"]["backgroundColor"]
+
+    def test_d030_color_AB_with_stamp_white(self):
+        """D-030: "AB (5/10 03:00~)" = AB prefix = 흰색 (= 정상 노출 reset)."""
+        bg = self._get_color_for_value("AB (5/10 03:00~)")
+        assert bg == {"red": 1.0, "green": 1.0, "blue": 1.0}
+
+    def test_d030_color_미노출_with_stamp_gray(self):
+        """D-030: "미노출 (5/10 03:00~)" = 미노출 prefix = 회색."""
+        bg = self._get_color_for_value("미노출 (5/10 03:00~)")
+        assert bg == {"red": 0.9, "green": 0.9, "blue": 0.9}
+
+    def test_d030_color_누락_with_stamp_orange(self):
+        """D-030: "누락 (5/14 03:00~)" = 누락 prefix = 오렌지 (= 떨어짐 경고)."""
+        bg = self._get_color_for_value("누락 (5/14 03:00~)")
+        assert bg == {"red": 1.0, "green": 0.6, "blue": 0.2}
+
+    def test_d030_color_삭제_with_stamp_yellow(self):
+        """D-030: "삭제 (5/16 03:00)" = 삭제 prefix = 노란 (= ~ 없음 + 단일 시점)."""
+        bg = self._get_color_for_value("삭제 (5/16 03:00)")
+        assert bg == {"red": 1.0, "green": 1.0, "blue": 0.0}
+
+    def test_d030_color_중복노출_AB_with_stamp_blue(self):
+        """D-030: "중복노출(AB) (5/10 03:00~)" = 중복노출 prefix = 파란."""
+        bg = self._get_color_for_value("중복노출(AB) (5/10 03:00~)")
+        assert bg == {"red": 0.6, "green": 0.8, "blue": 1.0}
+
+    def test_d030_color_중복노출_인기글_with_stamp_blue(self):
+        """D-030: "중복노출(인기글) (5/10 03:00~)" = 중복노출 prefix = 파란 (사장님 사례)."""
+        bg = self._get_color_for_value("중복노출(인기글) (5/10 03:00~)")
+        assert bg == {"red": 0.6, "green": 0.8, "blue": 1.0}
+
+    def test_d030_color_스마트블록_with_stamp_white(self):
+        """D-030: "스마트블록 (5/10 03:00~)" = 흰색 (= 정상 노출 reset)."""
+        bg = self._get_color_for_value("스마트블록 (5/10 03:00~)")
+        assert bg == {"red": 1.0, "green": 1.0, "blue": 1.0}
+
+    def test_d030_color_인기글_with_stamp_white(self):
+        """D-030: "인기글 (5/10 03:00~)" = 흰색."""
+        bg = self._get_color_for_value("인기글 (5/10 03:00~)")
+        assert bg == {"red": 1.0, "green": 1.0, "blue": 1.0}
+
+    def test_d030_color_실패_white(self):
+        """D-030: "실패" = 시점 X = 흰색 (= 일시 상태 = reset)."""
+        bg = self._get_color_for_value("실패")
+        assert bg == {"red": 1.0, "green": 1.0, "blue": 1.0}
+
+    def test_d030_color_legacy_base_only_compatibility(self):
+        """D-030: 기존 시트 base 만 (= 시점 X) 호환 = startswith 정합 유지."""
+        # 832 행 마이그레이션 전 = base 만 = 동일 색상 매핑
+        assert self._get_color_for_value("AB") == {"red": 1.0, "green": 1.0, "blue": 1.0}
+        assert self._get_color_for_value("미노출") == {"red": 0.9, "green": 0.9, "blue": 0.9}
+        assert self._get_color_for_value("누락") == {"red": 1.0, "green": 0.6, "blue": 0.2}
+        assert self._get_color_for_value("삭제") == {"red": 1.0, "green": 1.0, "blue": 0.0}

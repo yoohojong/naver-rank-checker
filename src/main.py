@@ -32,7 +32,19 @@ from src.sheets import (
     rank_result_to_columns,
     HEADER_AREA, HEADER_L, HEADER_M, HEADER_JISIKIN, HEADER_LINK,
 )
-from src.transitions import compute_new_K
+from src.transitions import compute_new_K, compute_new_K_with_stamp, parse_K_with_stamp
+
+
+def _format_today_kst_stamp(dt) -> str:
+    """D-030 (2026-05-18): KST datetime → 사장님 결정 시점 형식 "M/D HH:MM" (= 0-padding 제거).
+
+    사장님 결정 (= AskUserQuestion 답 1) 정합: "5/10 03:00" (= 시각까지).
+
+    Note:
+        OS 무관 호환 = strftime "%-m" (Linux) / "%#m" (Windows) 분기 회피 = 직접 int.
+        예: 2026-05-10 03:00 KST → "5/10 03:00".
+    """
+    return f"{dt.month}/{dt.day} {dt.hour:02d}:{dt.minute:02d}"
 
 
 def _carea_filter(tab_name: str) -> bool:
@@ -46,6 +58,7 @@ def _process_row(
     health: HealthMonitor,
     all_known_links: Optional[set] = None,  # D-026 Phase C+D (2026-05-16): 빈 link 자동 채움 logic 활용
     url_alive_cache: Optional[dict] = None,  # 호환성 유지 — 미사용 (T-M10.5 폐기)
+    today_stamp: Optional[str] = None,  # D-030 (2026-05-18): "5/18 03:00" — K 시점 통합
 ) -> Optional[dict]:
     """한 행 처리 → 새 컬럼 dict 또는 None (skip).
 
@@ -66,7 +79,14 @@ def _process_row(
     """
     keyword = (row.get("키워드") or "").strip()
     link = (row.get("링크") or "").strip()
-    prev_K = (row.get(HEADER_AREA) or "").strip()
+    prev_K_full = (row.get(HEADER_AREA) or "").strip()  # D-030: full K (= base + 시점 가능)
+    prev_K_base, _ = parse_K_with_stamp(prev_K_full)  # D-030: base 만 추출 (= 기존 logic 호환)
+
+    # D-030 (2026-05-18): today_stamp 기본값 = 호출 측 미전달 시 함수 안 KST 자동 (= test 호환).
+    if today_stamp is None:
+        from datetime import datetime, timezone, timedelta
+        kst = timezone(timedelta(hours=9))
+        today_stamp = _format_today_kst_stamp(datetime.now(kst))
 
     # 키워드 빈 행 = skip
     if not keyword:
@@ -76,9 +96,10 @@ def _process_row(
     # D-029 (2026-05-18): 매치 구좌 명시 = "중복노출(AB)" / "중복노출(스마트블록)" / "중복노출(인기글)"
     if not link:
         # all_known_links 없음 (= 호출자가 구성 X) = 종전 동작 (미노출 표기)
+        # D-030: K 통합 표기 = "미노출 (5/18 03:00~)" (= 사장님 결정 = 미노출 명시 일관)
         if not all_known_links:
             return {
-                HEADER_AREA: "미노출",
+                HEADER_AREA: compute_new_K_with_stamp(prev_K_full, "미노출", today_stamp),
                 HEADER_L: "",
                 HEADER_M: "",
                 HEADER_JISIKIN: "",
@@ -94,31 +115,33 @@ def _process_row(
             matched_area = result.exposure_area.value  # "AB" / "스마트블록" / "인기글"
             # 보수적 fallback: 매치 area 가 노출 3종 외 시 (= 이상 case) = "중복노출" 단일 (D-026 호환)
             if matched_area in {"AB", "스마트블록", "인기글"}:
-                new_K = f"중복노출({matched_area})"
+                new_K_base = f"중복노출({matched_area})"
             else:
-                new_K = "중복노출"
+                new_K_base = "중복노출"
+            # D-030: K 통합 표기 = base + today 시점 (= 새 발견 = 새 시점 기록)
+            new_K_full = compute_new_K_with_stamp(prev_K_full, new_K_base, today_stamp)
             cols = rank_result_to_columns(
                 block_order=result.block_order,
-                exposure_area=new_K,
+                exposure_area=new_K_full,
                 integrated_rank=result.integrated_rank,
                 cafe_slot_rank=result.cafe_slot_rank,
                 in_jisikin=result.in_jisikin,
             )
-            cols[HEADER_AREA] = new_K
+            cols[HEADER_AREA] = new_K_full
             cols[HEADER_LINK] = result.matched_url  # D-026 자동 채움 (sheets.py 빈 link 행만 허용)
             # D-029 Pass 2 양방향 갱신용 메타 키 — sheets.write_results 가 mapping 없는 키 자동 skip
             cols["_matched_area"] = matched_area
             health.record(
                 parser_confidence=result.parser_confidence,
                 success=True,
-                block_type=new_K,
+                block_type=new_K_base,  # health = base 만 (= 시점 무관)
             )
             return cols
 
-        # 빈 link 행 + 매치 X = "미노출"
+        # 빈 link 행 + 매치 X = "미노출 (시점~)"
         health.record(parser_confidence=0.0, success=True, block_type=None)
         return {
-            HEADER_AREA: "미노출",
+            HEADER_AREA: compute_new_K_with_stamp(prev_K_full, "미노출", today_stamp),
             HEADER_L: "",
             HEADER_M: "",
             HEADER_JISIKIN: "",
@@ -146,31 +169,36 @@ def _process_row(
             # 텍스트 검출 실패 = 보수적 = 미검출 (= prev_K 보존)
             deletion_detected = False
 
-    # 사장님 컨벤션 K 결정 (D-026 Phase B+E+F)
-    new_K = compute_new_K(
-        prev_K=prev_K,
+    # 사장님 컨벤션 K 결정 (D-026 Phase B+E+F) — base 만 (= 시점 X)
+    new_K_base = compute_new_K(
+        prev_K=prev_K_base,  # D-030: base 만 전달 (= 시점 제거)
         search_found=search_found,
         url_alive=True,  # T-M10.5 폐기 후 = 항상 True
         area=result.exposure_area.value if search_found else None,
         deletion_detected=deletion_detected,
     )
 
+    # D-030 (2026-05-18): K 통합 표기 (= base + 시점)
+    new_K_full = compute_new_K_with_stamp(prev_K_full, new_K_base, today_stamp)
+
     # health 누적
     # D-026 Phase A+C+D (2026-05-16): 스마트블록 부활 + 중복노출 정합 = block_type 화이트리스트 확장.
     # D-029 (2026-05-18): 중복노출(구좌) 3종 추가 = block_type 화이트리스트 확장.
+    # D-030 (2026-05-18): health = base 만 (= 시점 무관)
     health.record(
         parser_confidence=result.parser_confidence,
         success=True,
-        block_type=new_K if new_K in {
+        block_type=new_K_base if new_K_base in {
             "AB", "스마트블록", "인기글",
             "중복노출", "중복노출(AB)", "중복노출(스마트블록)", "중복노출(인기글)",
         } else None,
     )
 
     # 시트 컬럼 dict 변환 (시트 "링크" 컬럼 = 기존 link 행 = 자동 갱신 X = D-023 가드)
+    # D-030: exposure_area = full K (= base + 시점)
     cols = rank_result_to_columns(
         block_order=result.block_order,
-        exposure_area=new_K,
+        exposure_area=new_K_full,
         integrated_rank=result.integrated_rank if search_found else None,
         cafe_slot_rank=result.cafe_slot_rank if search_found else None,
         in_jisikin=result.in_jisikin,
@@ -178,7 +206,10 @@ def _process_row(
     return cols
 
 
-def _d029_apply_pass2_duplicate(tab_updates: dict[str, list["RowUpdate"]]) -> int:
+def _d029_apply_pass2_duplicate(
+    tab_updates: dict[str, list["RowUpdate"]],
+    today_stamp: Optional[str] = None,  # D-030 (2026-05-18): "5/18 03:00" 시점 결합
+) -> int:
     """D-029 Pass 2 양방향 "중복노출(구좌)" 갱신 (2026-05-18 — D-026 정정).
 
     Pass 1 (= _process_row) 결과 누적 후 = 같은 link 가 여러 행에 매치된 case 검출.
@@ -208,13 +239,21 @@ def _d029_apply_pass2_duplicate(tab_updates: dict[str, list["RowUpdate"]]) -> in
         "_matched_area" 메타 키 = 갱신 후 cols 에서 제거 (sheets.write_results 가 자동 skip
         하지만 명시적 cleanup 으로 노이즈 차단).
     """
+    # D-030 (2026-05-18): today_stamp 기본값 = 호출 측 미전달 시 함수 안 KST 자동.
+    if today_stamp is None:
+        from datetime import datetime, timezone, timedelta
+        kst = timezone(timedelta(hours=9))
+        today_stamp = _format_today_kst_stamp(datetime.now(kst))
+
     # 1) link → [(tab, row, matched_area, cols), ...] map 구성
     # cols 직접 참조 = 갱신 시 in-place 수정 = 시트 반영 보장.
     link_to_matches: dict[str, list[tuple[str, int, str, dict]]] = {}
     for tab_name, updates in tab_updates.items():
         for upd in updates:
             cols = upd.columns
-            current_K = cols.get(HEADER_AREA, "")
+            current_K_full = cols.get(HEADER_AREA, "")
+            # D-030 (2026-05-18): base 추출 (= 시점 제거 후 case B 분기 판정)
+            current_K_base, _ = parse_K_with_stamp(current_K_full)
 
             # 케이스 A: 빈 link 자동 채움 행 = cols[HEADER_LINK] + cols["_matched_area"] 존재
             link_val: Optional[str] = None
@@ -222,8 +261,9 @@ def _d029_apply_pass2_duplicate(tab_updates: dict[str, list["RowUpdate"]]) -> in
             if HEADER_LINK in cols and cols.get("_matched_area"):
                 link_val = cols[HEADER_LINK]
                 matched_area = cols["_matched_area"]
-            # 케이스 B: 원본 link 행 = current_K = 노출 3종 (= 검색 노출, link 매치 완료)
-            elif current_K in {"AB", "스마트블록", "인기글"}:
+            # 케이스 B: 원본 link 행 = current_K_base = 노출 3종 (= 검색 노출, link 매치 완료)
+            # D-030: base 비교 (= 시점 무관)
+            elif current_K_base in {"AB", "스마트블록", "인기글"}:
                 # 이 행의 link = sheets._row + 원 row dict 의 "링크" 값.
                 # cols 에 link 없으므로 = 원본 row 메타 추적 X = link 추출 불가 case.
                 # 다만 spec 가 row 메타 보존 = upd.row + tab_name 으로 매치 결정 어려움.
@@ -233,7 +273,7 @@ def _d029_apply_pass2_duplicate(tab_updates: dict[str, list["RowUpdate"]]) -> in
                 # 해결: case B 행 cols 에 "_row_link" 메타 보존 (= run_cycle 에서 _process_row 후 주입).
                 link_val = cols.get("_row_link")
                 if link_val:
-                    matched_area = current_K
+                    matched_area = current_K_base  # D-030: base 만 사용
                 else:
                     link_val = None  # link 추적 불가 = skip
 
@@ -254,13 +294,16 @@ def _d029_apply_pass2_duplicate(tab_updates: dict[str, list["RowUpdate"]]) -> in
         areas = [m[2] for m in matches if m[2] in {"AB", "스마트블록", "인기글"}]
         if not areas:
             continue  # 매치 area 가 노출 3종 외 (= 이상 case) = skip
-        new_K = f"중복노출({areas[0]})"
+        new_K_base = f"중복노출({areas[0]})"
 
         for _tab, _row, _area, cols in matches:
-            old_K = cols.get(HEADER_AREA, "")
-            cols[HEADER_AREA] = new_K
+            old_K_full = cols.get(HEADER_AREA, "")
+            # D-030 (2026-05-18): K 통합 표기 (= base + 시점)
+            # prev_K_full = old_K_full = base 동일 시 시점 보존 / base 전환 시 today 시점 기록.
+            new_K_full = compute_new_K_with_stamp(old_K_full, new_K_base, today_stamp)
+            cols[HEADER_AREA] = new_K_full
             updated_count += 1
-            print(f"  [D-029-PASS2] {_tab} row={_row} K: {old_K!r} → {new_K!r} (link={link_val[:70]})")
+            print(f"  [D-029-PASS2] {_tab} row={_row} K: {old_K_full!r} → {new_K_full!r} (link={link_val[:70]})")
 
     # 3) cleanup — "_matched_area" / "_row_link" 메타 키 제거 (write 시 noise 차단)
     for tab_name, updates in tab_updates.items():
@@ -305,6 +348,9 @@ def run_cycle() -> dict:
     # 사장님 사고 시 = scripts/restore_backup.py {run_id}.json = 즉시 복원. shadow mode 폐기 정합 (= 시트 즉시 갱신 + 사고 시 백업 복원).
     from datetime import datetime, timezone, timedelta
     kst = timezone(timedelta(hours=9))
+    # D-030 (2026-05-18): today_kst_stamp = "M/D HH:MM" 형식 (= 사장님 결정 = "5/10 03:00" 정합)
+    # cron 시작 시점 = 모든 행 K 시점 기록의 단일 기준 (= 832 행 마이그레이션 = 오늘 자동 기록).
+    today_kst_stamp = _format_today_kst_stamp(datetime.now(kst))
     try:
         backup_run_id = os.environ.get("GITHUB_RUN_ID", "local")
         backup_ts = datetime.now(kst).strftime("%Y%m%dT%H%M%S")
@@ -369,7 +415,7 @@ def run_cycle() -> dict:
         print(f"\n[{tab_name}] {len(rows)} 행 처리 시작 (random shuffle)")
         for row in rows:
             try:
-                cols = _process_row(row, crawler, health, all_known_links=all_known_links, url_alive_cache=url_alive_cache)
+                cols = _process_row(row, crawler, health, all_known_links=all_known_links, url_alive_cache=url_alive_cache, today_stamp=today_kst_stamp)
                 if cols is None:
                     continue  # link 빈 행 skip
                 # D-029 Pass 2 용 메타 — link 있는 행 = _row_link 주입 (= 양방향 갱신 매치 키).
@@ -412,7 +458,7 @@ def run_cycle() -> dict:
     if len(retry_queue) > 0 and not circuit_breaker_tripped:
         print(f"\n=== retry queue 처리: {len(retry_queue)} 행 ===")
         def retry_processor(row):
-            cols = _process_row(row, crawler, health, all_known_links=all_known_links, url_alive_cache=url_alive_cache)
+            cols = _process_row(row, crawler, health, all_known_links=all_known_links, url_alive_cache=url_alive_cache, today_stamp=today_kst_stamp)
             return cols
         retry_results = retry_queue.process(retry_processor, slowdown_multiplier=2.0)
         for r in retry_results:
@@ -435,7 +481,7 @@ def run_cycle() -> dict:
     # 1) Pass 1 결과 누적 → link → [(tab, row, matched_area), ...] map
     # 2) 같은 link 가 2+ 행에 매치 = 중복노출 검출
     # 3) 그 link 가진 모든 RowUpdate K = "중복노출(매치 구좌)" 갱신
-    _d029_apply_pass2_duplicate(tab_updates)
+    _d029_apply_pass2_duplicate(tab_updates, today_stamp=today_kst_stamp)
 
     # 4. 시트 batch_update (탭별 1 호출)
     total_cells = 0
@@ -452,13 +498,15 @@ def run_cycle() -> dict:
         client.write_timestamp(tab_name, kst_iso)
 
     # 5. K 분포 + 처리 시간 집계 (사장님 알림용 풍부 summary)
+    # D-030 (2026-05-18): K 분포 = base 만 (= 시점 제거 = anomaly 감지 정합 + 일관성)
     k_distribution: Counter = Counter()
     total_rows_with_link = 0
     for tab, updates in tab_updates.items():
         for upd in updates:
             total_rows_with_link += 1
-            k_val = upd.columns.get(HEADER_AREA, "") or "미노출"
-            k_distribution[k_val] += 1
+            k_val_full = upd.columns.get(HEADER_AREA, "") or "미노출"
+            k_val_base, _ = parse_K_with_stamp(k_val_full)
+            k_distribution[k_val_base or "미노출"] += 1
 
     cycle_seconds = int(time.time() - cycle_start)
 
