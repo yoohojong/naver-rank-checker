@@ -603,6 +603,56 @@
 
 ## 2026-05-18
 
+### D-029: D-026 정정 — 양방향 "중복노출" + 구좌 명시 (사장님 5-18 명확 의도)
+
+**결정 (2026-05-18)**: D-026 단방향 한계 발견 + 사장님 시트 "도브바디스크럽" + "일본도브바디스크럽" 진짜 사례 후 = 양방향 갱신 + K 값 구좌 명시 적용.
+
+**근거**:
+- 사장님 5-18 명시 = "일본도브바디스크럽도 인기글이 아니라 중복노출 - 인기글로 바꿔줘야지"
+- 사장님 명시 = "어떤 구좌에 노출되었는지까지 써줘 = 중복노출(인기글) 이런 식으로"
+- 단방향 (= 빈 link 행만 채움) = 원본 link 행 = 같은 link 가 여러 키워드 매치 인지 X = 사장님 시점 한계
+
+**구현**:
+- src/parser.py: ExposureArea sub-enum 3종 = DUPLICATE_AB / DUPLICATE_SMART_BLOCK / DUPLICATE_POPULAR (= "중복노출(AB)" / "중복노출(스마트블록)" / "중복노출(인기글)")
+- src/main.py Pass 2 = `_d029_apply_pass2_duplicate` 신규 helper = 매치 누적 후 같은 link 가 여러 키워드 매치 검출 → 양방향 K 갱신 (= 빈 link 행 + 원본 link 행 모두)
+- src/transitions.py: EXPOSED_VALUES + SYSTEM_K_VALUES 안 sub-enum 3종 추가
+- src/sheets.py: 색상 매핑 = sub-enum 3종 모두 파란 일관 적용
+- tests: TestD029DuplicateSubEnumTransitions (9) + TestD029DuplicateSubEnumAutoFill (3) + TestD029Pass2BidirectionalUpdate (6) + TestD029DuplicateSubEnumColors (4) = 22 신규
+- pytest = 374 pass (= 352 → +22 신규)
+- commit `b3b7bee`
+
+**대안 안 고른 이유**:
+- 단방향 유지: 사장님 시점 = 원본 link 행 "인기글" 그대로 = 여러 키워드 매치 인지 X = 사장님 의도 위반
+- K 값 단순 "중복노출": 사장님 = 어디 구좌 인지 모름 = 마케팅 분석 가치 ↓
+
+---
+
+### D-030: K 값 + 시점 통합 = "AB (5/10 03:00~)" 형식 (사장님 5-18 결정 정합)
+
+**결정 (2026-05-18)**: 사장님 5-18 명시 "누락 시점 / 노출 시점 유지 의무 + 매 cron 갱신 X" + 사장님 결정 3 (= "5/10 03:00" 형식 / "미노출 (5/10 03:00~)" / 832행 today 자동 마이그레이션) 정합 즉시 적용.
+
+**근거**:
+- 사장님 5-18 명시 = "누락 된 시점은 유지되어야 한다" + "매 시간마다 갱신되면 안 된다"
+- 비즈니스 의도 = 매출 하락 원인 추적 (= "5/14 누락 → 매출 ↓?" 시점 매핑)
+- 옵션 C (= K 컬럼 안 시점 동시 표기) = D-024 (유형 보호) + D-012 (시트 깔끔 컬럼 추가 X) 동시 정합
+
+**구현**:
+- src/transitions.py: `parse_K_with_stamp(k_str) -> (base, stamp)` 신규 helper + `compute_new_K_with_stamp(prev_K_full, new_K_raw_base, today_stamp)` 신규 wrapper (= 기존 `compute_new_K` 보존 = 회귀 방지)
+- src/main.py: `_format_today_kst_stamp` 헬퍼 + `today_kst_stamp` 생성 (= "%-m/%-d %H:%M" KST) + `_process_row` 시그너처 today_stamp 매개변수 + Pass 2 시점 결합
+- src/sheets.py: `_color_for_k` 헬퍼 = exact 매치 → startswith 분기 (= 시점 접두어 색상 매핑 정합)
+- src/health.py: `detect_k_anomaly` base K 추출 = 시점 무관 분포 비교 = 시점 추가 = false alert 회피 (= 운영 1 정합)
+- tests: TestD030ParseKWithStamp (10) + TestD030ComputeNewKWithStamp (12) + TestD030KStampIntegration (10) + TestD030ColorStartswithMatching (10) + TestD030KStampBaseExtraction (5) = 47 신규
+- pytest = 445 pass (= 398 → +47 신규)
+- commit `5226638`
+
+**대안 안 고른 이유**:
+- 옵션 A (P/Q/R 3 컬럼): D-012 위반 + 사장님 = 1 컬럼 1 답 정합 X
+- 옵션 B (유형 C 안 시점): D-024 위반 = "유형 = 사장님 의도 기록 = 자동 갱신 X"
+- 시점 형식 (b) "2026-05-10": 너무 김 = 사장님 비개발자 시각 ↓
+- 시점 형식 (c) "5/10 03:00": 사장님 결정 = (a) 대신 시각까지 명시 선호 = (c) 채택
+
+---
+
 ### D-031: 우리 시스템 고착화 X + 사장님 confirm 후 진화 의무 (영구 룰, 2026-05-18 정정)
 
 **결정**: 사장님 5-18 명시 "고착화되는 순간 끝, 계속 디벨롭되어야 해" + 사장님 5-18 정정 "진화하기 전에 나한테 물어봐" = 영구 룰 신규.
