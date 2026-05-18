@@ -138,3 +138,18 @@ naver-rank-checker .harness 읽고 다음 task 이어가
 **근거**: critic Opus 검증 (2026-05-14, D-023 객관 검토 background) — Critical 1 (C 컬럼 모순) + Major 1 (main.py except 우회). 사장님 단호 시그널 "ㄱ" 적용.
 
 ---
+
+## ⚠️ D-031 영구 룰 (2026-05-18 정정) — 사장님 confirm 후 진화 의무
+
+사장님 명시:
+- "고착화되는 순간 끝, 계속 디벨롭되어야 해"
+- "진화하기 전에 나한테 물어봐 = 더 좋은 방향성 / 굳이 싶은 것 = 안 해도 되잖아"
+
+**룰**:
+1. **진화 후보 검출** = 우리 = 필요한 시점 (= 사장님 지적 / 한계 / 사고 사례) = 자연 타이밍
+2. **사장님 confirm 의무** = 자동 진화 절대 X = AskUserQuestion + 진화 이유 + ㄱ/굳이 X/잠깐 선택
+3. **사장님 ㄱ 후만** 적용 (= 굳이 X / 잠깐 = 진화 X)
+4. retro-log 누적 = 자동 (= 후보 라벨 누적 자체는 OK)
+5. navigation / second-brain skill 갱신 = 사장님 confirm 후만
+
+---

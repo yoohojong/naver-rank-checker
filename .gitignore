@@ -33,3 +33,10 @@ docs/사장님-가이드/screenshots/
 # 사장님 비즈니스 데이터 (public repo 노출 금지, 2026-05-11)
 # comparison json = 사장님 시트 500행 키워드/링크/순위 비교 데이터
 .harness/comparison-*.json
+
+# 백업 파일 (= 사장님 시트 전체 데이터 = 비즈니스 정보, 2026-05-18)
+# .harness/backups/ = run_cycle 시작 시 시트 K/L/M/링크 전체 snapshot
+.harness/backups/
+
+# H1 시계열 분석 출력 (= 사장님 시트 시계열 = 비즈니스 정보, 2026-05-18)
+.harness/timeline_report*.csv

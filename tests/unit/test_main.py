@@ -1068,3 +1068,132 @@ class TestD029Pass2BidirectionalUpdate:
         from src.main import _d029_apply_pass2_duplicate
         updated_count = _d029_apply_pass2_duplicate({})
         assert updated_count == 0
+
+
+class TestOperation3CircuitBreakerBlocksSummary:
+    """운영 3 (2026-05-18): 네이버 차단 메일 알림 강화 — circuit_breaker_blocks summary 필드 회귀 test.
+
+    사장님 단호 시그널 = CircuitBreakerOpen 발생 시 = summary 안 명시 = issue #1 댓글 가시성.
+    """
+
+    def _patch_run_cycle_deps_for_circuit_breaker(self, fake_rows: dict, raise_circuit: bool = True):
+        """run_cycle 의존성 mock — CircuitBreakerOpen raise scenario."""
+        from src.crawler import CircuitBreakerOpen
+
+        # SheetsClient mock
+        mock_client_class = MagicMock()
+        mock_client_instance = MagicMock()
+        mock_client_instance.load_all_data_tabs.return_value = fake_rows
+        mock_client_instance.write_results.return_value = 0
+        mock_client_class.return_value = mock_client_instance
+
+        # Crawler mock
+        mock_crawler_class = MagicMock()
+        mock_crawler_instance = MagicMock()
+        mock_crawler_instance.warmup.return_value = None
+        if raise_circuit:
+            mock_crawler_instance.fetch_search.side_effect = CircuitBreakerOpen(
+                "네이버 차단 5회 연속. cron 조기 종료."
+            )
+        else:
+            mock_crawler_instance.fetch_search.return_value = "<html></html>"
+        mock_crawler_class.return_value = mock_crawler_instance
+
+        return mock_client_class, mock_crawler_class, mock_client_instance
+
+    def test_circuit_breaker_blocks_field_exists(self):
+        """운영 3: run_cycle summary = circuit_breaker_blocks 필드 의무 존재."""
+        fake_rows = {"샴푸 카외": []}
+        mc, mcrw, _ = self._patch_run_cycle_deps_for_circuit_breaker(fake_rows, raise_circuit=False)
+
+        with patch("src.main.SheetsClient", mc), \
+             patch("src.main.Crawler", mcrw), \
+             patch("src.main.SPREADSHEET_ID", "fake_id"), \
+             patch("src.main.SERVICE_ACCOUNT_JSON", "{}"):
+            from src.main import run_cycle
+            summary = run_cycle()
+
+        assert "circuit_breaker_blocks" in summary
+        assert summary["circuit_breaker_blocks"] == 0
+
+    def test_circuit_breaker_blocks_counts_on_block(self):
+        """운영 3: CircuitBreakerOpen raise 시 = circuit_breaker_blocks >= 1."""
+        fake_rows = {
+            "샴푸 카외": [
+                {"키워드": "탈모샴푸", "링크": "https://cafe.naver.com/cosmania/12345", "_row": 2, "_tab": "샴푸 카외"},
+            ],
+        }
+        mc, mcrw, _ = self._patch_run_cycle_deps_for_circuit_breaker(fake_rows, raise_circuit=True)
+
+        with patch("src.main.SheetsClient", mc), \
+             patch("src.main.Crawler", mcrw), \
+             patch("src.main.SPREADSHEET_ID", "fake_id"), \
+             patch("src.main.SERVICE_ACCOUNT_JSON", "{}"):
+            from src.main import run_cycle
+            summary = run_cycle()
+
+        assert summary.get("circuit_breaker_tripped") is True
+        assert summary.get("circuit_breaker_blocks", 0) >= 1
+
+
+class TestOperation3SuccessCommentCircuitBlocks:
+    """운영 3 (2026-05-18): post_summary_to_issue.py build_success_comment 회귀 test —
+    circuit_breaker_blocks 시 = 명시 ⚠️ 강조 + 자동 회복 안내.
+    """
+
+    def test_circuit_breaker_blocks_shown_in_success_comment(self):
+        """운영 3: circuit_breaker_blocks > 0 시 = success comment 안 차단 횟수 + 자동 회복 안내 포함."""
+        from scripts.post_summary_to_issue import build_success_comment
+
+        summary = {
+            "success_rate": 0.95,
+            "total_cells_written": 500,
+            "total_rows_processed": 250,
+            "cycle_seconds": 1200,
+            "retry_queue_remaining": 0,
+            "code_change_suspected": False,
+            "d024_skipped_rows": 0,
+            "cafe_whitelist_size": 26,
+            "all_known_links_count": 50,
+            "circuit_breaker_blocks": 2,
+            "circuit_breaker_tripped": True,
+        }
+        comment = build_success_comment(summary)
+
+        # 운영 3 핵심: 차단 횟수 명시 + 자동 회복 안내
+        assert "네이버 차단 검출" in comment
+        assert "2회" in comment
+        assert "다음 cron 자동 회복 시도" in comment
+
+    def test_no_circuit_block_no_alert(self):
+        """운영 3: circuit_breaker_blocks = 0 시 = circuit_line 출력 X (= noise 차단)."""
+        from scripts.post_summary_to_issue import build_success_comment
+
+        summary = {
+            "success_rate": 1.0,
+            "total_cells_written": 800,
+            "total_rows_processed": 400,
+            "cycle_seconds": 1800,
+            "retry_queue_remaining": 0,
+            "code_change_suspected": False,
+            "d024_skipped_rows": 0,
+            "cafe_whitelist_size": 26,
+            "all_known_links_count": 80,
+            "circuit_breaker_blocks": 0,
+            "circuit_breaker_tripped": False,
+        }
+        comment = build_success_comment(summary)
+
+        # 차단 0건 = circuit_line 출력 X
+        assert "네이버 차단 검출" not in comment
+
+    def test_failure_comment_circuit_keyword_strong_alert(self):
+        """운영 3: build_failure_comment reason 안 차단 키워드 포함 시 = ⚠️ 명시 + 자동 회복 안내."""
+        from scripts.post_summary_to_issue import build_failure_comment
+
+        reason = "CircuitBreakerOpen: 네이버 차단 5회 연속 검출됨"
+        comment = build_failure_comment(reason)
+
+        # 운영 3 핵심: 차단 의심 시 = ⚠️ 강조
+        assert "네이버 차단 검출 의심" in comment
+        assert "다음 cron 자동 회복 시도" in comment

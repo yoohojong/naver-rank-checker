@@ -131,10 +131,15 @@ class TestDetectKAnomaly:
         assert h.detect_k_anomaly(prev, curr) is True
 
     def test_anomaly_new_key_appears(self):
-        """이전에 없던 K 값이 대거 등장 = anomaly True."""
+        """이전에 없던 K 값 대거 등장 = anomaly True.
+
+        운영 1 (2026-05-18) 정합 갱신: _NATURAL_NEW_ENUM 외 신규 enum 만 anomaly True.
+        ('삭제' 등 자연 변경 enum = 신규 _NATURAL_NEW_ENUM 화이트리스트 = false alert 회피.)
+        """
         h = HealthMonitor()
         prev = {"AB": 50, "미노출": 50}
-        curr = {"AB": 25, "미노출": 25, "삭제": 50}
+        # "오류상태" = _NATURAL_NEW_ENUM 외 = 알 수 없는 변경 = anomaly True 유지
+        curr = {"AB": 25, "미노출": 25, "오류상태": 50}
         assert h.detect_k_anomaly(prev, curr) is True
 
     def test_no_anomaly_within_threshold(self):
@@ -163,6 +168,67 @@ class TestDetectKAnomaly:
         assert h.detect_k_anomaly(prev, curr, threshold=0.10) is True
         # 12% 변동 < threshold=0.20 → False
         assert h.detect_k_anomaly(prev, curr, threshold=0.20) is False
+
+
+class TestDetectKAnomalyNaturalNewEnumMitigation:
+    """운영 1 (2026-05-18): D-026/D-029 K enum 자연 변경 = false alert 회피.
+
+    사장님 단호 시그널 = 신규 enum (= 중복노출 sub 3종 + 누락 + 미노출 + 삭제 + 스마트블록) 자연 변경 =
+    anomaly 판정 X (= 메일 false alert 차단). 기존 enum 의 급변만 진짜 anomaly.
+    """
+
+    def test_natural_new_enum_중복노출_no_alert(self):
+        """D-029 정합: prev 에 없던 '중복노출(AB)' curr 등장 = anomaly X (= 시스템 진화)."""
+        h = HealthMonitor()
+        prev = {"AB": 30, "미노출": 70}
+        # D-029 부활 후 = 중복노출(AB) 대거 등장 = 자연 변경
+        curr = {"AB": 30, "미노출": 40, "중복노출(AB)": 30}
+        assert h.detect_k_anomaly(prev, curr) is False
+
+    def test_natural_new_enum_누락_no_alert(self):
+        """D-026 정합: prev 에 없던 '누락' curr 등장 = anomaly X (= 시스템 진화)."""
+        h = HealthMonitor()
+        prev = {"AB": 30, "미노출": 70}
+        curr = {"AB": 25, "미노출": 50, "누락": 25}  # 누락 신규 25%
+        assert h.detect_k_anomaly(prev, curr) is False
+
+    def test_natural_new_enum_스마트블록_no_alert(self):
+        """D-026 정합: prev 에 없던 '스마트블록' curr 등장 = anomaly X (= 부활 자연 변경)."""
+        h = HealthMonitor()
+        prev = {"AB": 50, "미노출": 50}
+        curr = {"AB": 25, "미노출": 50, "스마트블록": 25}
+        assert h.detect_k_anomaly(prev, curr) is False
+
+    def test_natural_new_enum_삭제_no_alert(self):
+        """D-026 Phase E+F 정합: prev 에 없던 '삭제' curr 등장 = anomaly X."""
+        h = HealthMonitor()
+        prev = {"AB": 30, "미노출": 70}
+        curr = {"AB": 30, "미노출": 40, "삭제": 30}
+        assert h.detect_k_anomaly(prev, curr) is False
+
+    def test_existing_enum_change_still_triggers_alert(self):
+        """기존 enum (= AB / 미노출 등) 급변 = 진짜 anomaly 유지."""
+        h = HealthMonitor()
+        prev = {"AB": 50, "미노출": 50}
+        # AB 50% → 5% = -45% 변동 = 진짜 anomaly (= 차단 / DOM 변경 신호)
+        curr = {"AB": 5, "미노출": 95}
+        assert h.detect_k_anomaly(prev, curr) is True
+
+    def test_natural_new_enum_mixed_with_existing_change(self):
+        """기존 enum 안정 + 신규 enum 등장 = anomaly X (= 자연 변경)."""
+        h = HealthMonitor()
+        prev = {"AB": 30, "미노출": 70}
+        # AB 30% → 28% (안정) + 중복노출(인기글) 신규 등장 = 자연 변경
+        curr = {"AB": 28, "미노출": 47, "중복노출(인기글)": 25}
+        assert h.detect_k_anomaly(prev, curr) is False
+
+    def test_non_natural_new_enum_still_triggers_alert(self):
+        """_NATURAL_NEW_ENUM 외 신규 키 등장 = 진짜 anomaly 유지 (= 알 수 없는 변경 = 의심)."""
+        h = HealthMonitor()
+        prev = {"AB": 50, "미노출": 50}
+        # 신규 enum "오류상태" = 화이트리스트 외 = anomaly True 유지
+        curr = {"AB": 20, "미노출": 50, "오류상태": 30}
+        assert h.detect_k_anomaly(prev, curr) is True
 
 
 class TestHealthMonitorLogOutput:

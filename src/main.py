@@ -352,6 +352,10 @@ def run_cycle() -> dict:
     url_alive_cache: dict[str, bool] = {}
     tab_updates: dict[str, list[RowUpdate]] = {}
     circuit_breaker_tripped = False  # 2026-05-11 architect Major 1 fix
+    # 운영 3 (2026-05-18): 네이버 차단 검출 카운터 — 사장님 메일 알림 강화.
+    # CircuitBreakerOpen raise 시 = 그 시점 누적 연속 차단 + circuit_breaker_blocks += 1.
+    # 다음 cron 자동 회복 시도 정합 (= cron 빈도 6h = 최대 24시간 = 4회 자동 회복 윈도우).
+    circuit_breaker_blocks = 0
     for tab_name, rows in data.items():
         if circuit_breaker_tripped:
             print(f"[{tab_name}] circuit breaker open — skip")
@@ -380,8 +384,10 @@ def run_cycle() -> dict:
                 updates.append(RowUpdate(row=row["_row"], columns=cols))
             except CircuitBreakerOpen as e:
                 # 5 차단 연속 — cron 조기 종료 + 지금까지 결과 시트 반영
+                # 운영 3 (2026-05-18): 사장님 메일 알림 강화 = circuit_breaker_blocks 카운트.
                 print(f"❌ [{tab_name}] {e}")
                 circuit_breaker_tripped = True
+                circuit_breaker_blocks += 1
                 break
             except CrawlerError as e:
                 # 2026-05-11 D-017 fix: 차단/네트워크 실패 → retry queue. 실패 시 K 보존 (시트에 기록하지 않음).
@@ -466,6 +472,7 @@ def run_cycle() -> dict:
     summary["cycle_seconds"] = cycle_seconds
     summary["tabs_processed"] = list(tab_updates.keys())
     summary["circuit_breaker_tripped"] = circuit_breaker_tripped  # 2026-05-11 architect Major 1
+    summary["circuit_breaker_blocks"] = circuit_breaker_blocks  # 운영 3 (2026-05-18): 네이버 차단 검출 카운트 = 사장님 메일 알림 강화
     summary["d024_skipped_rows"] = d024_skipped_rows  # D-024 (2026-05-14): 예외 시 시트 보존 skip 카운트
     # T-M90 (D-027 보강 2026-05-17) architect Opus C1 fix: 사장님 가시성 = secrets 미설정 시 issue #1 댓글 명시 의무.
     summary["all_known_links_count"] = len(all_known_links)

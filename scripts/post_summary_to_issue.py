@@ -21,9 +21,20 @@ def format_kst() -> str:
 
 
 def build_failure_comment(reason: str) -> str:
+    """운영 3 (2026-05-18): 차단 의심 키워드 포함 시 = 명시 ⚠️ 강조 + 자동 회복 안내."""
+    blocked_signal = any(
+        kw in reason.lower()
+        for kw in ("blocked", "circuit", "차단", "circuitbreakeropen", "ratelimit", "rate limit", "429")
+    )
+    circuit_note = ""
+    if blocked_signal:
+        circuit_note = (
+            "\n\n⚠️ **네이버 차단 검출 의심** "
+            "(= 다음 cron 자동 회복 시도 / 6시간 cycle 안 최대 4회 재시도 윈도우)"
+        )
     return f"""{OWNER_MENTION} ## ❌ cron 실패 — {format_kst()}
 
-**원인**: {reason}
+**원인**: {reason}{circuit_note}
 
 실 로그 확인: [GitHub Actions Run](https://github.com/{REPO}/actions/runs/{os.environ.get('GITHUB_RUN_ID', 'unknown')})
 
@@ -35,6 +46,7 @@ def build_success_comment(summary: dict) -> str:
     단순 메타 (시간/행수/셀수/성공률/상태) 만 기록. 자세한 내용 = Actions log 링크 클릭.
 
     D-024 (2026-05-14): d024_skipped_rows 추가 (예외 시 시트 보존 skip 카운트 가시성).
+    운영 3 (2026-05-18): circuit_breaker_blocks 추가 (네이버 차단 검출 횟수 = 사장님 메일 알림 강화).
     """
     success_rate = summary.get("success_rate", 0)
     success_pct = f"{success_rate * 100:.1f}%"
@@ -49,6 +61,9 @@ def build_success_comment(summary: dict) -> str:
     # T-M90 (D-027 보강 2026-05-17) architect Opus C1 fix: 사장님 가시성 = CAFE_WHITELIST 미설정 시 즉시 인지.
     cafe_whitelist_size = summary.get("cafe_whitelist_size", 0)
     all_known_links_count = summary.get("all_known_links_count", 0)
+    # 운영 3 (2026-05-18): 네이버 차단 검출 카운트 = 사장님 메일 알림 강화.
+    circuit_breaker_blocks = summary.get("circuit_breaker_blocks", 0)
+    circuit_breaker_tripped = summary.get("circuit_breaker_tripped", False)
 
     health_status = "🚨 code_change_suspected" if code_change else "✅ 정상"
 
@@ -56,6 +71,15 @@ def build_success_comment(summary: dict) -> str:
         whitelist_line = "\n⚠️ **CAFE_WHITELIST_SLUGS secrets 미설정** — D-026 빈 link 자동 채움 비활성 상태. GitHub Settings → Secrets → CAFE_WHITELIST_SLUGS 등록 의무."
     else:
         whitelist_line = f"\n**D-026 화이트리스트**: {cafe_whitelist_size} slug / 매치 link {all_known_links_count}건"
+
+    # 운영 3 (2026-05-18): 네이버 차단 검출 시 = 명시 ⚠️ 강조 + 다음 cron 자동 회복 시도 안내.
+    if circuit_breaker_tripped or circuit_breaker_blocks > 0:
+        circuit_line = (
+            f"\n⚠️ **네이버 차단 검출**: {circuit_breaker_blocks}회 "
+            f"(= 다음 cron 자동 회복 시도 / 6시간 cycle 안 최대 4회 재시도 윈도우)"
+        )
+    else:
+        circuit_line = ""
 
     return f"""{OWNER_MENTION} ## ✅ cron 완료 — {format_kst()}
 
@@ -65,7 +89,7 @@ def build_success_comment(summary: dict) -> str:
 **성공률**: {success_pct}
 **재시도 큐 남음**: {retry_left}
 **예외 시 시트 보존 (D-024)**: {d024_skipped} 행
-**상태**: {health_status}{whitelist_line}
+**상태**: {health_status}{whitelist_line}{circuit_line}
 
 ---
 자세한 내역 (탭별 / K 분포 등) = Actions log 링크 클릭:

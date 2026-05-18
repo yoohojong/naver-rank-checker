@@ -80,6 +80,19 @@ class HealthMonitor:
             "code_change_suspected": suspected,
         }
 
+    # 운영 1 (2026-05-18): D-026/D-029 K enum 자연 변경 = false alert 회피 화이트리스트.
+    # 신규 enum 등장 = 시스템 진화 (= D-026 스마트블록 부활 / D-029 중복노출 sub 3종) = anomaly 판정 X.
+    # 근거: 사장님 단호 시그널 = 신규 enum 자연 변경 = 메일 false alert 회피 의무.
+    _NATURAL_NEW_ENUM = frozenset({
+        "중복노출",
+        "중복노출(AB)",
+        "중복노출(스마트블록)",
+        "중복노출(인기글)",
+        "누락",
+        "삭제",
+        "스마트블록",  # D-026 부활 = 이전 cron 분포에 없을 수 있음
+    })
+
     def detect_k_anomaly(
         self,
         prev_k_distribution: dict,
@@ -93,15 +106,57 @@ class HealthMonitor:
 
         예: prev={"AB": 30, "미노출": 70}, curr={"AB": 5, "미노출": 95}
             AB 비율 30%→5% = -25% 변동 → threshold 20% 초과 → True
+
+        운영 1 (2026-05-18): D-026/D-029 K enum 자연 변경 = false alert 회피.
+        prev 에 0 + curr 에 등장한 _NATURAL_NEW_ENUM 키 = 시스템 진화 (= 누락/중복노출/삭제 등).
+        그 신규 enum 등장 = 기존 enum (예: 미노출) 자연 감소 = 자연 변경 = anomaly 판정 X.
+        구현 = 신규 _NATURAL_NEW_ENUM 등장 시 = prev 분포 안 미노출 (등) 에 그 양 만큼 가상 분배 후 비교.
         """
         if not prev_k_distribution or not current_k_distribution:
             return False
+
+        # 운영 1: curr 안 신규 _NATURAL_NEW_ENUM 키 검출 = 시스템 진화 흡수
+        normalized_curr = dict(current_k_distribution)
+        absorbed_total = 0
+        for k in list(normalized_curr.keys()):
+            if (
+                prev_k_distribution.get(k, 0) == 0
+                and normalized_curr.get(k, 0) > 0
+                and k in self._NATURAL_NEW_ENUM
+            ):
+                absorbed_total += normalized_curr.pop(k)
+
+        # 흡수된 양 = 자연 재분류 대상 키에 가상 분배 (= prev 대비 감소량 가장 큰 키들 비례 흡수).
+        # 근거: 신규 _NATURAL_NEW_ENUM 등장 = 기존 enum 의 자연 재분류 (예: AB → 스마트블록 = AB 흡수,
+        # 미노출 → 누락 = 미노출 흡수). 감소 추이로 자연 흡수 키 자동 추론.
+        if absorbed_total > 0:
+            # 각 기존 키별 감소량 (prev > curr 인 키) 산출
+            decreases: dict[str, int] = {}
+            for k_prev, v_prev in prev_k_distribution.items():
+                v_curr = normalized_curr.get(k_prev, 0)
+                if v_prev > v_curr:
+                    decreases[k_prev] = v_prev - v_curr
+
+            if decreases:
+                total_decrease = sum(decreases.values())
+                # 감소량 비례 분배 (= 자연 흡수)
+                for k_dec, dec_amount in decreases.items():
+                    share = int(round(absorbed_total * (dec_amount / total_decrease)))
+                    normalized_curr[k_dec] = normalized_curr.get(k_dec, 0) + share
+            else:
+                # 감소 키 없음 (= 모든 prev 키 안정) = pivot fallback (미노출 우선)
+                if "미노출" in prev_k_distribution and prev_k_distribution["미노출"] > 0:
+                    pivot = "미노출"
+                else:
+                    pivot = max(prev_k_distribution.keys(), key=lambda kk: prev_k_distribution[kk])
+                normalized_curr[pivot] = normalized_curr.get(pivot, 0) + absorbed_total
+
         total_prev = sum(prev_k_distribution.values()) or 1
-        total_curr = sum(current_k_distribution.values()) or 1
-        keys = set(prev_k_distribution.keys()) | set(current_k_distribution.keys())
+        total_curr = sum(normalized_curr.values()) or 1
+        keys = set(prev_k_distribution.keys()) | set(normalized_curr.keys())
         for k in keys:
             prev_pct = prev_k_distribution.get(k, 0) / total_prev
-            curr_pct = current_k_distribution.get(k, 0) / total_curr
+            curr_pct = normalized_curr.get(k, 0) / total_curr
             if abs(prev_pct - curr_pct) > threshold:
                 return True
         return False
