@@ -11,6 +11,18 @@ from src.sheets import (
 )
 
 
+def _rows_from_link_col(headers, link_col_values):
+    rows = [list(headers)]
+    if HEADER_LINK not in headers:
+        return rows
+    link_idx = headers.index(HEADER_LINK)
+    for link_value in link_col_values[1:]:
+        row = [""] * len(headers)
+        row[link_idx] = link_value
+        rows.append(row)
+    return rows
+
+
 class TestSheetsClient:
     def test_authenticates_with_json_string(self):
         fake_creds = json.dumps({
@@ -843,6 +855,7 @@ class TestD026EmptyLinkColumnGuard:
             mock_ws.row_values.return_value = headers
             # link col_values = list 반환 (정상)
             mock_ws.col_values.return_value = link_col_values
+            mock_ws.get_all_values.return_value = _rows_from_link_col(headers, link_col_values)
             mock_sheet.worksheet.return_value = mock_ws
             mock_gc.open_by_key.return_value = mock_sheet
             mock_auth.return_value = mock_gc
@@ -893,12 +906,52 @@ class TestD026EmptyLinkColumnGuard:
         assert "https://cafe.naver.com/other/9999" not in written_values
         assert "AB" in written_values
 
+    def test_d033_empty_link_detection_uses_row_snapshot_not_compacted_col_values(self):
+        headers = [HEADER_LINK, HEADER_AREA, HEADER_L, HEADER_M]
+        compacted_link_col = [HEADER_LINK] + ["https://cafe.naver.com/shifted/1"] * 120
+        client, ws = self._make_client_with_link_col(headers, compacted_link_col)
+        rows = [headers] + [["", "", "", ""] for _ in range(97)] + [["", "", "", ""]]
+        ws.get_all_values.return_value = rows
+        new_link = "https://cafe.naver.com/mindy7857/5153525"
+        upd = RowUpdate(row=99, columns={
+            HEADER_AREA: "\uc911\ubcf5\ub178\ucd9c(AB) (5/19 00:00~)",
+            HEADER_LINK: new_link,
+            HEADER_L: "1",
+            HEADER_M: "1",
+        })
+
+        n = client.write_results("두드러기 카외", [upd])
+
+        assert n == 4
+        ws.col_values.assert_not_called()
+        call_args = ws.batch_update.call_args[0][0]
+        written_values = [cell["values"][0][0] for cell in call_args]
+        assert new_link in written_values
+
+    def test_empty_link_plain_exposed_rank_row_rejected(self):
+        """빈 link 행에 plain 노출 K/L/M만 쓰는 불가능 조합은 row 전체 거부."""
+        headers = ["키워드", "링크", HEADER_AREA, HEADER_L, HEADER_M]
+        # link 컬럼: header + row2 빈
+        link_col_values = ["링크", ""]
+        client, ws = self._make_client_with_link_col(headers, link_col_values)
+        upd = RowUpdate(row=2, columns={
+            HEADER_AREA: "인기글 (5/19 00:00~)",
+            HEADER_L: "2",
+            HEADER_M: "1",
+        })
+
+        n = client.write_results("샴푸 카외", [upd])
+
+        assert n == 0
+        ws.batch_update.assert_not_called()
+        ws.batch_format.assert_not_called()
+
     def test_d026_link_read_fail_strict_mode(self):
         """D-026 Phase C+D: link read 실패 (예외) = 보수적 = SYSTEM_OUTPUT_COLUMNS 적용 (= HEADER_LINK 거부)."""
         headers = ["키워드", "링크", "노출영역"]
         client, ws = self._make_client_with_link_col(headers, ["링크", ""])
         # col_values 호출 시 예외 raise
-        ws.col_values.side_effect = Exception("API error")
+        ws.get_all_values.side_effect = Exception("API error")
         upd = RowUpdate(row=2, columns={
             HEADER_AREA: "중복노출",
             HEADER_LINK: "https://cafe.naver.com/cosmania/9999",
@@ -946,6 +999,7 @@ class TestD026ColorFiveTypes:
             mock_ws = MagicMock()
             mock_ws.row_values.return_value = headers
             mock_ws.col_values.return_value = link_col_values
+            mock_ws.get_all_values.return_value = _rows_from_link_col(headers, link_col_values)
             mock_sheet.worksheet.return_value = mock_ws
             mock_gc.open_by_key.return_value = mock_sheet
             mock_auth.return_value = mock_gc
@@ -1022,6 +1076,7 @@ class TestD029DuplicateSubEnumColors:
             mock_ws = MagicMock()
             mock_ws.row_values.return_value = headers
             mock_ws.col_values.return_value = link_col_values
+            mock_ws.get_all_values.return_value = _rows_from_link_col(headers, link_col_values)
             mock_sheet.worksheet.return_value = mock_ws
             mock_gc.open_by_key.return_value = mock_sheet
             mock_auth.return_value = mock_gc
@@ -1084,6 +1139,7 @@ class TestD030ColorStartswithMatching:
             mock_ws = MagicMock()
             mock_ws.row_values.return_value = headers
             mock_ws.col_values.return_value = link_col_values
+            mock_ws.get_all_values.return_value = _rows_from_link_col(headers, link_col_values)
             mock_sheet.worksheet.return_value = mock_ws
             mock_gc.open_by_key.return_value = mock_sheet
             mock_auth.return_value = mock_gc

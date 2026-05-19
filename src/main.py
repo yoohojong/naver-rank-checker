@@ -27,6 +27,7 @@ from src.crawler import Crawler, SlowdownController, CrawlerError, CafeStatus, C
 from src.health import HealthMonitor
 from src.parser import parse_search_result
 from src.retry import RetryQueue
+from src.audit import audit_sheet_rows, build_update_trace, filter_invalid_updates, write_jsonl
 from src.sheets import (
     SheetsClient, RowUpdate,
     rank_result_to_columns,
@@ -351,17 +352,20 @@ def run_cycle() -> dict:
     # D-030 (2026-05-18): today_kst_stamp = "M/D HH:MM" 형식 (= 사장님 결정 = "5/10 03:00" 정합)
     # cron 시작 시점 = 모든 행 K 시점 기록의 단일 기준 (= 832 행 마이그레이션 = 오늘 자동 기록).
     today_kst_stamp = _format_today_kst_stamp(datetime.now(kst))
+    run_id = os.environ.get("GITHUB_RUN_ID", "local")
+    artifact_ts = datetime.now(kst).strftime("%Y%m%dT%H%M%S")
+    trace_path = f".harness/traces/{run_id}_{artifact_ts}_row-trace.jsonl"
+    prewrite_audit_path = f".harness/audits/{run_id}_{artifact_ts}_prewrite-invariant.jsonl"
+    postwrite_audit_path = f".harness/audits/{run_id}_{artifact_ts}_post-write-audit.jsonl"
     try:
-        backup_run_id = os.environ.get("GITHUB_RUN_ID", "local")
-        backup_ts = datetime.now(kst).strftime("%Y%m%dT%H%M%S")
         backup_dir = ".harness/backups"
         os.makedirs(backup_dir, exist_ok=True)
         # T-M90 (D-027 보강 2026-05-17) architect Opus m1 fix: JSON → gzip 압축 (~2.5MB → ~150KB).
         # 근거: artifact retention × cron 빈도 × 30일 = ~300MB 누적 = GitHub free tier 500MB 근접 위험.
-        backup_path = f"{backup_dir}/{backup_run_id}_{backup_ts}.json.gz"
+        backup_path = f"{backup_dir}/{run_id}_{artifact_ts}.json.gz"
         backup_payload = {
             "timestamp": datetime.now(kst).isoformat(),
-            "run_id": backup_run_id,
+            "run_id": run_id,
             "spreadsheet_id": SPREADSHEET_ID,
             "tabs": {tab_name: list(rows) for tab_name, rows in data.items()},
         }
@@ -371,6 +375,13 @@ def run_cycle() -> dict:
     except Exception as e:
         # 백업 실패 = log + 진행 (= cron 자체 중단 X). 사장님 가시성 = summary 안 표시.
         print(f"[T-M81 백업] 실패 = {e} (cron 진행)")
+
+    # D-032: post-write audit baseline. 기존 시트 debt 는 artifact/comment 에 남기되,
+    # 이번 run 이 새로 만들었거나 건드린 행만 workflow 실패 조건으로 본다.
+    pre_write_sheet_issues = audit_sheet_rows(data)
+    pre_write_issue_keys = {(issue.get("tab"), issue.get("row")) for issue in pre_write_sheet_issues}
+    if pre_write_sheet_issues:
+        print(f"[D-032-PRE-AUDIT] 기존 시트 불가능 조합 {len(pre_write_sheet_issues)}건 (baseline)")
 
     # cookie warmup — Crawler 인스턴스 생성 직후 네이버 메인 1회 fetch
     # T-M26 (2026-05-12): Cold session 차단 회피. warmup 실패해도 cron 계속 진행.
@@ -397,6 +408,7 @@ def run_cycle() -> dict:
     # url_alive_cache: T-M10.5 폐기로 미사용. 호환성 유지용 빈 dict.
     url_alive_cache: dict[str, bool] = {}
     tab_updates: dict[str, list[RowUpdate]] = {}
+    row_context: dict[tuple[str, int], dict] = {}
     circuit_breaker_tripped = False  # 2026-05-11 architect Major 1 fix
     # 운영 3 (2026-05-18): 네이버 차단 검출 카운터 — 사장님 메일 알림 강화.
     # CircuitBreakerOpen raise 시 = 그 시점 누적 연속 차단 + circuit_breaker_blocks += 1.
@@ -414,6 +426,8 @@ def run_cycle() -> dict:
         random.shuffle(rows)
         print(f"\n[{tab_name}] {len(rows)} 행 처리 시작 (random shuffle)")
         for row in rows:
+            if row.get("_row") is not None:
+                row_context[(tab_name, row["_row"])] = row
             try:
                 cols = _process_row(row, crawler, health, all_known_links=all_known_links, url_alive_cache=url_alive_cache, today_stamp=today_kst_stamp)
                 if cols is None:
@@ -466,7 +480,12 @@ def run_cycle() -> dict:
             if tab not in tab_updates:
                 continue
             if r["ok"] and r["update"] is not None:
-                tab_updates[tab].append(RowUpdate(row=r["row"]["_row"], columns=r["update"]))
+                cols = r["update"]
+                row_link = (r["row"].get("링크") or "").strip()
+                if row_link and "_row_link" not in cols:
+                    cols["_row_link"] = row_link
+                row_context[(tab, r["row"]["_row"])] = r["row"]
+                tab_updates[tab].append(RowUpdate(row=r["row"]["_row"], columns=cols))
             else:
                 # 2026-05-11 D-017 fix: 재시도도 실패 = K 보존 (시트에 기록하지 않음).
                 # 이전 (critic 2026-05-08): "삭제" 기록 — 사장님 작업자 혼란 (차단≠진짜 삭제).
@@ -482,6 +501,30 @@ def run_cycle() -> dict:
     # 2) 같은 link 가 2+ 행에 매치 = 중복노출 검출
     # 3) 그 link 가진 모든 RowUpdate K = "중복노출(매치 구좌)" 갱신
     _d029_apply_pass2_duplicate(tab_updates, today_stamp=today_kst_stamp)
+    attempted_update_keys = {
+        (tab_name, upd.row)
+        for tab_name, updates in tab_updates.items()
+        for upd in updates
+    }
+
+    # 3.6. D-032: pre-write invariant gate + row-level trace artifact.
+    # 빈 link 행이 plain AB/스마트블록/인기글 + L/M 으로 쓰이는 불가능 조합은 시트 반영 전 격리한다.
+    filtered_updates, prewrite_invariant_issues = filter_invalid_updates(tab_updates, row_context)
+    if prewrite_invariant_issues:
+        print(f"[D-032-INVARIANT] 시트 write 전 불가능 조합 {len(prewrite_invariant_issues)}건 격리")
+        for issue in prewrite_invariant_issues[:10]:
+            print(
+                f"  [D-032-INVARIANT] {issue.get('tab')} row={issue.get('row')} "
+                f"kw={issue.get('keyword')!r} K={issue.get('k_full')!r} L={issue.get('L')!r} M={issue.get('M')!r}"
+            )
+    try:
+        write_jsonl(prewrite_audit_path, prewrite_invariant_issues)
+        trace_rows = build_update_trace(tab_updates, row_context, prewrite_invariant_issues)
+        write_jsonl(trace_path, trace_rows)
+        print(f"[D-032-TRACE] {trace_path} 저장 ({len(trace_rows)} rows)")
+    except Exception as e:
+        print(f"[D-032-TRACE] 저장 실패 = {e} (cron 진행)")
+    tab_updates = filtered_updates
 
     # 4. 시트 batch_update (탭별 1 호출)
     total_cells = 0
@@ -496,6 +539,36 @@ def run_cycle() -> dict:
     kst_iso = datetime.now(kst).strftime("%Y-%m-%d %H:%M KST")
     for tab_name in tab_updates.keys():
         client.write_timestamp(tab_name, kst_iso)
+
+    # 4.6. D-032: post-write audit — 실제 시트 상태에서 불가능 조합 재확인.
+    post_write_audit_issues: list[dict] = []
+    post_write_blocking_issues: list[dict] = []
+    post_write_audit_error = ""
+    try:
+        post_write_data = client.load_all_data_tabs(tab_filter=_carea_filter)
+        post_write_audit_issues = audit_sheet_rows(post_write_data)
+        post_write_blocking_issues = [
+            issue for issue in post_write_audit_issues
+            if (issue.get("tab"), issue.get("row")) not in pre_write_issue_keys
+            or (issue.get("tab"), issue.get("row")) in attempted_update_keys
+        ]
+        write_jsonl(postwrite_audit_path, post_write_audit_issues)
+        if post_write_audit_issues:
+            preexisting_count = len(post_write_audit_issues) - len(post_write_blocking_issues)
+            print(
+                f"[D-032-POST-AUDIT] 실제 시트 불가능 조합 {len(post_write_audit_issues)}건 "
+                f"(blocking={len(post_write_blocking_issues)}, preexisting={preexisting_count})"
+            )
+            for issue in post_write_audit_issues[:10]:
+                print(
+                    f"  [D-032-POST-AUDIT] {issue.get('tab')} row={issue.get('row')} "
+                    f"kw={issue.get('keyword')!r} K={issue.get('k_full')!r} L={issue.get('L')!r} M={issue.get('M')!r}"
+                )
+        else:
+            print("[D-032-POST-AUDIT] 불가능 조합 0건")
+    except Exception as e:
+        post_write_audit_error = str(e)
+        print(f"[D-032-POST-AUDIT] 실패 = {e} (cron 진행, summary 에 기록)")
 
     # 5. K 분포 + 처리 시간 집계 (사장님 알림용 풍부 summary)
     # D-030 (2026-05-18): K 분포 = base 만 (= 시점 제거 = anomaly 감지 정합 + 일관성)
@@ -525,8 +598,21 @@ def run_cycle() -> dict:
     # T-M90 (D-027 보강 2026-05-17) architect Opus C1 fix: 사장님 가시성 = secrets 미설정 시 issue #1 댓글 명시 의무.
     summary["all_known_links_count"] = len(all_known_links)
     summary["cafe_whitelist_size"] = len(CAFE_WHITELIST)
+    summary["prewrite_invariant_violations"] = len(prewrite_invariant_issues)
+    summary["post_write_audit_violations"] = len(post_write_blocking_issues)
+    summary["post_write_audit_total_issues"] = len(post_write_audit_issues)
+    summary["post_write_audit_preexisting_issues"] = max(0, len(post_write_audit_issues) - len(post_write_blocking_issues))
+    summary["row_trace_path"] = trace_path
+    summary["prewrite_audit_path"] = prewrite_audit_path
+    summary["post_write_audit_path"] = postwrite_audit_path
+    summary["github_run_id"] = run_id
+    summary["github_run_url"] = f"https://github.com/yoohojong/naver-rank-checker/actions/runs/{run_id}"
+    if post_write_audit_error:
+        summary["post_write_audit_error"] = post_write_audit_error
     if circuit_breaker_tripped:
         summary["code_change_suspected"] = True  # cron 조기 종료 = 알림 trigger
+    if prewrite_invariant_issues or post_write_blocking_issues:
+        summary["code_change_suspected"] = True  # D-032: 불가능 조합은 사장님 확인 필요
 
     # 6.5. T-M38: 이전 cron K 분포 vs 현재 anomaly 감지
     try:

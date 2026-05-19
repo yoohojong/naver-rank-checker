@@ -1199,6 +1199,35 @@ class TestOperation3SuccessCommentCircuitBlocks:
         # 차단 0건 = circuit_line 출력 X
         assert "네이버 차단 검출" not in comment
 
+    def test_d032_audit_violations_shown_in_success_comment(self):
+        """D-032: invariant/post-write audit 위반은 issue comment 에 즉시 노출."""
+        from scripts.post_summary_to_issue import build_success_comment
+
+        summary = {
+            "success_rate": 1.0,
+            "total_cells_written": 800,
+            "total_rows_processed": 400,
+            "cycle_seconds": 1800,
+            "retry_queue_remaining": 0,
+            "code_change_suspected": True,
+            "d024_skipped_rows": 0,
+            "cafe_whitelist_size": 26,
+            "all_known_links_count": 80,
+            "circuit_breaker_blocks": 0,
+            "circuit_breaker_tripped": False,
+            "prewrite_invariant_violations": 1,
+            "post_write_audit_violations": 2,
+            "row_trace_path": ".harness/traces/123_row-trace.jsonl",
+            "post_write_audit_path": ".harness/audits/123_post-write-audit.jsonl",
+        }
+
+        comment = build_success_comment(summary)
+
+        assert "시트 불가능 조합" in comment
+        assert "write 전 1건" in comment
+        assert "write 후 2건" in comment
+        assert "row-trace.jsonl" in comment
+
     def test_failure_comment_circuit_keyword_strong_alert(self):
         """운영 3: build_failure_comment reason 안 차단 키워드 포함 시 = ⚠️ 명시 + 자동 회복 안내."""
         from scripts.post_summary_to_issue import build_failure_comment

@@ -108,6 +108,16 @@ deps = 의존성 (선행 task), parallel = 동시 작업 안전한 다른 task
 - D-031 완료: 진화 후보 자동 검출 + 사장님 confirm 후만 navigation/second-brain 갱신. commit `cda2f82`.
 - D-029/D-030 decisions.md 누락 보충 완료. commit `487cc78`.
 
+### 2026-05-19 추가 완료
+- D-032 완료: 빈 link 행 + plain `AB/스마트블록/인기글` + L/M 불가능 조합 pre-write 격리.
+- D-032 완료: row-level trace JSONL + prewrite/post-write audit JSONL + diagnostics artifact 업로드.
+- D-032 완료: `scripts/audit_sheet.py --tab ... --row ... --json` 읽기 전용 단일 행 감사 CLI.
+- D-032 완료: issue #1 summary에 write 전/후 불가능 조합 및 diagnostics artifact 표시.
+- D-032 검증: `pytest` 456 passed, `compileall`, workflow YAML parse, `git diff --check` 통과.
+- D-033 완료: `오말리주맙` row 99 원인 확정 = 실제 링크 빈칸인데 `col_values()` 기반 링크 판정이 밀려 `현재 link 빈=False`로 오판.
+- D-033 완료: `src/sheets.py` 링크 판정을 `get_all_values()` 행 스냅샷 기준으로 변경해 빈 링크 행 J 자동 채움 허용, 기존 링크 행 D-023 보호 유지.
+- D-033 검증: `pytest tests/unit/test_sheets.py -q` 77 passed, `pytest -q` 457 passed, `compileall`, code-reviewer approve.
+
 ### Codex 이식 점검 — 2026-05-19
 - Codex config trusted: `D:\claude code\naver-rank-checker`, `D:\claude code\SANGNO`.
 - Codex plugin enabled: browser, documents, spreadsheets, presentations, claude-md-management, code-review, feature-dev, frontend-design, hookify, playground, superpowers.

@@ -678,3 +678,67 @@
 - 자동 진화 = 사장님 5-18 정정 명시 위반
 - 진화 X = 사장님 5-18 본 의도 (= 고착화 X) 위반
 - = 두 의도 양립 정합 = 검출 자동 + confirm 의무 = 정합
+
+---
+
+## 2026-05-19
+
+### D-032: 시트 불가능 조합 차단 + row trace + post-write audit
+
+**결정**: 빈 링크 행이 `AB` / `스마트블록` / `인기글` 같은 plain 노출 K와 L/M 순위를 갖는 불가능 조합을 시트 write 전에 격리한다. 모든 update는 row-level trace JSONL로 남기고, write 후 실제 시트 상태를 다시 감사한다.
+
+**근거**:
+- 사장님이 발견한 `퍼퓸바디워시` 행은 링크가 빈칸처럼 보이는데 `인기글`, L=2, M=1이 붙은 상태였다.
+- 현재 코드 경로상 빈 링크 행은 `미노출` 또는 `중복노출(구좌)` + matched link만 정상이다. plain `인기글`은 불가능 조합이다.
+- 기존 백업은 cron 시작 시점만 보존해서 “이 행이 왜 이렇게 됐는지”를 행 단위로 역추적하기 어렵다.
+
+**구현**:
+- `src/audit.py` 신규: `validate_row_output`, `filter_invalid_updates`, `audit_sheet_rows`, `build_update_trace`, `write_jsonl`.
+- `src/main.py`: pre-write invariant gate, `.harness/traces/*_row-trace.jsonl`, `.harness/audits/*_prewrite-invariant.jsonl`, `.harness/audits/*_post-write-audit.jsonl`, post-write audit summary.
+- `src/sheets.py`: 마지막 방어선으로 빈 link + plain exposed/rank 조합은 value write와 색상 formatting 모두 거부.
+- `.github/workflows/rank-check.yml`: `diagnostics-${{ github.run_id }}` artifact 업로드.
+- `scripts/audit_sheet.py`: 읽기 전용 단일 row/tab 감사 CLI.
+- `scripts/post_summary_to_issue.py`: write 전/후 불가능 조합 및 diagnostics artifact 이름 표시.
+- tests: audit unit, sheets guard, component run_cycle, issue comment, audit_sheet script 회귀 추가.
+
+**안전 보강**:
+- post-write audit는 전체 sheet debt를 기록하지만, workflow 실패는 이번 run이 새로 만든 issue 또는 이번 run이 건드린 row issue에만 적용한다.
+- 기존에 남아 있던 시트 debt는 issue comment에 정보성으로만 표시한다.
+- rejected update는 batch_update뿐 아니라 batch_format도 호출하지 않는다.
+
+**검증**:
+- `pytest` = 456 passed.
+- `python -m compileall -q src scripts` 통과.
+- workflow YAML parse 통과.
+- `git diff --check` 통과 (CRLF warning만 존재).
+
+**대안 안 고른 이유**:
+- 자동으로 `미노출` 덮어쓰기: 원인을 지우고 시트 손상 위험이 있다.
+- post-write audit 전체 debt를 즉시 실패 처리: 과거/수동/stale 값 때문에 매 cron이 계속 빨개질 수 있다.
+- 로그만 추가: 실제 시트 write 방지가 없어 재발 방지가 약하다.
+
+### D-033: 빈 링크 행 판정은 `col_values()`가 아니라 행 스냅샷으로 한다
+
+**결정**: `write_results()`의 현재 링크 판정은 `ws.col_values(J)`를 쓰지 않고 `ws.get_all_values()` 행 스냅샷 기준으로 계산한다.
+
+**근거**:
+- 2026-05-19 최신 백업에서 `두드러기 카외` row 99 `오말리주맙`은 `링크=<EMPTY>`, `K=중복노출(AB)`, `L=1`, `M=1`로 남아 있었다.
+- 같은 실행 로그는 `[D-023-GUARD] '링크' write 거부 (행 99, 현재 link 빈=False)`를 찍었다.
+- 즉 실제 링크 셀은 비었는데, 링크 컬럼 읽기 결과의 행 인덱스가 밀려 비어 있지 않다고 오판했고 J 링크 자동 채움을 막았다.
+- D-023/D-024는 유지해야 하므로 기존 링크 행의 J overwrite는 계속 금지하고, 빈 링크 행만 D-026 whitelist를 허용한다.
+
+**구현**:
+- `src/sheets.py`: 링크 현재값 판정을 `ws.get_all_values()` 기반 `row_1based -> row snapshot -> HEADER_LINK index` 방식으로 변경.
+- `tests/unit/test_sheets.py`: compacted/misaligned `col_values`가 있어도 row 99 빈 링크는 빈 링크로 판정하고, 검증된 output link를 J에 쓸 수 있는 D-033 회귀 테스트 추가.
+- `.gitignore`: `.harness/audits/`, `.harness/traces/` 로컬 진단 산출물 커밋 제외.
+
+**검증**:
+- `pytest tests/unit/test_sheets.py -q` = 77 passed.
+- `pytest -q` = 457 passed.
+- `python -m compileall -q src scripts` 통과.
+- `code-reviewer` 리뷰 = blocking findings 0, approve.
+
+**대안 안 고른 이유**:
+- `col_values()` 인덱스 보정: gspread/Sheets 빈 셀 반환 정책에 계속 묶여 같은 계열 재발 가능성이 있다.
+- J 링크를 무조건 허용: 기존 링크 행을 덮어써 D-023 사고가 재발한다.
+- 현재 시트만 수동 복구: 다음 실행에서 같은 오판이 반복될 수 있어 근본 해결이 아니다.

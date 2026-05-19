@@ -7,6 +7,8 @@ from typing import Optional
 
 import gspread
 
+from src.transitions import parse_K_with_stamp
+
 
 # 2026-05-12 T-M11: Google Sheets API 503 retry (document-specialist 외부 사실).
 # gspread 6.1.4 default = retry X. 503 = Google 일시 장애 (quota X). cron 25683405754 fail 후 추가.
@@ -68,6 +70,7 @@ SYSTEM_OUTPUT_COLUMNS = frozenset({HEADER_AREA, HEADER_L, HEADER_M, HEADER_JISIK
 # 사장님 시점 = 새 노출 자동 발견 = HEADER_LINK 채움 허용 (다만 기존 link 행 = D-023 가드 그대로 적용).
 # 적용 규칙: write_results 가 행 현재 link 값 read 후 = 빈 link 행만 EMPTY_LINK 화이트리스트 사용.
 SYSTEM_OUTPUT_COLUMNS_EMPTY_LINK = frozenset({HEADER_AREA, HEADER_L, HEADER_M, HEADER_JISIKIN, HEADER_LINK})
+PLAIN_EXPOSED_BASES = frozenset({"AB", "스마트블록", "인기글"})
 
 # 데이터 탭 아닌 특수 탭 — load_all_data_tabs 가 skip.
 # 사장님 시트의 "카페매핑" 등 메타 탭 제외용.
@@ -114,16 +117,16 @@ class SheetsClient:
         # D-026 Phase C+D (2026-05-16): HEADER_LINK 컬럼 현재 값 read = 빈 link 행 분기 용.
         # gspread col_values 1-indexed.
         # 보수적 처리 (D-023 정합): link read 실패 또는 row 범위 외 = "non-empty" 가정 (= 엄격 가드)
-        link_col_values: Optional[list[str]] = None
+        link_rows: Optional[list[list[str]]] = None
         link_read_ok = False
         if HEADER_LINK in mapping:
             try:
-                link_col_values = _sheets_api_retry(
-                    lambda: ws.col_values(mapping[HEADER_LINK] + 1),
+                link_rows = _sheets_api_retry(
+                    lambda: ws.get_all_values(),
                     ctx=f"{tab_name} (link read)",
                 )
                 # 정상 list 인지 검증 (= mock MagicMock 등 비정상 객체 = read 실패 간주)
-                if isinstance(link_col_values, list):
+                if isinstance(link_rows, list):
                     link_read_ok = True
             except Exception as e:
                 # link read 실패 시 = 보수적 = 전부 SYSTEM_OUTPUT_COLUMNS 적용 (D-023 가드)
@@ -132,19 +135,41 @@ class SheetsClient:
         def _row_current_link(row_1based: int) -> str:
             """row_1based 의 현재 link 값. read 실패 / row 범위 외 = "non-empty" 보수 가정 ('SENTINEL')."""
             # read 실패 = 보수적 = "SENTINEL" 반환 (= 엄격 가드 적용)
-            if not link_read_ok or link_col_values is None:
+            if not link_read_ok or link_rows is None:
                 return "SENTINEL"
-            idx = row_1based - 1  # col_values = 1-indexed
-            if 0 <= idx < len(link_col_values):
-                return (link_col_values[idx] or "").strip()
+            row_idx = row_1based - 1  # sheet rows are 1-indexed
+            link_idx = mapping[HEADER_LINK]
+            if 0 <= row_idx < len(link_rows):
+                row_values = link_rows[row_idx]
+                if not isinstance(row_values, list):
+                    return "SENTINEL"
+                if link_idx < len(row_values):
+                    return (row_values[link_idx] or "").strip()
+                return ""
             # row 범위 외 = 보수적 = "SENTINEL" 반환
             return "SENTINEL"
 
         cells = []
+        color_updates = []
         for upd in updates:
             # D-026 Phase C+D (2026-05-16): 행 현재 link 값 read → 빈 link 행만 EMPTY_LINK 화이트리스트 사용
             current_link = _row_current_link(upd.row)
             use_columns = SYSTEM_OUTPUT_COLUMNS_EMPTY_LINK if not current_link else SYSTEM_OUTPUT_COLUMNS
+            if not current_link:
+                k_base, _ = parse_K_with_stamp((upd.columns.get(HEADER_AREA) or "").strip())
+                has_rank = bool(upd.columns.get(HEADER_L) or upd.columns.get(HEADER_M))
+                has_output_link = bool((upd.columns.get(HEADER_LINK) or "").strip())
+                invalid_plain_exposed = k_base in PLAIN_EXPOSED_BASES
+                invalid_rank_without_duplicate = has_rank and not k_base.startswith("중복노출")
+                invalid_duplicate_without_link = k_base.startswith("중복노출") and not has_output_link
+                if invalid_plain_exposed or invalid_rank_without_duplicate or invalid_duplicate_without_link:
+                    print(
+                        f"  [D-032-INVARIANT-GUARD] row={upd.row} write 거부 "
+                        f"(빈 link + K={upd.columns.get(HEADER_AREA)!r}, L={upd.columns.get(HEADER_L)!r}, "
+                        f"M={upd.columns.get(HEADER_M)!r}, output_link={upd.columns.get(HEADER_LINK)!r})"
+                    )
+                    continue
+            color_updates.append(upd)
 
             for col_name, new_val in upd.columns.items():
                 if col_name not in mapping:
@@ -208,7 +233,7 @@ class SheetsClient:
                     return gray
                 return white
 
-            for upd in updates:
+            for upd in color_updates:
                 if HEADER_AREA not in upd.columns:
                     continue
                 k_value = upd.columns[HEADER_AREA]

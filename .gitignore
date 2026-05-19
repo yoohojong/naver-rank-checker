@@ -40,3 +40,7 @@ docs/사장님-가이드/screenshots/
 
 # H1 시계열 분석 출력 (= 사장님 시트 시계열 = 비즈니스 정보, 2026-05-18)
 .harness/timeline_report*.csv
+
+# Diagnostic artifacts may include sheet-derived row data.
+.harness/audits/
+.harness/traces/

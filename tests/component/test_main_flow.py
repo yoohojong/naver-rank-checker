@@ -9,7 +9,7 @@ from unittest.mock import patch, MagicMock
 from src.main import _process_row, _carea_filter
 from src.crawler import Crawler, SlowdownController, CafeStatus, CrawlerError
 from src.health import HealthMonitor
-from src.sheets import HEADER_AREA, HEADER_L, HEADER_M, HEADER_TYPE, HEADER_JISIKIN
+from src.sheets import HEADER_AREA, HEADER_L, HEADER_M, HEADER_TYPE, HEADER_JISIKIN, HEADER_LINK
 from src.transitions import parse_K_with_stamp  # D-030 (2026-05-18): K base 추출 헬퍼
 
 
@@ -262,3 +262,98 @@ class TestT_M81BackupAutomation:
         # cron 안 중단 = summary 반환 확인
         assert isinstance(summary, dict)
         assert "tabs_processed" in summary
+
+
+class TestD032TraceAuditInvariant:
+    """D-032: row trace + invariant gate + post-write audit."""
+
+    def test_run_cycle_filters_invalid_update_and_writes_trace_audit(self, tmp_path, monkeypatch):
+        import os
+
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setenv("GITHUB_RUN_ID", "trace123")
+        monkeypatch.setenv("GITHUB_ACTIONS", "true")
+        monkeypatch.setattr("src.main.SPREADSHEET_ID", "fake_id")
+        monkeypatch.setattr("src.main.SERVICE_ACCOUNT_JSON", '{"type":"service_account","client_email":"x@x.iam.gserviceaccount.com","private_key":"-----BEGIN PRIVATE KEY-----\\nFAKE\\n-----END PRIVATE KEY-----\\n","token_uri":"https://oauth2.googleapis.com/token"}')
+
+        from unittest.mock import patch as upatch, MagicMock as UMM
+        from src.sheets import RowUpdate
+
+        initial_rows = {
+            "바디워시 카외": [
+                {"_row": 2, "_tab": "바디워시 카외", "키워드": "퍼퓸바디워시", HEADER_LINK: "", HEADER_AREA: "미노출"},
+                {"_row": 3, "_tab": "바디워시 카외", "키워드": "정상", HEADER_LINK: "https://cafe.naver.com/cosmania/999", HEADER_AREA: ""},
+            ]
+        }
+        post_write_rows = {
+            "바디워시 카외": [
+                {"_row": 2, "_tab": "바디워시 카외", "키워드": "퍼퓸바디워시", HEADER_LINK: "", HEADER_AREA: "인기글", HEADER_L: "2", HEADER_M: "1"},
+                {"_row": 3, "_tab": "바디워시 카외", "키워드": "정상", HEADER_LINK: "https://cafe.naver.com/cosmania/999", HEADER_AREA: "인기글", HEADER_L: "2", HEADER_M: "1"},
+            ]
+        }
+
+        mock_client = UMM()
+        mock_client.load_all_data_tabs.side_effect = [initial_rows, post_write_rows]
+        mock_client.write_results.return_value = 3
+        mock_client.write_timestamp.return_value = None
+
+        mock_crawler = UMM()
+        mock_crawler.warmup.return_value = None
+
+        def fake_process(row, *_args, **_kwargs):
+            if row["_row"] == 2:
+                return {HEADER_AREA: "인기글", HEADER_L: "2", HEADER_M: "1"}
+            return {HEADER_AREA: "인기글", HEADER_L: "2", HEADER_M: "1"}
+
+        with upatch("src.main.SheetsClient", return_value=mock_client), \
+             upatch("src.main.Crawler", return_value=mock_crawler), \
+             upatch("src.main.random.shuffle", side_effect=lambda rows: None), \
+             upatch("src.main._process_row", side_effect=fake_process):
+            from src.main import run_cycle
+            summary = run_cycle()
+
+        written_updates = mock_client.write_results.call_args_list[0].args[1]
+        assert [u.row for u in written_updates] == [3]
+        assert all(isinstance(u, RowUpdate) for u in written_updates)
+        assert summary["prewrite_invariant_violations"] == 1
+        assert summary["post_write_audit_violations"] == 1
+        assert summary["code_change_suspected"] is True
+
+        trace_files = list((tmp_path / ".harness" / "traces").glob("trace123_*_row-trace.jsonl"))
+        audit_files = list((tmp_path / ".harness" / "audits").glob("trace123_*_post-write-audit.jsonl"))
+        assert len(trace_files) == 1
+        assert len(audit_files) == 1
+        assert '"row": 2' in trace_files[0].read_text(encoding="utf-8")
+
+    def test_preexisting_untouched_audit_issue_is_nonblocking(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setenv("GITHUB_RUN_ID", "debt123")
+        monkeypatch.setenv("GITHUB_ACTIONS", "true")
+        monkeypatch.setattr("src.main.SPREADSHEET_ID", "fake_id")
+        monkeypatch.setattr("src.main.SERVICE_ACCOUNT_JSON", '{"type":"service_account","client_email":"x@x.iam.gserviceaccount.com","private_key":"-----BEGIN PRIVATE KEY-----\\nFAKE\\n-----END PRIVATE KEY-----\\n","token_uri":"https://oauth2.googleapis.com/token"}')
+
+        from unittest.mock import patch as upatch, MagicMock as UMM
+
+        rows_with_preexisting_debt = {
+            "바디워시 카외": [
+                {"_row": 2, "_tab": "바디워시 카외", "키워드": "", HEADER_LINK: "", HEADER_AREA: "인기글", HEADER_L: "2", HEADER_M: "1"},
+                {"_row": 3, "_tab": "바디워시 카외", "키워드": "", HEADER_LINK: "", HEADER_AREA: ""},
+            ]
+        }
+        mock_client = UMM()
+        mock_client.load_all_data_tabs.side_effect = [rows_with_preexisting_debt, rows_with_preexisting_debt]
+        mock_client.write_results.return_value = 0
+        mock_client.write_timestamp.return_value = None
+
+        mock_crawler = UMM()
+        mock_crawler.warmup.return_value = None
+
+        with upatch("src.main.SheetsClient", return_value=mock_client), \
+             upatch("src.main.Crawler", return_value=mock_crawler):
+            from src.main import run_cycle
+            summary = run_cycle()
+
+        assert summary["post_write_audit_total_issues"] == 1
+        assert summary["post_write_audit_preexisting_issues"] == 1
+        assert summary["post_write_audit_violations"] == 0
+        assert summary.get("code_change_suspected") is not True

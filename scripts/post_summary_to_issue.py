@@ -64,6 +64,13 @@ def build_success_comment(summary: dict) -> str:
     # 운영 3 (2026-05-18): 네이버 차단 검출 카운트 = 사장님 메일 알림 강화.
     circuit_breaker_blocks = summary.get("circuit_breaker_blocks", 0)
     circuit_breaker_tripped = summary.get("circuit_breaker_tripped", False)
+    # D-032 (2026-05-19): 시트 불가능 조합 가시성. 행/키워드 상세는 artifact/log 로만 남김.
+    prewrite_violations = summary.get("prewrite_invariant_violations", 0)
+    post_write_violations = summary.get("post_write_audit_violations", 0)
+    post_write_preexisting = summary.get("post_write_audit_preexisting_issues", 0)
+    post_write_audit_error = summary.get("post_write_audit_error", "")
+    trace_name = os.path.basename(summary.get("row_trace_path", ""))
+    audit_name = os.path.basename(summary.get("post_write_audit_path", ""))
 
     health_status = "🚨 code_change_suspected" if code_change else "✅ 정상"
 
@@ -81,6 +88,21 @@ def build_success_comment(summary: dict) -> str:
     else:
         circuit_line = ""
 
+    if prewrite_violations or post_write_violations:
+        audit_line = (
+            f"\n⚠️ **시트 불가능 조합**: write 전 {prewrite_violations}건 / write 후 {post_write_violations}건"
+            f"\n**진단 artifact**: `{trace_name}` / `{audit_name}`"
+        )
+    elif post_write_preexisting:
+        audit_line = (
+            f"\nℹ️ **기존 시트 불가능 조합**: {post_write_preexisting}건 "
+            f"(이번 실행 신규 오류 아님, 진단 artifact `{audit_name}`)"
+        )
+    elif post_write_audit_error:
+        audit_line = f"\n⚠️ **시트 사후 감사 실패**: Actions log 확인 필요"
+    else:
+        audit_line = ""
+
     return f"""{OWNER_MENTION} ## ✅ cron 완료 — {format_kst()}
 
 **처리 시간**: {minutes}분 {sec_remain}초
@@ -89,7 +111,7 @@ def build_success_comment(summary: dict) -> str:
 **성공률**: {success_pct}
 **재시도 큐 남음**: {retry_left}
 **예외 시 시트 보존 (D-024)**: {d024_skipped} 행
-**상태**: {health_status}{whitelist_line}{circuit_line}
+**상태**: {health_status}{whitelist_line}{circuit_line}{audit_line}
 
 ---
 자세한 내역 (탭별 / K 분포 등) = Actions log 링크 클릭:
