@@ -1,7 +1,7 @@
 # tasks: naver-rank-checker
 
-**Last updated**: 2026-05-11
-**Overall progress**: 95% ━━━━━━━━━━━━ (quality fix +1: J false positive 69건)
+**Last updated**: 2026-05-19
+**Overall progress**: 99% ━━━━━━━━━━━━ (운영 안정화 완료, Codex 이식 점검 중)
 **Protocol**: 멀티 Claude 안전 협업. claim 메커니즘 적용 (`.harness/PROTOCOL.md` 참고).
 
 ## 마일스톤 가중치
@@ -83,24 +83,43 @@ deps = 의존성 (선행 task), parallel = 동시 작업 안전한 다른 task
 
 ---
 
-## 다음 작업 (Next Up) — 2026-05-17 갱신 (M10 마일스톤 신규)
+## 다음 작업 (Next Up) — 2026-05-19 갱신 (M10 완료 + Codex 이식 점검)
 
-🤖 **마일스톤 M10 = D-026 완성 + 백업 자동화** (사장님 5-17 단호 시그널 정합)
+✅ **마일스톤 M10 = D-026 완성 + 백업 자동화 완료** (사장님 5-17 단호 시그널 정합)
 
-### M10 task list (= 사장님 검토 후 executor 위임)
+### M10 task list
 
 | ID | Title | 담당 | deps | 상태 |
 |----|-------|------|------|------|
-| T-M80 | fixture 다운로드 = iroid/5407226 진짜 삭제 글 HTML → `tests/fixtures/naver/deleted_post.html` | 🤖 | — | pending |
-| T-M81 | 백업 자동화 = run_cycle 시작 시 시트 K/L/M/링크 전체 read → `.harness/backups/{run_id}.json` 저장 | 🤖 | — | pending |
-| T-M82 | UNDO 스크립트 = `scripts/restore_backup.py {run_id}` = 사장님 사고 시점 즉시 복원 | 🤖 | T-M81 | pending |
-| T-M83 | test 4 failure fix = ExposureArea set / EXPOSED_VALUES / SYSTEM_K_VALUES / prev_K="삭제" 보존 정합 | 🤖 | — | pending |
-| T-M84 | Phase C/D/E 회귀 test 21개+ = empty_link_match / filled_link_protected / deletion_exact_substring / login_wall_unknown 등 | 🤖 | T-M80 | pending |
-| T-M85 | crawler.fetch_cafe_url_status 부활 정합 검증 = fixture 기반 회귀 test | 🤖 | T-M80, T-M84 | pending |
-| T-M86 | workflow yml = 백업 dir 생성 step 추가 + .harness/backups 디렉토리 git 추적 (.gitkeep) | 🤖 | T-M81 | pending |
-| T-M87 | pytest 전체 pass 검증 (310 → 350+ 의무) | 🤖 | T-M82~T-M85 | pending |
-| T-M88 | commit + push (= D-026 완성 + 백업 자동화 일괄) | 🤖 | T-M87 | pending |
-| T-M89 | 다음 cron 결과 검증 = 첫 실행 후 사장님 시트 + 백업 파일 정합 확인 | 🤖 | T-M88 | pending |
+| T-M80 | fixture 다운로드 = iroid/5407226 진짜 삭제 글 HTML → `tests/fixtures/naver/deleted_post.html` | 🤖 | — | ✅ completed (2026-05-17, fixture 2개: deleted/login wall) |
+| T-M81 | 백업 자동화 = run_cycle 시작 시 시트 K/L/M/링크 전체 read → `.harness/backups/{run_id}.json.gz` 저장 | 🤖 | — | ✅ completed (2026-05-17, gzip 백업 생성) |
+| T-M82 | UNDO 스크립트 = `scripts/restore_backup.py {run_id}` = 사장님 사고 시점 즉시 복원 | 🤖 | T-M81 | ✅ completed (2026-05-17, restore_backup.py + 5 tests) |
+| T-M83 | test 4 failure fix = ExposureArea set / EXPOSED_VALUES / SYSTEM_K_VALUES / prev_K="삭제" 보존 정합 | 🤖 | — | ✅ completed (2026-05-17) |
+| T-M84 | Phase C/D/E 회귀 test 21개+ = empty_link_match / filled_link_protected / deletion_exact_substring / login_wall_unknown 등 | 🤖 | T-M80 | ✅ completed (2026-05-17, 회귀 test 반영) |
+| T-M85 | crawler.fetch_cafe_url_status 정합 검증 = fixture 기반 회귀 test | 🤖 | T-M80, T-M84 | ✅ completed (2026-05-17, deleted/login wall 검증) |
+| T-M86 | workflow yml = 백업 artifact upload + .harness/backups 디렉토리 git 추적 (.gitkeep) | 🤖 | T-M81 | ✅ completed (2026-05-17) |
+| T-M87 | pytest 전체 pass 검증 (310 → 350+ 의무) | 🤖 | T-M82~T-M85 | ✅ completed (2026-05-19 재검증: 445 passed) |
+| T-M88 | commit + push (= D-026 완성 + 백업 자동화 일괄) | 🤖 | T-M87 | ✅ completed (commit bdcf9f0 이후 origin/main 반영) |
+| T-M89 | 다음 cron 결과 검증 = 첫 실행 후 사장님 시트 + 백업 파일 정합 확인 | 🤖 | T-M88 | ✅ completed (latest run 26063341958 success, 826행/3057셀/성공률 100.0%) |
+
+### 2026-05-18 추가 완료
+- D-029 완료: 양방향 `중복노출(구좌)` 갱신 + 구좌 명시. commit `b3b7bee`, pytest 374 pass.
+- D-030 완료: K 값 + 시점 통합 형식 `AB (5/10 03:00~)`. commit `5226638`, pytest 445 pass.
+- D-031 완료: 진화 후보 자동 검출 + 사장님 confirm 후만 navigation/second-brain 갱신. commit `cda2f82`.
+- D-029/D-030 decisions.md 누락 보충 완료. commit `487cc78`.
+
+### Codex 이식 점검 — 2026-05-19
+- Codex config trusted: `D:\claude code\naver-rank-checker`, `D:\claude code\SANGNO`.
+- Codex plugin enabled: browser, documents, spreadsheets, presentations, claude-md-management, code-review, feature-dev, frontend-design, hookify, playground, superpowers.
+- Codex hook 파일과 `hooks.json` 존재, `node --check` 통과.
+- 적용 완료: Codex hook 로그 경로 `.codex` 일원화, `.codex/.Codex` 설정 경로 pre-tool 허용, 프로젝트 루트 `AGENTS.md` 추가.
+- 적용 완료: navigation skill v6 = command/tool router + parallel-first rule. 사장님 프롬프트에서 후보 OMC/skill/plugin/agent 명령을 추출하고, 필요한 조합을 골라 대신 실행하는 역할로 고정.
+- 적용 완료: naver-rank-checker 루트 `AGENTS.md`에 자동 도구 선택, 병렬 우선, `/team ralph`, `ulw`/`ultrawork`, `omc team` 사용 기준 명시.
+- 적용 완료: Codex `config.toml` 기능 토글 정리 = hooks, multi_agent, prevent_idle_sleep, memories 유지. plugin_hooks/apps/skill_mcp_dependency_install/generate_memories는 보안 검토 후 기본 off.
+- 적용 완료: MCP baseline 정리 = `context7`(공식 문서/라이브러리 컨텍스트) pinned enabled, `github` HTTP MCP(repo/issue/action workflow)는 auth 전까지 disabled. 둘 다 `required=false`.
+- 적용 완료: curated Codex skills 설치 = `migrate-to-codex`, `gh-fix-ci`, `gh-address-comments`, `security-best-practices`, `security-threat-model`, `playwright`.
+- 남은 확인: 현재 Codex Desktop 세션에서 `hooks.json` 자동 호출이 실제로 매 prompt/stop마다 실행되는지 새 로그로 지속 확인.
+- 해결 완료: `codex mcp list` WindowsApps `Access is denied` 이슈는 npm `@openai/codex` 설치 후 해소됨. 현재 MCP baseline은 `context7` pinned(`@upstash/context7-mcp@2.2.5`) enabled, `github` disabled until auth.
 
 ### 사장님 작업 (= 의무 0건, 사장님 5-17 결정 정합)
 - fixture URL 제공 ✅ 완료 (= `https://cafe.naver.com/iroid/5407226`)
@@ -112,13 +131,16 @@ deps = 의존성 (선행 task), parallel = 동시 작업 안전한 다른 task
 2. 또는 Google Sheets 버전 기록 (= 이중 안전망)
 
 ## ⏭️ 자동 진행 (사장님 작업 X = 자동)
-- 신규 cron 25833418213 = cron-job.org KST 0/6/12/18 자동 trigger watch 중
-- 결과 보고 = 다음 세션 이어서
-- 운영 정착 진입 = ubuntu-latest 단독 + cron-job.org trigger = 사장님 PC 부담 X
+- cron-job.org KST 0/6/12/18 자동 trigger 운영 중.
+- 최근 GitHub Actions 10개 모두 success (2026-05-17~2026-05-19).
+- 최신 검증 run `26073488522` = success, 826행 처리, 3057셀 갱신, 성공률 100.0%, D-024 보존 0행, D-026 화이트리스트 26 slug / 매치 link 293건, 백업 artifact `sheet-backup-26073488522` 업로드 완료.
+- 적용 완료: GitHub Actions Node.js 20 deprecation 대응 = `actions/checkout@v6.0.2`, `actions/setup-python@v6.2.0`, `actions/upload-artifact@v7.0.1`로 업데이트.
+- 운영 정착 = ubuntu-latest 단독 + cron-job.org trigger = 사장님 PC 부담 X.
 
 ## 차단 이슈 (Blockers)
-- 사장님 Google Sheets 복원 = 긴급 (K="삭제" 손상 데이터 현재 노출 중)
-- 100% 정확도 = 자연 한계 객관 불가능 (D-021/D-022 정합, 3 agent 검증 유지)
+- 사장님 Google Sheets 복원 이슈는 과거 긴급 이슈. 현재 cron은 정상 성공 중이나, 실제 시트 값 체감 검수는 별도 가능.
+- 100% 정확도 = 자연 한계 객관 불가능 (D-021/D-022 정합, 3 agent 검증 유지).
+- Codex 이식 잔여 보강 = Codex Desktop 자동 hook 호출 증거 지속 확보 + navigation v6 실제 적용 습관화 + second-brain confirm 기반 진화.
 
 ## 변경 이력
 - 2026-05-05: 초기 생성 (brainstorming 단계 종료 시점)
