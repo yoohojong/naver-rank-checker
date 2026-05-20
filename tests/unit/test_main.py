@@ -1493,3 +1493,55 @@ class TestD030KStampIntegration:
         # 0-padding 없음 검증 (= "5/10" 정합, "05/10" X)
         dt3 = datetime(2026, 1, 1, 0, 0, tzinfo=kst)
         assert _format_today_kst_stamp(dt3) == "1/1 00:00"
+
+
+class TestD034BlankInputCleanup:
+    """D-034: 완전 빈 입력행에 남은 시스템 출력만 정리."""
+
+    def test_cleanup_preserves_manual_k_note(self):
+        from src.main import _blank_input_stale_output_cleanup
+        from src.sheets import HEADER_AREA
+
+        row = {
+            "_row": 230,
+            "_tab": "바디워시 카외",
+            "키워드": "",
+            "링크": "",
+            HEADER_AREA: "확인중",
+        }
+
+        assert _blank_input_stale_output_cleanup(row) is None
+
+    def test_cleanup_preserves_row_with_search_volume(self):
+        from src.main import _blank_input_stale_output_cleanup
+        from src.sheets import HEADER_AREA, HEADER_L, HEADER_M
+
+        row = {
+            "_row": 230,
+            "_tab": "바디워시 카외",
+            "키워드": "",
+            "링크": "",
+            "검색량": "230",
+            HEADER_AREA: "인기글",
+            HEADER_L: "1",
+            HEADER_M: "1",
+        }
+
+        assert _blank_input_stale_output_cleanup(row) is None
+
+    def test_cleanup_preserves_row_with_blog_rank_column(self):
+        from src.main import _blank_input_stale_output_cleanup
+        from src.sheets import HEADER_AREA, HEADER_L, HEADER_M
+
+        row = {
+            "_row": 230,
+            "_tab": "바디워시 카외",
+            "키워드": "",
+            "링크": "",
+            "노출여부(블로그구좌순위)": "3",
+            HEADER_AREA: "인기글",
+            HEADER_L: "1",
+            HEADER_M: "1",
+        }
+
+        assert _blank_input_stale_output_cleanup(row) is None

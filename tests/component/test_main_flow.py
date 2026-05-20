@@ -325,24 +325,40 @@ class TestD032TraceAuditInvariant:
         assert len(audit_files) == 1
         assert '"row": 2' in trace_files[0].read_text(encoding="utf-8")
 
-    def test_preexisting_untouched_audit_issue_is_nonblocking(self, tmp_path, monkeypatch):
+    def test_blank_input_stale_outputs_are_cleaned(self, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)
-        monkeypatch.setenv("GITHUB_RUN_ID", "debt123")
+        monkeypatch.setenv("GITHUB_RUN_ID", "cleanup123")
         monkeypatch.setenv("GITHUB_ACTIONS", "true")
         monkeypatch.setattr("src.main.SPREADSHEET_ID", "fake_id")
         monkeypatch.setattr("src.main.SERVICE_ACCOUNT_JSON", '{"type":"service_account","client_email":"x@x.iam.gserviceaccount.com","private_key":"-----BEGIN PRIVATE KEY-----\\nFAKE\\n-----END PRIVATE KEY-----\\n","token_uri":"https://oauth2.googleapis.com/token"}')
 
         from unittest.mock import patch as upatch, MagicMock as UMM
 
-        rows_with_preexisting_debt = {
+        rows_with_stale_output = {
             "바디워시 카외": [
-                {"_row": 2, "_tab": "바디워시 카외", "키워드": "", HEADER_LINK: "", HEADER_AREA: "인기글", HEADER_L: "2", HEADER_M: "1"},
+                {
+                    "_row": 2, "_tab": "바디워시 카외",
+                    "작업일": "", "작업자": "", "유형": "", "키워드": "",
+                    "MB": "", "PC": "", "총합": "", "작업아이디": "", "카페/게시판": "",
+                    HEADER_LINK: "", HEADER_AREA: "인기글", HEADER_L: "2", HEADER_M: "1", HEADER_JISIKIN: "O",
+                },
+                {"_row": 3, "_tab": "바디워시 카외", "키워드": "", HEADER_LINK: "", HEADER_AREA: ""},
+            ]
+        }
+        rows_after_cleanup = {
+            "바디워시 카외": [
+                {
+                    "_row": 2, "_tab": "바디워시 카외",
+                    "작업일": "", "작업자": "", "유형": "", "키워드": "",
+                    "MB": "", "PC": "", "총합": "", "작업아이디": "", "카페/게시판": "",
+                    HEADER_LINK: "", HEADER_AREA: "", HEADER_L: "", HEADER_M: "", HEADER_JISIKIN: "",
+                },
                 {"_row": 3, "_tab": "바디워시 카외", "키워드": "", HEADER_LINK: "", HEADER_AREA: ""},
             ]
         }
         mock_client = UMM()
-        mock_client.load_all_data_tabs.side_effect = [rows_with_preexisting_debt, rows_with_preexisting_debt]
-        mock_client.write_results.return_value = 0
+        mock_client.load_all_data_tabs.side_effect = [rows_with_stale_output, rows_after_cleanup]
+        mock_client.write_results.return_value = 4
         mock_client.write_timestamp.return_value = None
 
         mock_crawler = UMM()
@@ -353,7 +369,16 @@ class TestD032TraceAuditInvariant:
             from src.main import run_cycle
             summary = run_cycle()
 
-        assert summary["post_write_audit_total_issues"] == 1
-        assert summary["post_write_audit_preexisting_issues"] == 1
+        written_updates = mock_client.write_results.call_args_list[0].args[1]
+        assert [u.row for u in written_updates] == [2]
+        assert written_updates[0].columns == {
+            HEADER_AREA: "",
+            HEADER_L: "",
+            HEADER_M: "",
+            HEADER_JISIKIN: "",
+        }
+        mock_crawler.fetch_search.assert_not_called()
+        assert summary["post_write_audit_total_issues"] == 0
+        assert summary["post_write_audit_preexisting_issues"] == 0
         assert summary["post_write_audit_violations"] == 0
         assert summary.get("code_change_suspected") is not True

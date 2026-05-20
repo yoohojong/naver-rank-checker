@@ -742,3 +742,31 @@
 - `col_values()` 인덱스 보정: gspread/Sheets 빈 셀 반환 정책에 계속 묶여 같은 계열 재발 가능성이 있다.
 - J 링크를 무조건 허용: 기존 링크 행을 덮어써 D-023 사고가 재발한다.
 - 현재 시트만 수동 복구: 다음 실행에서 같은 오판이 반복될 수 있어 근본 해결이 아니다.
+
+### D-034: 빈 입력행에 남은 시스템 출력은 자동 cleanup 한다
+
+**결정**: K/L/M/O와 `_row`/`_tab` 외 실제 셀이 모두 빈 행인데, K/L/M/O 시스템 출력만 남아 있으면 다음 실행에서 K/L/M/O만 빈칸으로 정리한다. K가 `SYSTEM_K_VALUES` 밖이면 사장님 수동 메모로 간주해 정리하지 않는다.
+
+**근거**:
+- 최신 diagnostics의 기존 시트 불가능 조합 1건은 `바디워시 카외` row 230 이며, 입력열은 비었고 `인기글`, L=1, M=1, O=O만 남아 있었다.
+- 같은 row는 최초 실패 run 시작 시점에는 정상 입력 row였고, write 후/이후 입력열이 비워진 상태로 확인됐다.
+- 기존 `_process_row()`는 키워드 빈 행을 skip하므로 stale K/L/M/O를 감지해도 삭제하지 못했다.
+
+**구현**:
+- `src/main.py`: `_blank_input_stale_output_cleanup()` 추가. K/L/M/O와 `_row`/`_tab` 외 모든 실제 셀이 비어 있고 K가 시스템 값이면 `RowUpdate`로 K/L/M/O만 빈칸 처리.
+- `tests/component/test_main_flow.py`: 빈 입력행 stale output cleanup 회귀 테스트 추가. 검색 crawler 호출 없이 K/L/M/O 정리 update가 생성되는지 검증.
+- `tests/unit/test_main.py`: 수동 K(`확인중`), 검색량, N 블로그 순위 컬럼이 있는 행은 cleanup하지 않는 반례 테스트 추가.
+
+**검증**:
+- RED: 신규 테스트가 구현 전 `write_results` 미호출로 실패.
+- GREEN: 신규 테스트 통과.
+- `pytest tests/component/test_main_flow.py::TestD032TraceAuditInvariant tests/unit/test_audit.py tests/unit/test_main.py::TestD034BlankInputCleanup -q` = 10 passed.
+- `python -m compileall src scripts` 통과.
+- `pytest -q` = 460 passed.
+- `code-reviewer` 1차에서 수동 K 보존/보호 컬럼 누락 지적 → 반영 완료.
+
+**대안 안 고른 이유**:
+- 수동 삭제만 안내: 다음에 같은 stale 상태가 생기면 반복된다.
+- A-J 입력열까지 삭제: 사장님 입력 데이터 손상 위험이 있어 D-023/D-024 위반이다.
+- K를 `미노출`로 바꾸기: 실제 작업 row가 아니므로 순위 상태를 새로 만드는 것이고, 빈칸 cleanup이 더 정합하다.
+- 고정 입력 컬럼 목록만 사용: `검색량`, N 등 보호 컬럼 변형을 놓칠 수 있어, 비출력 실제 셀 전체를 기준으로 삼았다.

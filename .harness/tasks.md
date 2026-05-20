@@ -391,3 +391,9 @@ deps = 의존성 (선행 task), parallel = 동시 작업 안전한 다른 task
   - tests/unit/test_parser.py: TestBootstrapJsonFallbackIntegration 신규 6 test (fallback 매치 정상 / link_set fallback / slug whitelist fallback / HTML 성공 시 skip / JSON 추출 실패 시 HTML 결과 보존 / payload 매치 X 시 UNEXPOSED)
   - 전체 pytest 288 pass (282 → +6 신규, 회귀 X 검증)
   - .harness/decisions.md: D-025 entry 추가
+
+- 2026-05-21: **D-034 완료 — 빈 입력행 stale K/L/M/O 자동 cleanup**
+  - 원인: 입력열이 모두 빈 row 230에 과거 시스템 출력 `인기글`, L=1, M=1, O=O가 남았고, 기존 로직은 키워드 빈 행을 skip해 정리하지 못함.
+  - 적용: `src/main.py`가 완전 빈 입력행의 잔여 K/L/M/O만 빈칸으로 정리.
+  - 보호: K가 `SYSTEM_K_VALUES` 밖인 수동 메모(`확인중`) 또는 검색량/N 등 비출력 실제 셀이 있으면 cleanup하지 않음.
+  - 검증: 신규 RED/GREEN 테스트, D-032+D-034 감사 묶음 10 passed, compileall 통과, 전체 `pytest -q` 460 passed.

@@ -33,7 +33,7 @@ from src.sheets import (
     rank_result_to_columns,
     HEADER_AREA, HEADER_L, HEADER_M, HEADER_JISIKIN, HEADER_LINK,
 )
-from src.transitions import compute_new_K, compute_new_K_with_stamp, parse_K_with_stamp
+from src.transitions import compute_new_K, compute_new_K_with_stamp, parse_K_with_stamp, SYSTEM_K_VALUES
 
 
 def _format_today_kst_stamp(dt) -> str:
@@ -51,6 +51,40 @@ def _format_today_kst_stamp(dt) -> str:
 def _carea_filter(tab_name: str) -> bool:
     """사장님 분야 탭 필터 — '카외' 끝 탭만."""
     return tab_name.endswith("카외")
+
+
+STALE_OUTPUT_CLEANUP_COLUMNS = frozenset({HEADER_AREA, HEADER_L, HEADER_M, HEADER_JISIKIN})
+
+
+def _clean_cell(value: object) -> str:
+    return str(value or "").strip()
+
+
+def _blank_input_stale_output_cleanup(row: dict) -> Optional[dict]:
+    """Return a K/L/M/O clearing update for fully blank input rows.
+
+    D-034: If a user/input row is blank but previous system output remains,
+    clear only the system-owned columns. User-owned A-J/N cells stay untouched.
+    """
+    for column, value in row.items():
+        if column.startswith("_") or column in STALE_OUTPUT_CLEANUP_COLUMNS:
+            continue
+        if _clean_cell(value):
+            return None
+
+    k_base, _ = parse_K_with_stamp(_clean_cell(row.get(HEADER_AREA, "")))
+    if k_base not in SYSTEM_K_VALUES:
+        return None
+
+    if not any(_clean_cell(row.get(column, "")) for column in STALE_OUTPUT_CLEANUP_COLUMNS):
+        return None
+
+    return {
+        HEADER_AREA: "",
+        HEADER_L: "",
+        HEADER_M: "",
+        HEADER_JISIKIN: "",
+    }
 
 
 def _process_row(
@@ -429,6 +463,11 @@ def run_cycle() -> dict:
             if row.get("_row") is not None:
                 row_context[(tab_name, row["_row"])] = row
             try:
+                cleanup_cols = _blank_input_stale_output_cleanup(row)
+                if cleanup_cols is not None:
+                    updates.append(RowUpdate(row=row["_row"], columns=cleanup_cols))
+                    continue
+
                 cols = _process_row(row, crawler, health, all_known_links=all_known_links, url_alive_cache=url_alive_cache, today_stamp=today_kst_stamp)
                 if cols is None:
                     continue  # link 빈 행 skip
