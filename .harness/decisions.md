@@ -764,6 +764,8 @@
 - `python -m compileall src scripts` 통과.
 - `pytest -q` = 460 passed.
 - `code-reviewer` 1차에서 수동 K 보존/보호 컬럼 누락 지적 → 반영 완료.
+- 운영 검증: workflow_dispatch run `26177026372` 성공, headSha `eadaf4b`, post-write audit JSONL 0 lines, 로그 `[D-032-POST-AUDIT] 불가능 조합 0건`.
+- row trace 검증: `바디워시 카외` row 230 이 `prev_K="인기글 (5/19 00:00~)"` → `new_K=""`, L/M/O 빈칸 cleanup update로 기록됨.
 
 **대안 안 고른 이유**:
 - 수동 삭제만 안내: 다음에 같은 stale 상태가 생기면 반복된다.

@@ -397,3 +397,4 @@ deps = 의존성 (선행 task), parallel = 동시 작업 안전한 다른 task
   - 적용: `src/main.py`가 완전 빈 입력행의 잔여 K/L/M/O만 빈칸으로 정리.
   - 보호: K가 `SYSTEM_K_VALUES` 밖인 수동 메모(`확인중`) 또는 검색량/N 등 비출력 실제 셀이 있으면 cleanup하지 않음.
   - 검증: 신규 RED/GREEN 테스트, D-032+D-034 감사 묶음 10 passed, compileall 통과, 전체 `pytest -q` 460 passed.
+  - 운영 검증: run `26177026372` 성공, post-write audit 0건, `바디워시 카외` row 230 cleanup trace 확인.
