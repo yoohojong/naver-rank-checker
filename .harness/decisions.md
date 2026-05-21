@@ -807,3 +807,9 @@
 - `tests/unit/test_sheets.py::TestD024Guard`에 전용 C열 writer 테스트 추가.
 - `tests/component/test_type_preview_flow.py`에 confirmed write flow 테스트 추가.
 - `pytest -q` = 471 passed.
+
+- 2026-05-21: **D-036 운영 반영 완료**
+  - confirmed workflow run `26200348670` 성공(head `1812394`).
+  - `apply_type_preview=true`로 C열 유형 write 실행: 두드러기 33행, 바디워시 56행, 샴푸 60행 = 총 149행/149셀 반영.
+  - run 결과: 824행 처리, 성공률 100.0%, 재시도 큐 0, prewrite/post-write audit 0건.
+  - 이전 preview 151행 대비 2행 차이는 새 run 시점의 live 재조회 결과 차이이며, write는 해당 run의 안전 후보 전부(`would_update=true`)에 적용.

@@ -411,3 +411,9 @@ deps = 의존성 (선행 task), parallel = 동시 작업 안전한 다른 task
   - 구현: 일반 `write_results`의 C열 보호는 유지하고, `TYPE_PREVIEW_WRITE_CONFIRMED=true`일 때만 `write_type_results`로 C열 후보를 반영한다.
   - Workflow: 수동 실행 input `apply_type_preview=true` 추가. 기본 cron/manual은 preview-only.
   - 검증: 관련 테스트 14 passed, 전체 `pytest -q` 471 passed, compileall/diff check 통과.
+
+- 2026-05-21: **D-036 운영 반영 완료**
+  - confirmed workflow run `26200348670` 성공(head `1812394`).
+  - `apply_type_preview=true`로 C열 유형 write 실행: 두드러기 33행, 바디워시 56행, 샴푸 60행 = 총 149행/149셀 반영.
+  - run 결과: 824행 처리, 성공률 100.0%, 재시도 큐 0, prewrite/post-write audit 0건.
+  - 이전 preview 151행 대비 2행 차이는 새 run 시점의 live 재조회 결과 차이이며, write는 해당 run의 안전 후보 전부(`would_update=true`)에 적용.
