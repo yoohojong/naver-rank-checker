@@ -433,10 +433,11 @@ deps = 의존성 (선행 task), parallel = 동시 작업 안전한 다른 task
   - 검증: targeted 21 passed, 전체 `pytest -q` = 479 passed, `py_compile` 통과, `git diff --check` 통과(CRLF warning only).
   - 운영 검증: workflow_dispatch run `26203919700` 성공(head `1687d23`), C열 후보 12행/12셀 반영, `[TYPE-WRITE-AUDIT] C열 write 불일치 0건`, post-write audit 0건.
 
-- 2026-05-21: **D-039 진행 - 입력키 기반 stale K/L/M/O preview artifact**
+- 2026-05-21: **D-039 완료 - 입력키 기반 stale K/L/M/O preview artifact**
   - 원인 고정: 특정 행은 최신 trace에서 `누락`으로 계산됐지만, 사용자가 키워드/링크를 바꾼 직후 다음 cron 완료 전까지 이전 K/L/M/O가 보이는 stale window가 문제였다.
   - 구현: `src/stale_preview.py` 추가. `키워드+링크`만 입력키로 계산하고, 숨김 기준 컬럼이 없는 현재 시트는 `no_baseline`으로 분리해 stale 오탐을 막는다.
   - 보호: 실제 시트 write/formula/숨김 컬럼 생성 없음. `.harness/stale-previews/*_stale-preview.jsonl` 및 `*_stale-preview-summary.md`만 생성.
   - 보호: stale artifact는 원본 URL/전체 키워드 대신 hash + redacted keyword를 사용하고 `.gitignore` 및 diagnostics artifact 업로드 경로를 추가했다.
   - UX: issue #1 summary에 stale-output preview count와 artifact basename을 표시한다.
   - 검증: stale preview unit/component/workflow/comment targeted 11 passed, `py_compile` 통과, 전체 `pytest -q` = 489 passed.
+  - 운영 검증: workflow_dispatch run `26220524026` 성공(head `ffb18c8`), diagnostics artifact에 stale-preview JSONL/MD 포함, stale preview 824행/no-baseline 824행/mask 0행, post-write audit 0건.

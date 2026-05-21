@@ -860,3 +860,4 @@
 - targeted stale tests 11 passed.
 - `python -m py_compile src/stale_preview.py src/main.py scripts/post_summary_to_issue.py` 통과.
 - 전체 `pytest -q` = 489 passed.
+- 운영 검증 workflow_dispatch run `26220524026` 성공(head `ffb18c8`). diagnostics artifact `diagnostics-26220524026` 안에 stale-preview JSONL/MD 포함. stale preview 824행, `no_baseline` 824행, mask 0행, artifact 원문 `https://cafe.naver.com` 노출 없음, issue #1 comment에 stale-output preview 요약 표시.
