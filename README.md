@@ -71,9 +71,10 @@ The workflow now uploads two files in the diagnostics artifact:
 Use the summary markdown, not the raw JSONL. If the summary table looks right, comment:
 `preview 확인했어. C열 write 허용 단계 진행해.`
 
-Confirmed C-column write is manual-only:
-- normal cron / normal manual run: preview-only
-- confirmed run: Actions → Run workflow → `apply_type_preview=true`
+Confirmed C-column write now runs by default:
+- scheduled cron / external dispatch: writes `would_update=true` type candidates to C
+- manual run default: same C-column write behavior
+- preview-only manual run: Actions → Run workflow → `apply_type_preview=false`
 
 ### 사장님 새 키워드 추가
 

@@ -417,3 +417,8 @@ deps = 의존성 (선행 task), parallel = 동시 작업 안전한 다른 task
   - `apply_type_preview=true`로 C열 유형 write 실행: 두드러기 33행, 바디워시 56행, 샴푸 60행 = 총 149행/149셀 반영.
   - run 결과: 824행 처리, 성공률 100.0%, 재시도 큐 0, prewrite/post-write audit 0건.
   - 이전 preview 151행 대비 2행 차이는 새 run 시점의 live 재조회 결과 차이이며, write는 해당 run의 안전 후보 전부(`would_update=true`)에 적용.
+
+- 2026-05-21: **D-037 진행 - 유형(C) 정기 자동 갱신으로 정책 변경**
+  - 원인: C열 write 기능은 가능했지만 workflow 기본값을 preview-only로 보수 설정해 정기 cron에는 적용되지 않았음.
+  - 변경: `apply_type_preview` 기본값을 `true`로 바꾸고, schedule 및 dispatch 기본 실행은 C열 자동 write 수행.
+  - preview-only는 수동 workflow에서 `apply_type_preview=false`로 명시할 때만 사용.
