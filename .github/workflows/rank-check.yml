@@ -19,6 +19,14 @@ on:
         options:
           - 'true'
           - 'false'
+      allow_bulk_type_preview:
+        description: 'Override type-preview bulk-change guard'
+        required: false
+        default: 'false'
+        type: choice
+        options:
+          - 'false'
+          - 'true'
 
 # critic 2026-05-08 Critical 2: cron overlap 방지.
 concurrency:
@@ -68,6 +76,7 @@ jobs:
           NAVER_SLOWDOWN_BASE_SEC: '5.0'
           NAVER_SLOWDOWN_MAX_SEC: '120'
           TYPE_PREVIEW_WRITE_CONFIRMED: ${{ github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.apply_type_preview != 'false') }}
+          TYPE_PREVIEW_WRITE_ALLOW_BULK: ${{ github.event_name == 'workflow_dispatch' && inputs.allow_bulk_type_preview == 'true' }}
           PYTHONIOENCODING: 'utf-8'
         run: |
           ./.venv/bin/python -u -m src.main

@@ -37,6 +37,7 @@ from src.transitions import compute_new_K, compute_new_K_with_stamp, parse_K_wit
 from src.type_preview import (
     TypePreviewCollector,
     apply_final_k_area_to_preview_rows,
+    audit_type_preview_writes,
     build_type_preview_error_row,
     build_type_preview_row,
     html_status_from_html,
@@ -462,8 +463,11 @@ def run_cycle() -> dict:
     retry_queue = RetryQueue()
     type_preview = TypePreviewCollector()
     type_preview_write_confirmed = _env_truthy("TYPE_PREVIEW_WRITE_CONFIRMED")
+    type_preview_write_allow_bulk = _env_truthy("TYPE_PREVIEW_WRITE_ALLOW_BULK")
     if type_preview_write_confirmed:
         print("[TYPE-PREVIEW] confirmed C-column write enabled")
+    if type_preview_write_allow_bulk:
+        print("[TYPE-PREVIEW] bulk-change guard override enabled")
     d024_skipped_rows = 0  # D-024 (2026-05-14): except 시 시트 보존 skip 카운트 (사장님 가시성)
 
     # 1. 시트 read
@@ -482,6 +486,7 @@ def run_cycle() -> dict:
     trace_path = f".harness/traces/{run_id}_{artifact_ts}_row-trace.jsonl"
     prewrite_audit_path = f".harness/audits/{run_id}_{artifact_ts}_prewrite-invariant.jsonl"
     postwrite_audit_path = f".harness/audits/{run_id}_{artifact_ts}_post-write-audit.jsonl"
+    typewrite_audit_path = f".harness/audits/{run_id}_{artifact_ts}_type-write-audit.jsonl"
     type_preview_path = f".harness/type-previews/{run_id}_{artifact_ts}_type-preview.jsonl"
     type_preview_summary_path = f".harness/type-previews/{run_id}_{artifact_ts}_type-preview-summary.md"
     try:
@@ -677,9 +682,7 @@ def run_cycle() -> dict:
     type_preview_summary = summarize_type_preview(type_preview_rows)
     try:
         write_type_preview_artifact(type_preview_path, type_preview_rows)
-        write_type_preview_summary_artifact(type_preview_summary_path, type_preview_rows, type_preview_summary)
         print(f"[TYPE-PREVIEW] {type_preview_path} 저장 ({len(type_preview_rows)} rows)")
-        print(f"[TYPE-PREVIEW] {type_preview_summary_path} 저장 (human-readable)")
     except Exception as e:
         print(f"[TYPE-PREVIEW] 저장 실패 = {e} (cron 진행)")
         type_preview_rows = []
@@ -716,15 +719,22 @@ def run_cycle() -> dict:
     # (datetime import = 1.5 백업 block 안 이미 함수 scope import. 재사용.)
     type_preview_write_cells = 0
     type_preview_write_rows = 0
+    type_preview_write_requested_rows = 0
+    type_preview_write_blocked_by_bulk_guard = False
     type_tab_updates: dict[str, list[RowUpdate]] = {}
     if type_preview_write_confirmed:
-        type_tab_updates = _build_confirmed_type_updates(type_preview_rows)
-        for tab_name, updates in type_tab_updates.items():
-            if updates:
-                n = client.write_type_results(tab_name, updates)
-                type_preview_write_cells += n
-                type_preview_write_rows += len(updates)
-                print(f"  [TYPE-WRITE:{tab_name}] {len(updates)} rows / {n} cells updated")
+        if type_preview_summary.get("type_preview_bulk_guard_triggered") and not type_preview_write_allow_bulk:
+            type_preview_write_blocked_by_bulk_guard = True
+            print("[TYPE-PREVIEW] bulk-change guard triggered; C-column write skipped")
+        else:
+            type_tab_updates = _build_confirmed_type_updates(type_preview_rows)
+            for tab_name, updates in type_tab_updates.items():
+                if updates:
+                    type_preview_write_requested_rows += len(updates)
+                    n = client.write_type_results(tab_name, updates)
+                    type_preview_write_cells += n
+                    type_preview_write_rows += n
+                    print(f"  [TYPE-WRITE:{tab_name}] {len(updates)} rows requested / {n} cells updated")
     else:
         print("[TYPE-PREVIEW] C-column write disabled; preview-only")
 
@@ -735,6 +745,7 @@ def run_cycle() -> dict:
     # 4.6. D-032: post-write audit — 실제 시트 상태에서 불가능 조합 재확인.
     post_write_audit_issues: list[dict] = []
     post_write_blocking_issues: list[dict] = []
+    type_preview_write_audit_issues: list[dict] = []
     post_write_audit_error = ""
     try:
         post_write_data = client.load_all_data_tabs(tab_filter=_carea_filter)
@@ -758,6 +769,20 @@ def run_cycle() -> dict:
                 )
         else:
             print("[D-032-POST-AUDIT] 불가능 조합 0건")
+
+        if type_preview_write_confirmed and not type_preview_write_blocked_by_bulk_guard:
+            type_preview_write_audit_issues = audit_type_preview_writes(type_preview_rows, post_write_data)
+            write_jsonl(typewrite_audit_path, type_preview_write_audit_issues)
+            if type_preview_write_audit_issues:
+                print(f"[TYPE-WRITE-AUDIT] C열 write 불일치 {len(type_preview_write_audit_issues)}건")
+                for issue in type_preview_write_audit_issues[:10]:
+                    print(
+                        f"  [TYPE-WRITE-AUDIT] {issue.get('tab')} row={issue.get('row')} "
+                        f"kw={issue.get('keyword')!r} expected={issue.get('suggested_type')!r} "
+                        f"actual={issue.get('actual_type')!r}"
+                    )
+            else:
+                print("[TYPE-WRITE-AUDIT] C열 write 불일치 0건")
     except Exception as e:
         post_write_audit_error = str(e)
         print(f"[D-032-POST-AUDIT] 실패 = {e} (cron 진행, summary 에 기록)")
@@ -801,12 +826,29 @@ def run_cycle() -> dict:
     summary["type_preview_summary_path"] = type_preview_summary_path
     summary.update(type_preview_summary)
     summary["type_preview_write_confirmed"] = type_preview_write_confirmed
+    summary["type_preview_write_allow_bulk"] = type_preview_write_allow_bulk
+    summary["type_preview_write_blocked_by_bulk_guard"] = type_preview_write_blocked_by_bulk_guard
+    summary["type_preview_write_requested_rows"] = type_preview_write_requested_rows
     summary["type_preview_write_rows"] = type_preview_write_rows
     summary["type_preview_write_cells"] = type_preview_write_cells
+    summary["type_preview_write_audit_path"] = typewrite_audit_path
+    summary["type_preview_write_audit_violations"] = len(type_preview_write_audit_issues)
     summary["type_preview_bulk_guard_overridden"] = (
         type_preview_write_confirmed
         and type_preview_summary.get("type_preview_bulk_guard_triggered", False)
+        and type_preview_write_allow_bulk
     )
+    try:
+        write_type_preview_summary_artifact(
+            type_preview_summary_path,
+            type_preview_rows,
+            summary,
+            write_confirmed=type_preview_write_confirmed,
+            bulk_write_allowed=type_preview_write_allow_bulk,
+        )
+        print(f"[TYPE-PREVIEW] {type_preview_summary_path} 저장 (human-readable)")
+    except Exception as e:
+        print(f"[TYPE-PREVIEW] summary 저장 실패 = {e} (cron 진행)")
     summary["github_run_id"] = run_id
     summary["github_run_url"] = f"https://github.com/yoohojong/naver-rank-checker/actions/runs/{run_id}"
     if post_write_audit_error:
@@ -815,6 +857,8 @@ def run_cycle() -> dict:
         summary["code_change_suspected"] = True  # cron 조기 종료 = 알림 trigger
     if prewrite_invariant_issues or post_write_blocking_issues:
         summary["code_change_suspected"] = True  # D-032: 불가능 조합은 사장님 확인 필요
+    if type_preview_write_blocked_by_bulk_guard or type_preview_write_audit_issues:
+        summary["code_change_suspected"] = True
 
     # 6.5. T-M38: 이전 cron K 분포 vs 현재 anomaly 감지
     try:

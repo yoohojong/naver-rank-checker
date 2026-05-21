@@ -117,6 +117,85 @@ def test_type_preview_summary_artifact_is_human_readable(tmp_path):
     assert "blocked keyword" in text
 
 
+def test_type_preview_summary_artifact_confirmed_mode_removes_preview_only_instruction(tmp_path):
+    from src.type_preview import (
+        summarize_type_preview,
+        write_type_preview_summary_artifact,
+    )
+
+    rows = [
+        {
+            "tab": "Tab A",
+            "row": 2,
+            "keyword": "sample keyword",
+            "current_type": "",
+            "suggested_type": "AB",
+            "block_order": ["AB"],
+            "k_area": "AB",
+            "link_empty": False,
+            "parser_confidence": 0.9,
+            "html_status": "ok",
+            "reason": "suggested_type_differs",
+            "would_update": True,
+        }
+    ]
+    path = tmp_path / "type-preview-summary.md"
+
+    write_type_preview_summary_artifact(
+        path,
+        rows,
+        summarize_type_preview(rows),
+        write_confirmed=True,
+    )
+
+    text = path.read_text(encoding="utf-8")
+    assert "C-column write enabled" in text
+    assert "preview 확인했어. C열 write 허용 단계 진행해." not in text
+    assert "C column is not written in this preview stage." not in text
+
+
+def test_audit_type_preview_writes_detects_mismatch_and_missing_rows():
+    from src.type_preview import audit_type_preview_writes
+
+    preview_rows = [
+        {
+            "tab": "Tab A",
+            "row": 2,
+            "keyword": "sample keyword",
+            "suggested_type": "AB",
+            "html_status": "ok",
+            "would_update": True,
+        },
+        {
+            "tab": "Tab A",
+            "row": 3,
+            "keyword": "missing keyword",
+            "suggested_type": "인기글",
+            "html_status": "ok",
+            "would_update": True,
+        },
+        {
+            "tab": "Tab A",
+            "row": 4,
+            "keyword": "blocked keyword",
+            "suggested_type": "AB",
+            "html_status": "blocked",
+            "would_update": True,
+        },
+    ]
+    post_write_data = {
+        "Tab A": [
+            {"_row": 2, "키워드": "sample keyword", HEADER_TYPE: "스마트블록"},
+        ]
+    }
+
+    issues = audit_type_preview_writes(preview_rows, post_write_data)
+
+    assert [issue["code"] for issue in issues] == ["TYPE_WRITE_MISMATCH", "TYPE_WRITE_ROW_MISSING"]
+    assert issues[0]["actual_type"] == "스마트블록"
+    assert issues[0]["suggested_type"] == "AB"
+
+
 def test_build_confirmed_type_updates_only_uses_safe_candidates():
     from src.main import _build_confirmed_type_updates
     from src.sheets import HEADER_TYPE

@@ -422,3 +422,12 @@ deps = 의존성 (선행 task), parallel = 동시 작업 안전한 다른 task
   - 원인: C열 write 기능은 가능했지만 workflow 기본값을 preview-only로 보수 설정해 정기 cron에는 적용되지 않았음.
   - 변경: `apply_type_preview` 기본값을 `true`로 바꾸고, schedule 및 dispatch 기본 실행은 C열 자동 write 수행.
   - preview-only는 수동 workflow에서 `apply_type_preview=false`로 명시할 때만 사용.
+
+- 2026-05-21: **D-038 완료 - 유형(C) 자동 write 안전 디버깅 보강**
+  - 외부 리뷰: `omc ask codex` + `omc ask gemini`로 confirmed C열 write 경로를 독립 검토.
+  - 원인: C열 write 호출은 정상이나, 기존 post-write audit은 K/L/M 불가능 조합만 확인해 C열 실제 반영 실패/행 불일치를 놓칠 수 있었음.
+  - 변경: confirmed write 후 시트를 다시 읽어 preview 후보의 `suggested_type`과 실제 C열 값을 대조하는 `type-write-audit.jsonl` 생성.
+  - 변경: 대량 변경 guard가 켜지면 기본 자동 C열 write를 차단하고, 수동 workflow `allow_bulk_type_preview=true`일 때만 override.
+  - 변경: confirmed run의 markdown/issue summary에서 preview-only 컨펌 문구 제거, 요청 행/실제 반영 행/감사 위반 수 표시.
+  - 보호: `.harness/type-previews/`를 `.gitignore`에 추가해 시트 파생 keyword/type artifact 실수 커밋 방지.
+  - 검증: targeted 21 passed, 전체 `pytest -q` = 479 passed, `py_compile` 통과, `git diff --check` 통과(CRLF warning only).

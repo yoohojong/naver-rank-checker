@@ -44,3 +44,4 @@ docs/사장님-가이드/screenshots/
 # Diagnostic artifacts may include sheet-derived row data.
 .harness/audits/
 .harness/traces/
+.harness/type-previews/

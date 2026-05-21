@@ -1228,6 +1228,66 @@ class TestOperation3SuccessCommentCircuitBlocks:
         assert "write 후 2건" in comment
         assert "row-trace.jsonl" in comment
 
+    def test_type_preview_confirmed_comment_does_not_show_preview_confirm_phrase(self):
+        from scripts.post_summary_to_issue import build_success_comment
+
+        summary = {
+            "success_rate": 1.0,
+            "total_cells_written": 800,
+            "total_rows_processed": 400,
+            "cycle_seconds": 1800,
+            "retry_queue_remaining": 0,
+            "code_change_suspected": False,
+            "d024_skipped_rows": 0,
+            "cafe_whitelist_size": 26,
+            "all_known_links_count": 80,
+            "circuit_breaker_blocks": 0,
+            "circuit_breaker_tripped": False,
+            "type_preview_rows": 10,
+            "type_preview_would_update_rows": 3,
+            "type_preview_path": ".harness/type-previews/123_type-preview.jsonl",
+            "type_preview_summary_path": ".harness/type-previews/123_type-preview-summary.md",
+            "type_preview_write_confirmed": True,
+            "type_preview_write_requested_rows": 3,
+            "type_preview_write_rows": 3,
+            "type_preview_write_cells": 3,
+        }
+
+        comment = build_success_comment(summary)
+
+        assert "C열 유형 write" in comment
+        assert "요청 3행" in comment
+        assert "preview 확인했어. C열 write 허용 단계 진행해." not in comment
+
+    def test_type_preview_bulk_block_shown_in_success_comment(self):
+        from scripts.post_summary_to_issue import build_success_comment
+
+        summary = {
+            "success_rate": 1.0,
+            "total_cells_written": 800,
+            "total_rows_processed": 400,
+            "cycle_seconds": 1800,
+            "retry_queue_remaining": 0,
+            "code_change_suspected": True,
+            "d024_skipped_rows": 0,
+            "cafe_whitelist_size": 26,
+            "all_known_links_count": 80,
+            "circuit_breaker_blocks": 0,
+            "circuit_breaker_tripped": False,
+            "type_preview_rows": 120,
+            "type_preview_would_update_rows": 120,
+            "type_preview_bulk_guard_triggered": True,
+            "type_preview_path": ".harness/type-previews/123_type-preview.jsonl",
+            "type_preview_summary_path": ".harness/type-previews/123_type-preview-summary.md",
+            "type_preview_write_confirmed": True,
+            "type_preview_write_blocked_by_bulk_guard": True,
+        }
+
+        comment = build_success_comment(summary)
+
+        assert "대량 변경 guard로 미반영" in comment
+        assert "후보 120행" in comment
+
     def test_failure_comment_circuit_keyword_strong_alert(self):
         """운영 3: build_failure_comment reason 안 차단 키워드 포함 시 = ⚠️ 명시 + 자동 회복 안내."""
         from scripts.post_summary_to_issue import build_failure_comment

@@ -206,6 +206,58 @@ def summarize_type_preview(
     }
 
 
+def audit_type_preview_writes(type_preview_rows: Iterable[dict], post_write_data: dict[str, list[dict]]) -> list[dict]:
+    """Verify confirmed C-column writes against freshly loaded sheet rows."""
+    row_by_key: dict[tuple[str, int], dict] = {}
+    for tab_name, rows in post_write_data.items():
+        for row in rows:
+            try:
+                row_num = int(row.get("_row") or 0)
+            except (TypeError, ValueError):
+                continue
+            if row_num:
+                row_by_key[(_clean(tab_name), row_num)] = row
+
+    issues: list[dict] = []
+    for preview in type_preview_rows:
+        if preview.get("would_update") is not True:
+            continue
+        if _clean(preview.get("html_status", "")) != SAFE_HTML_STATUS:
+            continue
+        suggested_type = _clean(preview.get("suggested_type", ""))
+        tab_name = _clean(preview.get("tab", ""))
+        try:
+            row_num = int(preview.get("row") or 0)
+        except (TypeError, ValueError):
+            row_num = 0
+        if not suggested_type or not tab_name or not row_num:
+            continue
+
+        row = row_by_key.get((tab_name, row_num))
+        if row is None:
+            issues.append({
+                "code": "TYPE_WRITE_ROW_MISSING",
+                "tab": tab_name,
+                "row": row_num,
+                "keyword": _clean(preview.get("keyword", "")),
+                "suggested_type": suggested_type,
+                "actual_type": "",
+            })
+            continue
+
+        actual_type = _clean(row.get(HEADER_TYPE, ""))
+        if actual_type != suggested_type:
+            issues.append({
+                "code": "TYPE_WRITE_MISMATCH",
+                "tab": tab_name,
+                "row": row_num,
+                "keyword": _clean(preview.get("keyword", row.get("키워드", ""))),
+                "suggested_type": suggested_type,
+                "actual_type": actual_type,
+            })
+    return issues
+
+
 def _markdown_cell(value: object) -> str:
     if isinstance(value, list):
         value = ", ".join(_clean(item) for item in value)
@@ -244,6 +296,9 @@ def write_type_preview_summary_artifact(
     path: str | Path,
     rows: Iterable[dict],
     summary: dict,
+    *,
+    write_confirmed: bool = False,
+    bulk_write_allowed: bool = False,
 ) -> None:
     """Write a human-readable approval checklist next to the JSONL artifact."""
     path = Path(path)
@@ -258,7 +313,27 @@ def write_type_preview_summary_artifact(
         or _clean(row.get("reason", "")) not in ("already_current", "suggested_type_differs")
     ]
     guard = bool(summary.get("type_preview_bulk_guard_triggered", False))
-    status = "HOLD - bulk-change guard triggered" if guard else "Review ready"
+    bulk_blocked = write_confirmed and guard and not bulk_write_allowed
+    if bulk_blocked:
+        status = "HOLD - bulk-change guard blocked C-column write"
+    elif write_confirmed:
+        status = "C-column write enabled"
+    elif guard:
+        status = "HOLD - bulk-change guard triggered"
+    else:
+        status = "Review ready"
+
+    confirm_line = (
+        "- Confirm phrase: `preview 확인했어. C열 write 허용 단계 진행해.`"
+        if not write_confirmed
+        else "- Confirm phrase: not needed; C-column write mode was already enabled for this run."
+    )
+    if bulk_blocked:
+        write_line = "- C column write is blocked by the bulk-change guard in this run."
+    elif write_confirmed:
+        write_line = "- C column write is enabled for safe would_update rows in this run."
+    else:
+        write_line = "- C column is not written in this preview stage."
 
     text = "\n".join(
         [
@@ -269,7 +344,7 @@ def write_type_preview_summary_artifact(
             f"- C column candidates: {summary.get('type_preview_would_update_rows', len(candidates))}",
             f"- Update ratio: {summary.get('type_preview_update_ratio', 0):.1%}",
             f"- Bulk-change guard: {'TRIGGERED' if guard else 'ok'}",
-            "- Confirm phrase: `preview 확인했어. C열 write 허용 단계 진행해.`",
+            confirm_line,
             "",
             "## C Column Candidates",
             "",
@@ -283,7 +358,7 @@ def write_type_preview_summary_artifact(
             "",
             "- suggested_type = top representative slot from keyword search result.",
             "- k_area = actual exposure/status for your link in column K.",
-            "- C column is not written in this preview stage.",
+            write_line,
             "",
         ]
     )

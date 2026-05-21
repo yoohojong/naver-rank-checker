@@ -813,3 +813,27 @@
   - `apply_type_preview=true`로 C열 유형 write 실행: 두드러기 33행, 바디워시 56행, 샴푸 60행 = 총 149행/149셀 반영.
   - run 결과: 824행 처리, 성공률 100.0%, 재시도 큐 0, prewrite/post-write audit 0건.
   - 이전 preview 151행 대비 2행 차이는 새 run 시점의 live 재조회 결과 차이이며, write는 해당 run의 안전 후보 전부(`would_update=true`)에 적용.
+
+### D-038: 유형(C) 자동 write는 사후 C열 대조와 대량 변경 차단을 통과해야 한다
+
+**결정**: C열 confirmed write는 쓰기 호출 자체로 성공 처리하지 않고, write 후 다시 읽은 시트의 `유형` 값이 preview의 `suggested_type`과 일치해야 성공으로 본다. 대량 변경 guard가 켜지면 기본 자동 write는 중지하고, 사장님이 수동 workflow에서 `allow_bulk_type_preview=true`를 고른 경우만 override한다.
+
+**근거**:
+- `omc ask codex` 독립 리뷰에서 기존 post-write audit이 K/L/M 불가능 조합만 확인하고 C열 반영 여부를 검증하지 않는다고 지적.
+- `omc ask gemini` 독립 리뷰에서 자동 write 전환은 high-trust 경로라 parser/DOM 대량 오판 시 C열 대량 오염을 막는 enforcement가 필요하다고 지적.
+- confirmed run 이후에는 issue comment와 markdown summary가 preview-only 컨펌 문구를 계속 보여주면 운영자가 현재 write mode를 오해할 수 있다.
+
+**구현**:
+- `src/type_preview.py`: `audit_type_preview_writes()` 추가. `would_update=true`, `html_status=ok` 후보만 대상으로 post-write sheet C열을 대조.
+- `src/main.py`: `TYPE_PREVIEW_WRITE_ALLOW_BULK` 도입, bulk guard 기본 차단, `type-write-audit.jsonl` 기록, C열 감사 위반/대량 차단 시 `code_change_suspected`.
+- `.github/workflows/rank-check.yml`: 수동 override input `allow_bulk_type_preview` 추가. schedule은 override 없이 안전 차단만 가능.
+- `scripts/post_summary_to_issue.py`: confirmed write 댓글은 요청/실제 반영/감사 위반을 표시하고 preview-only 컨펌 문구를 숨김.
+- `.gitignore`: `.harness/type-previews/` 추가.
+
+**검증**:
+- 관련 targeted tests = 21 passed.
+- 전체 `pytest -q` = 479 passed.
+- `python -m py_compile src/main.py src/type_preview.py scripts/post_summary_to_issue.py` 통과.
+- `git diff --check` 통과(CRLF warning only).
+- 수정 후 `omc ask codex` 재리뷰: `.harness/type-previews/` ignore 및 workflow 구조 테스트 보강 지적 → 반영.
+- 수정 후 `omc ask gemini` 재리뷰: blocking findings 없음.
