@@ -793,3 +793,17 @@
 - `pytest -q` = 467 passed.
 - `python -m compileall src scripts tests` 통과.
 - `git diff --check` 통과(CRLF warning only).
+
+### D-036: C열 write는 preview 후보 중 would_update=true 행만 전용 경로로 쓴다
+
+**결정**: 확인된 preview write는 825행 전체가 아니라 `would_update=true`인 후보 전부를 대상으로 한다. 이번 preview 기준 후보는 151행이다.
+
+**근거**:
+- C열이 이미 `suggested_type`과 같은 행은 다시 쓸 필요가 없다.
+- 일반 `write_results`에 C열을 허용하면 D-023/D-024 보호가 깨지므로 별도 `write_type_results`로 격리한다.
+- cron 기본값은 preview-only이고, 수동 workflow input `apply_type_preview=true`일 때만 C열 write가 열린다.
+
+**검증**:
+- `tests/unit/test_sheets.py::TestD024Guard`에 전용 C열 writer 테스트 추가.
+- `tests/component/test_type_preview_flow.py`에 confirmed write flow 테스트 추가.
+- `pytest -q` = 471 passed.

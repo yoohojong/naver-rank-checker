@@ -10,6 +10,15 @@ on:
     # 매일 KST 00:07/00:27, 06:07/06:27, 12:07/12:27, 18:07/18:27 (4시간 안 2번 시도)
     - cron: '7,27 15,21,3,9 * * *'
   workflow_dispatch:  # 사장님 수동 트리거 + 외부 cron-job.org API 호출용
+    inputs:
+      apply_type_preview:
+        description: 'Confirmed: write type-preview candidates to C column'
+        required: false
+        default: 'false'
+        type: choice
+        options:
+          - 'false'
+          - 'true'
 
 # critic 2026-05-08 Critical 2: cron overlap 방지.
 concurrency:
@@ -58,6 +67,7 @@ jobs:
           CAFE_WHITELIST_SLUGS: ${{ secrets.CAFE_WHITELIST_SLUGS }}  # T-M90 (2026-05-17): 사장님 운영 카페 slug 콤마 구분
           NAVER_SLOWDOWN_BASE_SEC: '5.0'
           NAVER_SLOWDOWN_MAX_SEC: '120'
+          TYPE_PREVIEW_WRITE_CONFIRMED: ${{ github.event_name == 'workflow_dispatch' && inputs.apply_type_preview || 'false' }}
           PYTHONIOENCODING: 'utf-8'
         run: |
           ./.venv/bin/python -u -m src.main

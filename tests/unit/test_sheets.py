@@ -832,6 +832,37 @@ class TestD024Guard:
         assert "인기글" not in written_values
 
 
+    def test_write_type_results_writes_HEADER_TYPE_explicitly(self):
+        headers = ["키워드", HEADER_TYPE, HEADER_AREA]
+        client, ws = self._make_client_with_ws(headers)
+        updates = [
+            RowUpdate(row=5, columns={HEADER_TYPE: "AB"}),
+            RowUpdate(row=6, columns={HEADER_TYPE: "스마트블록"}),
+        ]
+
+        n = client.write_type_results("샴푸 카외", updates)
+
+        assert n == 2
+        ws.batch_update.assert_called_once()
+        call_args = ws.batch_update.call_args[0][0]
+        assert call_args == [
+            {"range": "B5", "values": [["AB"]]},
+            {"range": "B6", "values": [["스마트블록"]]},
+        ]
+
+    def test_write_type_results_rejects_non_type_columns(self):
+        headers = ["키워드", HEADER_TYPE, HEADER_AREA]
+        client, ws = self._make_client_with_ws(headers)
+        updates = [RowUpdate(row=5, columns={HEADER_TYPE: "AB", HEADER_AREA: "인기글"})]
+
+        n = client.write_type_results("샴푸 카외", updates)
+
+        assert n == 1
+        ws.batch_update.assert_called_once()
+        call_args = ws.batch_update.call_args[0][0]
+        assert call_args == [{"range": "B5", "values": [["AB"]]}]
+
+
 class TestD026EmptyLinkColumnGuard:
     """D-026 Phase C+D (2026-05-16) 회귀 test — 빈 link 행만 HEADER_LINK write 허용.
 

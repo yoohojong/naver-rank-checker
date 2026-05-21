@@ -76,6 +76,9 @@ def build_success_comment(summary: dict) -> str:
     type_preview_rows = summary.get("type_preview_rows", 0)
     type_preview_would_update = summary.get("type_preview_would_update_rows", 0)
     type_preview_bulk_guard = summary.get("type_preview_bulk_guard_triggered", False)
+    type_preview_write_confirmed = summary.get("type_preview_write_confirmed", False)
+    type_preview_write_rows = summary.get("type_preview_write_rows", 0)
+    type_preview_write_cells = summary.get("type_preview_write_cells", 0)
 
     health_status = "🚨 code_change_suspected" if code_change else "✅ 정상"
 
@@ -110,10 +113,16 @@ def build_success_comment(summary: dict) -> str:
 
     if type_preview_rows:
         bulk_note = " / ⚠️ 대량 변경 guard 감지" if type_preview_bulk_guard else ""
+        write_note = (
+            f"\n**C열 유형 write**: {type_preview_write_rows}행 / {type_preview_write_cells}셀 반영 완료"
+            if type_preview_write_confirmed
+            else "\n**C열 유형 write**: preview-only (미반영)"
+        )
         type_preview_line = (
             f"\n**유형 preview**: {type_preview_rows}행 / C열 변경 후보 {type_preview_would_update}행"
             f"{bulk_note}\n**type-preview artifact**: `{type_preview_name}`"
             f"\n**사장님 확인용 요약**: `{type_preview_summary_name}`"
+            f"{write_note}"
             "\n**문제없으면 댓글 문구**: `preview 확인했어. C열 write 허용 단계 진행해.`"
         )
     else:

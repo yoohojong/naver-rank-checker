@@ -31,7 +31,7 @@ from src.audit import audit_sheet_rows, build_update_trace, filter_invalid_updat
 from src.sheets import (
     SheetsClient, RowUpdate,
     rank_result_to_columns,
-    HEADER_AREA, HEADER_L, HEADER_M, HEADER_JISIKIN, HEADER_LINK,
+    HEADER_AREA, HEADER_L, HEADER_M, HEADER_JISIKIN, HEADER_LINK, HEADER_TYPE,
 )
 from src.transitions import compute_new_K, compute_new_K_with_stamp, parse_K_with_stamp, SYSTEM_K_VALUES
 from src.type_preview import (
@@ -100,6 +100,29 @@ def _blank_input_stale_output_cleanup(row: dict) -> Optional[dict]:
 def _add_type_preview(collector: Optional[TypePreviewCollector], preview_row: dict) -> None:
     if collector is not None:
         collector.add(preview_row)
+
+
+def _env_truthy(name: str) -> bool:
+    return os.environ.get(name, "").strip().lower() in {"1", "true", "yes", "y", "on"}
+
+
+def _build_confirmed_type_updates(type_preview_rows: list[dict]) -> dict[str, list[RowUpdate]]:
+    """Convert approved preview candidates into C-column-only RowUpdates."""
+    updates: dict[str, list[RowUpdate]] = {}
+    for preview in type_preview_rows:
+        if preview.get("would_update") is not True:
+            continue
+        if preview.get("html_status") != "ok":
+            continue
+        suggested_type = str(preview.get("suggested_type") or "").strip()
+        tab_name = str(preview.get("tab") or "").strip()
+        row_num = preview.get("row")
+        if not suggested_type or not tab_name or not row_num:
+            continue
+        updates.setdefault(tab_name, []).append(
+            RowUpdate(row=int(row_num), columns={HEADER_TYPE: suggested_type})
+        )
+    return updates
 
 
 def _process_row(
@@ -438,6 +461,9 @@ def run_cycle() -> dict:
     health = HealthMonitor()
     retry_queue = RetryQueue()
     type_preview = TypePreviewCollector()
+    type_preview_write_confirmed = _env_truthy("TYPE_PREVIEW_WRITE_CONFIRMED")
+    if type_preview_write_confirmed:
+        print("[TYPE-PREVIEW] confirmed C-column write enabled")
     d024_skipped_rows = 0  # D-024 (2026-05-14): except 시 시트 보존 skip 카운트 (사장님 가시성)
 
     # 1. 시트 read
@@ -688,8 +714,22 @@ def run_cycle() -> dict:
 
     # 4.5. T-M37: 매 탭에 cron 갱신 timestamp 기록 (사장님 시점 차이 인지)
     # (datetime import = 1.5 백업 block 안 이미 함수 scope import. 재사용.)
+    type_preview_write_cells = 0
+    type_preview_write_rows = 0
+    type_tab_updates: dict[str, list[RowUpdate]] = {}
+    if type_preview_write_confirmed:
+        type_tab_updates = _build_confirmed_type_updates(type_preview_rows)
+        for tab_name, updates in type_tab_updates.items():
+            if updates:
+                n = client.write_type_results(tab_name, updates)
+                type_preview_write_cells += n
+                type_preview_write_rows += len(updates)
+                print(f"  [TYPE-WRITE:{tab_name}] {len(updates)} rows / {n} cells updated")
+    else:
+        print("[TYPE-PREVIEW] C-column write disabled; preview-only")
+
     kst_iso = datetime.now(kst).strftime("%Y-%m-%d %H:%M KST")
-    for tab_name in tab_updates.keys():
+    for tab_name in sorted(set(tab_updates.keys()) | set(type_tab_updates.keys())):
         client.write_timestamp(tab_name, kst_iso)
 
     # 4.6. D-032: post-write audit — 실제 시트 상태에서 불가능 조합 재확인.
@@ -760,6 +800,13 @@ def run_cycle() -> dict:
     summary["type_preview_path"] = type_preview_path
     summary["type_preview_summary_path"] = type_preview_summary_path
     summary.update(type_preview_summary)
+    summary["type_preview_write_confirmed"] = type_preview_write_confirmed
+    summary["type_preview_write_rows"] = type_preview_write_rows
+    summary["type_preview_write_cells"] = type_preview_write_cells
+    summary["type_preview_bulk_guard_overridden"] = (
+        type_preview_write_confirmed
+        and type_preview_summary.get("type_preview_bulk_guard_triggered", False)
+    )
     summary["github_run_id"] = run_id
     summary["github_run_url"] = f"https://github.com/yoohojong/naver-rank-checker/actions/runs/{run_id}"
     if post_write_audit_error:

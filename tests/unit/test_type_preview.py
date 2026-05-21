@@ -115,3 +115,37 @@ def test_type_preview_summary_artifact_is_human_readable(tmp_path):
     assert "preview 확인했어. C열 write 허용 단계 진행해." in text
     assert "| Tab A | 2 | sample keyword |  | AB | popular | ok | suggested_type_differs |" in text
     assert "blocked keyword" in text
+
+
+def test_build_confirmed_type_updates_only_uses_safe_candidates():
+    from src.main import _build_confirmed_type_updates
+    from src.sheets import HEADER_TYPE
+
+    updates = _build_confirmed_type_updates([
+        {
+            "tab": "샴푸 카외",
+            "row": 2,
+            "suggested_type": "AB",
+            "html_status": "ok",
+            "would_update": True,
+        },
+        {
+            "tab": "샴푸 카외",
+            "row": 3,
+            "suggested_type": "인기글",
+            "html_status": "blocked",
+            "would_update": True,
+        },
+        {
+            "tab": "샴푸 카외",
+            "row": 4,
+            "suggested_type": "스마트블록",
+            "html_status": "ok",
+            "would_update": False,
+        },
+    ])
+
+    assert list(updates) == ["샴푸 카외"]
+    assert len(updates["샴푸 카외"]) == 1
+    assert updates["샴푸 카외"][0].row == 2
+    assert updates["샴푸 카외"][0].columns == {HEADER_TYPE: "AB"}

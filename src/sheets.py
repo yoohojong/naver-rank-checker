@@ -247,6 +247,41 @@ class SheetsClient:
                 )
         return len(cells)
 
+    def write_type_results(self, tab_name: str, updates: list["RowUpdate"]) -> int:
+        """Write confirmed type-preview rows to the C column only.
+
+        This deliberately does not relax write_results(). The general output
+        writer still rejects HEADER_TYPE; C writes are allowed only through this
+        explicit preview-confirmation path.
+        """
+        if not updates:
+            return 0
+        ws = self.spreadsheet.worksheet(tab_name)
+        headers = ws.row_values(1)
+        mapping = map_headers_to_columns(headers)
+        if HEADER_TYPE not in mapping:
+            print(f"  [TYPE-WRITE] {tab_name}: HEADER_TYPE column missing, skip")
+            return 0
+
+        type_col = mapping[HEADER_TYPE] + 1
+        cells = []
+        for upd in updates:
+            for col_name, new_val in upd.columns.items():
+                if col_name != HEADER_TYPE:
+                    print(f"  [TYPE-WRITE-GUARD] '{col_name}' write 거부 (row {upd.row})")
+                    continue
+                cells.append({
+                    "range": gspread.utils.rowcol_to_a1(upd.row, type_col),
+                    "values": [[new_val]],
+                })
+
+        if cells:
+            _sheets_api_retry(
+                lambda: ws.batch_update(cells, value_input_option="RAW"),
+                ctx=f"{tab_name} (type write)",
+            )
+        return len(cells)
+
     def write_timestamp(self, tab_name: str, kst_iso: str) -> None:
         """탭의 1행 16번째 컬럼(P열)에 'cron 갱신: YYYY-MM-DD HH:MM KST' 기록.
 

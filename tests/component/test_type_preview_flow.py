@@ -36,16 +36,29 @@ def _matched_result(area: ExposureArea = ExposureArea.AB, block_order=None) -> R
     return result
 
 
-def _run_cycle_with_mocks(tmp_path, monkeypatch, rows, crawler, parse_result=None, parse_error=None):
+def _run_cycle_with_mocks(
+    tmp_path,
+    monkeypatch,
+    rows,
+    crawler,
+    parse_result=None,
+    parse_error=None,
+    type_write_confirmed=False,
+):
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("GITHUB_RUN_ID", "preview123")
     monkeypatch.setenv("GITHUB_ACTIONS", "true")
+    if type_write_confirmed:
+        monkeypatch.setenv("TYPE_PREVIEW_WRITE_CONFIRMED", "true")
+    else:
+        monkeypatch.delenv("TYPE_PREVIEW_WRITE_CONFIRMED", raising=False)
     monkeypatch.setattr("src.main.SPREADSHEET_ID", "fake_id")
     monkeypatch.setattr("src.main.SERVICE_ACCOUNT_JSON", _service_account_json())
 
     mock_client = MagicMock()
     mock_client.load_all_data_tabs.side_effect = [rows, rows]
     mock_client.write_results.return_value = 0
+    mock_client.write_type_results.return_value = 0
     mock_client.write_timestamp.return_value = None
 
     patches = [
@@ -118,6 +131,32 @@ def test_run_cycle_writes_type_preview_artifact_without_c_column_write(tmp_path,
 
     written_updates = mock_client.write_results.call_args_list[0].args[1]
     assert HEADER_TYPE not in written_updates[0].columns
+    mock_client.write_type_results.assert_not_called()
+
+
+def test_run_cycle_confirmed_type_preview_writes_c_column_candidates(tmp_path, monkeypatch):
+    crawler = MagicMock()
+    crawler.warmup.return_value = None
+    crawler.fetch_search.return_value = "<html>" + ("?뺤긽" * 300) + "</html>"
+    crawler.fetch_cafe_url_status.return_value = None
+
+    summary, mock_client = _run_cycle_with_mocks(
+        tmp_path,
+        monkeypatch,
+        _base_rows(),
+        crawler,
+        parse_result=_matched_result(ExposureArea.AB, block_order=["AB", "?멸린湲"]),
+        type_write_confirmed=True,
+    )
+
+    mock_client.write_type_results.assert_called_once()
+    tab_name, updates = mock_client.write_type_results.call_args.args
+    assert tab_name == next(iter(_base_rows()))
+    assert len(updates) == 1
+    assert updates[0].row == 2
+    assert updates[0].columns == {HEADER_TYPE: "AB"}
+    assert summary["type_preview_write_confirmed"] is True
+    assert summary["type_preview_write_rows"] == 1
 
 
 def test_run_cycle_type_preview_records_blocked_rows(tmp_path, monkeypatch):

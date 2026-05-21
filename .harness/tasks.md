@@ -405,3 +405,9 @@ deps = 의존성 (선행 task), parallel = 동시 작업 안전한 다른 task
   - UX 보강: raw JSONL 확인이 필요 없도록 summary markdown에 C열 변경 후보, 주의 행, 컨펌 문구를 기록.
   - 테스트: 빈 HTML/차단/파싱 실패/대량 변경 guard/K와 유형 혼동 방지 회귀 테스트 추가.
   - 검증: `pytest -q` = 467 passed, `compileall src scripts tests` 통과, `git diff --check` 통과(CRLF warning only).
+
+- 2026-05-21: **D-036 진행 - 유형(C) confirmed write stage**
+  - 정정: 825행 전체 중 C열 변경이 필요한 행은 151행이며, 이미 맞는 674행은 쓰지 않는 것이 맞다.
+  - 구현: 일반 `write_results`의 C열 보호는 유지하고, `TYPE_PREVIEW_WRITE_CONFIRMED=true`일 때만 `write_type_results`로 C열 후보를 반영한다.
+  - Workflow: 수동 실행 input `apply_type_preview=true` 추가. 기본 cron/manual은 preview-only.
+  - 검증: 관련 테스트 14 passed, 전체 `pytest -q` 471 passed, compileall/diff check 통과.
