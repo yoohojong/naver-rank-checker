@@ -13,21 +13,25 @@ from pathlib import Path
 from typing import Iterable
 from urllib.parse import urlparse
 
-from src.sheets import HEADER_AREA, HEADER_JISIKIN, HEADER_L, HEADER_LINK, HEADER_M
+from src.sheets import (
+    HEADER_AREA,
+    HEADER_CURRENT_INPUT_KEY,
+    HEADER_JISIKIN,
+    HEADER_KEYWORD,
+    HEADER_L,
+    HEADER_LAST_CHECKED_AT,
+    HEADER_LAST_CHECKED_INPUT_KEY,
+    HEADER_LINK,
+    HEADER_M,
+    HEADER_RAW_AREA,
+    HEADER_RAW_JISIKIN,
+    HEADER_RAW_L,
+    HEADER_RAW_M,
+    INPUT_KEY_VERSION,
+    STALE_DISPLAY_K,
+)
 from src.transitions import SYSTEM_K_VALUES, parse_K_with_stamp
 
-
-HEADER_KEYWORD = "키워드"
-HEADER_CURRENT_INPUT_KEY = "현재입력키"
-HEADER_LAST_CHECKED_INPUT_KEY = "마지막검사입력키"
-HEADER_RAW_AREA = "raw_노출영역"
-HEADER_RAW_L = "raw_통합순위"
-HEADER_RAW_M = "raw_카페순위"
-HEADER_RAW_JISIKIN = "raw_지식인탭"
-HEADER_LAST_CHECKED_AT = "마지막검사시각"
-
-STALE_DISPLAY_K = "재검사필요"
-INPUT_KEY_VERSION = "v1"
 
 FORMULA_MODE_REQUIRED_HEADERS = (
     HEADER_CURRENT_INPUT_KEY,

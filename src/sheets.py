@@ -1,6 +1,7 @@
 """sheets: Google Sheets I/O, 헤더 기반 매핑, 분야별 탭 순회."""
 import json
 import random
+import re
 import time
 from dataclasses import dataclass
 from typing import Optional
@@ -50,11 +51,39 @@ def _sheets_api_retry(func, *, ctx: str = ""):
 
 # 사장님 시트 헤더 명 (2026-05-08 확인 — 정확 매칭 필수)
 HEADER_TYPE = "유형"  # C — 사장님 의도 기록 컬럼 (D-024 2026-05-14: 자동 갱신 절대 X)
+HEADER_KEYWORD = "키워드"
 HEADER_AREA = "노출영역"  # K — AB / 인기글 / 삭제 / 빈칸(미노출)
 HEADER_L = "노출여부(통합탭 순위)"  # L — integrated_rank
 HEADER_M = "노출여부(카페구좌순위)"  # M — cafe_slot_rank
 HEADER_JISIKIN = "지식인탭"  # O — 'O' or 빈칸
 HEADER_LINK = "링크"  # 사장님 입력 컬럼 (D-023 2026-05-14: 자동 갱신 절대 X — reference 용)
+HEADER_CURRENT_INPUT_KEY = "현재입력키"
+HEADER_LAST_CHECKED_INPUT_KEY = "마지막검사입력키"
+HEADER_RAW_AREA = "raw_노출영역"
+HEADER_RAW_L = "raw_통합순위"
+HEADER_RAW_M = "raw_카페순위"
+HEADER_RAW_JISIKIN = "raw_지식인탭"
+HEADER_LAST_CHECKED_AT = "마지막검사시각"
+
+STALE_DISPLAY_K = "재검사필요"
+INPUT_KEY_VERSION = "v1"
+STALE_FORMULA_HEADERS = (
+    HEADER_CURRENT_INPUT_KEY,
+    HEADER_LAST_CHECKED_INPUT_KEY,
+    HEADER_RAW_AREA,
+    HEADER_RAW_L,
+    HEADER_RAW_M,
+    HEADER_RAW_JISIKIN,
+    HEADER_LAST_CHECKED_AT,
+)
+STALE_FORMULA_WRITE_COLUMNS = frozenset({
+    HEADER_LAST_CHECKED_INPUT_KEY,
+    HEADER_RAW_AREA,
+    HEADER_RAW_L,
+    HEADER_RAW_M,
+    HEADER_RAW_JISIKIN,
+    HEADER_LAST_CHECKED_AT,
+})
 
 # D-023 (2026-05-14) 영구 룰: 사장님 시트 사용자 입력 컬럼 = 자동 갱신 절대 X.
 # write_results 가 SYSTEM_OUTPUT_COLUMNS 외 컬럼 write 시도 시 = 거부 + log.
@@ -77,6 +106,51 @@ PLAIN_EXPOSED_BASES = frozenset({"AB", "스마트블록", "인기글"})
 SPECIAL_TABS = frozenset({"카페매핑", "_meta", "설정", "config"})
 
 
+def _column_letter(col_1based: int) -> str:
+    return re.sub(r"\d+$", "", gspread.utils.rowcol_to_a1(1, col_1based))
+
+
+def _normalize_input_text(value: object) -> str:
+    return re.sub(r"\s+", " ", str(value or "").strip()).casefold()
+
+
+def _normalize_input_link(value: object) -> str:
+    text = str(value or "").strip().casefold()
+    if not text:
+        return ""
+    text = re.sub(r"^https?://", "", text)
+    text = re.sub(r"^m\.", "", text)
+    text = re.sub(r"[\?#].*$", "", text)
+    text = re.sub(r"/+", "/", text)
+    return text.rstrip("/")
+
+
+def _build_input_key_for_sheet(row: dict) -> str:
+    keyword = _normalize_input_text(row.get(HEADER_KEYWORD, ""))
+    link = _normalize_input_link(row.get(HEADER_LINK, ""))
+    if not keyword and not link:
+        return ""
+    return f"{INPUT_KEY_VERSION}|{keyword}|{link}"
+
+
+def _background_color_for_k(k_value: str) -> dict:
+    white = {"red": 1.0, "green": 1.0, "blue": 1.0}
+    if not k_value:
+        return white
+    s = str(k_value or "").strip()
+    if s.startswith("중복노출"):
+        return {"red": 0.6, "green": 0.8, "blue": 1.0}
+    if s.startswith("삭제"):
+        return {"red": 1.0, "green": 1.0, "blue": 0.0}
+    if s.startswith("누락"):
+        return {"red": 1.0, "green": 0.6, "blue": 0.2}
+    if s.startswith("미노출"):
+        return {"red": 0.9, "green": 0.9, "blue": 0.9}
+    if s.startswith(STALE_DISPLAY_K):
+        return {"red": 1.0, "green": 0.85, "blue": 0.4}
+    return white
+
+
 class SheetsClient:
     """Google Sheets 서비스 계정 인증 + spreadsheet 열기.
 
@@ -91,6 +165,234 @@ class SheetsClient:
         creds_dict = json.loads(service_account_json)
         self.gc = gspread.service_account_from_dict(creds_dict)
         self.spreadsheet = self.gc.open_by_key(spreadsheet_id)
+
+    def _build_current_input_key_formula(self, mapping: dict[str, int], row: int) -> str:
+        keyword_ref = gspread.utils.rowcol_to_a1(row, mapping[HEADER_KEYWORD] + 1)
+        link_ref = gspread.utils.rowcol_to_a1(row, mapping[HEADER_LINK] + 1)
+        return (
+            f'=IF(AND(LEN(TRIM({keyword_ref}))=0,LEN(TRIM({link_ref}))=0),"",'
+            f'"{INPUT_KEY_VERSION}|"&LOWER(REGEXREPLACE(TRIM({keyword_ref}),"\\s+"," "))&"|"&'
+            f'LOWER(REGEXREPLACE(REGEXREPLACE(REGEXREPLACE(REGEXREPLACE(TRIM({link_ref}),'
+            f'"^https?://",""),"^m\\.",""),"[\\?#].*$",""),"/+$","")))'
+        )
+
+    def _build_visible_output_formula(self, mapping: dict[str, int], row: int, raw_header: str, *, k_column: bool = False) -> str:
+        current_ref = gspread.utils.rowcol_to_a1(row, mapping[HEADER_CURRENT_INPUT_KEY] + 1)
+        last_ref = gspread.utils.rowcol_to_a1(row, mapping[HEADER_LAST_CHECKED_INPUT_KEY] + 1)
+        raw_ref = gspread.utils.rowcol_to_a1(row, mapping[raw_header] + 1)
+        if k_column:
+            system_k_pattern = r"^(AB|스마트블록|인기글|미노출|누락|삭제|실패|중복노출)( \(|$)"
+            return (
+                f'=IF(LEN({current_ref})=0,'
+                f'IF(AND(LEN({raw_ref})>0,NOT(REGEXMATCH({raw_ref},"{system_k_pattern}"))),{raw_ref},""),'
+                f'IF({current_ref}={last_ref},{raw_ref},"{STALE_DISPLAY_K}"))'
+            )
+        return f'=IF(AND(LEN({current_ref})>0,{current_ref}={last_ref}),{raw_ref},"")'
+
+    def ensure_stale_formula_mode(self, tab_name: str, rows: list[dict]) -> dict:
+        """Ensure hidden raw/input-key columns and visible K/L/M/O formulas exist."""
+        ws = self.spreadsheet.worksheet(tab_name)
+        headers = ws.row_values(1)
+        mapping = map_headers_to_columns(headers)
+        required_for_formula = [HEADER_KEYWORD, HEADER_LINK, HEADER_AREA, HEADER_L, HEADER_M, HEADER_JISIKIN]
+        missing_required = [header for header in required_for_formula if header not in mapping]
+        if missing_required:
+            print(f"  [STALE-FORMULA] {tab_name}: required headers missing {missing_required}, skip")
+            return {"headers_added": 0, "rows_backfilled": 0, "formula_rows": 0}
+
+        missing_headers = [header for header in STALE_FORMULA_HEADERS if header not in mapping]
+        if missing_headers:
+            try:
+                col_count = int(getattr(ws, "col_count", len(headers)) or len(headers))
+            except (TypeError, ValueError):
+                col_count = len(headers)
+            append_start_col = max(len(headers) + 1, 17)  # keep P1 reserved for timestamp
+            needed_cols = max(0, append_start_col + len(missing_headers) - 1 - col_count)
+            if needed_cols:
+                _sheets_api_retry(lambda: ws.add_cols(needed_cols), ctx=f"{tab_name} (stale formula add cols)")
+            header_cells = [
+                {
+                    "range": gspread.utils.rowcol_to_a1(1, append_start_col + offset - 1),
+                    "values": [[header]],
+                }
+                for offset, header in enumerate(missing_headers, start=1)
+            ]
+            _sheets_api_retry(
+                lambda: ws.batch_update(header_cells, value_input_option="RAW"),
+                ctx=f"{tab_name} (stale formula headers)",
+            )
+            expanded_headers = list(headers)
+            while len(expanded_headers) < append_start_col - 1:
+                expanded_headers.append("")
+            expanded_headers.extend(missing_headers)
+            headers = expanded_headers
+            mapping = map_headers_to_columns(headers)
+
+        rows = list(rows)
+        max_row = max([int(row.get("_row") or 0) for row in rows] + [1])
+        rows_backfilled = 0
+        if missing_headers and rows:
+            backfill_cells = []
+            newly_created_headers = set(missing_headers)
+            for row in rows:
+                row_num = int(row.get("_row") or 0)
+                if row_num < 2:
+                    continue
+                values_by_header = {
+                    HEADER_LAST_CHECKED_INPUT_KEY: _build_input_key_for_sheet(row),
+                    HEADER_RAW_AREA: str(row.get(HEADER_AREA, "") or ""),
+                    HEADER_RAW_L: str(row.get(HEADER_L, "") or ""),
+                    HEADER_RAW_M: str(row.get(HEADER_M, "") or ""),
+                    HEADER_RAW_JISIKIN: str(row.get(HEADER_JISIKIN, "") or ""),
+                    HEADER_LAST_CHECKED_AT: "migration",
+                }
+                for header, value in values_by_header.items():
+                    if header not in newly_created_headers:
+                        continue
+                    backfill_cells.append({
+                        "range": gspread.utils.rowcol_to_a1(row_num, mapping[header] + 1),
+                        "values": [[value]],
+                    })
+                rows_backfilled += 1
+            if backfill_cells:
+                _sheets_api_retry(
+                    lambda: ws.batch_update(backfill_cells, value_input_option="RAW"),
+                    ctx=f"{tab_name} (stale formula backfill)",
+                )
+
+        if max_row >= 2:
+            formula_ranges = []
+            formula_specs = [
+                (HEADER_CURRENT_INPUT_KEY, None, False),
+                (HEADER_AREA, HEADER_RAW_AREA, True),
+                (HEADER_L, HEADER_RAW_L, False),
+                (HEADER_M, HEADER_RAW_M, False),
+                (HEADER_JISIKIN, HEADER_RAW_JISIKIN, False),
+            ]
+            for target_header, raw_header, is_k in formula_specs:
+                col = mapping[target_header] + 1
+                col_letter = _column_letter(col)
+                values = []
+                for row_num in range(2, max_row + 1):
+                    formula = (
+                        self._build_current_input_key_formula(mapping, row_num)
+                        if target_header == HEADER_CURRENT_INPUT_KEY
+                        else self._build_visible_output_formula(mapping, row_num, raw_header, k_column=is_k)
+                    )
+                    values.append([formula])
+                formula_ranges.append({"range": f"{col_letter}2:{col_letter}{max_row}", "values": values})
+            _sheets_api_retry(
+                lambda: ws.batch_update(formula_ranges, value_input_option="USER_ENTERED"),
+                ctx=f"{tab_name} (stale formula visible formulas)",
+            )
+
+        hide_requests = []
+        for header in STALE_FORMULA_HEADERS:
+            if header not in mapping:
+                continue
+            idx = mapping[header]
+            hide_requests.append({
+                "updateDimensionProperties": {
+                    "range": {
+                        "sheetId": ws.id,
+                        "dimension": "COLUMNS",
+                        "startIndex": idx,
+                        "endIndex": idx + 1,
+                    },
+                    "properties": {"hiddenByUser": True},
+                    "fields": "hiddenByUser",
+                }
+            })
+        if hide_requests:
+            _sheets_api_retry(
+                lambda: self.spreadsheet.batch_update({"requests": hide_requests}),
+                ctx=f"{tab_name} (stale formula hide columns)",
+            )
+        return {"headers_added": len(missing_headers), "rows_backfilled": rows_backfilled, "formula_rows": max(0, max_row - 1)}
+
+    def write_stale_formula_results(
+        self,
+        tab_name: str,
+        updates: list["RowUpdate"],
+        *,
+        row_context: dict,
+        checked_at: str,
+    ) -> int:
+        """Write cron outputs to hidden raw columns for formula-mode sheets."""
+        if not updates:
+            return 0
+        ws = self.spreadsheet.worksheet(tab_name)
+        headers = ws.row_values(1)
+        mapping = map_headers_to_columns(headers)
+
+        link_rows: Optional[list[list[str]]] = None
+        link_read_ok = False
+        if HEADER_LINK in mapping:
+            try:
+                link_rows = _sheets_api_retry(lambda: ws.get_all_values(), ctx=f"{tab_name} (stale formula link read)")
+                if isinstance(link_rows, list):
+                    link_read_ok = True
+            except Exception as e:
+                print(f"  [STALE-FORMULA-LINK-READ-FAIL] {tab_name}: {e} — link write guard conservative")
+
+        def _row_current_link(row_1based: int) -> str:
+            if not link_read_ok or link_rows is None:
+                return "SENTINEL"
+            row_idx = row_1based - 1
+            link_idx = mapping[HEADER_LINK]
+            if 0 <= row_idx < len(link_rows):
+                row_values = link_rows[row_idx]
+                if isinstance(row_values, list) and link_idx < len(row_values):
+                    return (row_values[link_idx] or "").strip()
+                if isinstance(row_values, list):
+                    return ""
+            return "SENTINEL"
+
+        cells = []
+        color_formats = []
+        for upd in updates:
+            source_row = row_context.get(upd.row) or row_context.get((tab_name, upd.row)) or {"_row": upd.row, "_tab": tab_name}
+            effective_row = dict(source_row)
+            if upd.columns.get(HEADER_LINK):
+                effective_row[HEADER_LINK] = upd.columns.get(HEADER_LINK, "")
+            formula_columns = {
+                HEADER_LAST_CHECKED_INPUT_KEY: _build_input_key_for_sheet(effective_row),
+                HEADER_RAW_AREA: str(upd.columns.get(HEADER_AREA, "") or ""),
+                HEADER_RAW_L: str(upd.columns.get(HEADER_L, "") or ""),
+                HEADER_RAW_M: str(upd.columns.get(HEADER_M, "") or ""),
+                HEADER_RAW_JISIKIN: str(upd.columns.get(HEADER_JISIKIN, "") or ""),
+                HEADER_LAST_CHECKED_AT: checked_at,
+            }
+            current_link = _row_current_link(upd.row)
+            if not current_link and upd.columns.get(HEADER_LINK):
+                formula_columns[HEADER_LINK] = str(upd.columns.get(HEADER_LINK) or "")
+
+            for col_name, new_val in formula_columns.items():
+                if col_name == HEADER_LINK:
+                    if current_link:
+                        print(f"  [STALE-FORMULA-LINK-GUARD] '{col_name}' write 거부 (row {upd.row}, 현재 link 비어있지 않음)")
+                        continue
+                elif col_name not in STALE_FORMULA_WRITE_COLUMNS:
+                    print(f"  [STALE-FORMULA-GUARD] '{col_name}' write 거부 (row {upd.row})")
+                    continue
+                if col_name not in mapping:
+                    continue
+                cells.append({
+                    "range": gspread.utils.rowcol_to_a1(upd.row, mapping[col_name] + 1),
+                    "values": [[new_val]],
+                })
+
+            if HEADER_AREA in mapping:
+                color_formats.append({
+                    "range": gspread.utils.rowcol_to_a1(upd.row, mapping[HEADER_AREA] + 1),
+                    "format": {"backgroundColor": _background_color_for_k(formula_columns.get(HEADER_RAW_AREA, ""))},
+                })
+
+        if cells:
+            _sheets_api_retry(lambda: ws.batch_update(cells, value_input_option="RAW"), ctx=f"{tab_name} (stale formula raw write)")
+        if color_formats:
+            _sheets_api_retry(lambda: ws.batch_format(color_formats), ctx=f"{tab_name} (stale formula colors)")
+        return len(cells)
 
     def write_results(self, tab_name: str, updates: list["RowUpdate"]) -> int:
         """한 탭에 여러 행을 batch_update 1회 호출.

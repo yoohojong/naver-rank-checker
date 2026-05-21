@@ -470,10 +470,13 @@ def run_cycle() -> dict:
     type_preview = TypePreviewCollector()
     type_preview_write_confirmed = _env_truthy("TYPE_PREVIEW_WRITE_CONFIRMED")
     type_preview_write_allow_bulk = _env_truthy("TYPE_PREVIEW_WRITE_ALLOW_BULK")
+    stale_formula_mode_enabled = _env_truthy("STALE_OUTPUT_FORMULA_MODE")
     if type_preview_write_confirmed:
         print("[TYPE-PREVIEW] confirmed C-column write enabled")
     if type_preview_write_allow_bulk:
         print("[TYPE-PREVIEW] bulk-change guard override enabled")
+    if stale_formula_mode_enabled:
+        print("[STALE-FORMULA] K/L/M/O formula mode enabled")
     d024_skipped_rows = 0  # D-024 (2026-05-14): except 시 시트 보존 skip 카운트 (사장님 가시성)
 
     # 1. 시트 read
@@ -515,6 +518,25 @@ def run_cycle() -> dict:
     except Exception as e:
         # 백업 실패 = log + 진행 (= cron 자체 중단 X). 사장님 가시성 = summary 안 표시.
         print(f"[T-M81 백업] 실패 = {e} (cron 진행)")
+
+    stale_formula_setup_summary = {"tabs": 0, "headers_added": 0, "rows_backfilled": 0, "formula_rows": 0}
+    if stale_formula_mode_enabled:
+        for tab_name, rows in data.items():
+            setup = client.ensure_stale_formula_mode(tab_name, rows)
+            stale_formula_setup_summary["tabs"] += 1
+            stale_formula_setup_summary["headers_added"] += int(setup.get("headers_added", 0) or 0)
+            stale_formula_setup_summary["rows_backfilled"] += int(setup.get("rows_backfilled", 0) or 0)
+            stale_formula_setup_summary["formula_rows"] += int(setup.get("formula_rows", 0) or 0)
+        # Reload after formula/header migration so preview, backup-adjacent audits,
+        # and crawler context all see the current formula-mode sheet shape.
+        data = client.load_all_data_tabs(tab_filter=_carea_filter)
+        print(
+            "[STALE-FORMULA] setup "
+            f"tabs={stale_formula_setup_summary['tabs']} "
+            f"headers_added={stale_formula_setup_summary['headers_added']} "
+            f"rows_backfilled={stale_formula_setup_summary['rows_backfilled']} "
+            f"formula_rows={stale_formula_setup_summary['formula_rows']}"
+        )
 
     # D-032: post-write audit baseline. 기존 시트 debt 는 artifact/comment 에 남기되,
     # 이번 run 이 새로 만들었거나 건드린 행만 workflow 실패 조건으로 본다.
@@ -732,10 +754,21 @@ def run_cycle() -> dict:
     tab_updates = filtered_updates
 
     # 4. 시트 batch_update (탭별 1 호출)
+    kst_iso = datetime.now(kst).strftime("%Y-%m-%d %H:%M KST")
     total_cells = 0
+    stale_formula_mode_cells = 0
     for tab_name, updates in tab_updates.items():
         if updates:
-            n = client.write_results(tab_name, updates)
+            if stale_formula_mode_enabled:
+                n = client.write_stale_formula_results(
+                    tab_name,
+                    updates,
+                    row_context=row_context,
+                    checked_at=kst_iso,
+                )
+                stale_formula_mode_cells += n
+            else:
+                n = client.write_results(tab_name, updates)
             total_cells += n
             print(f"  [{tab_name}] {len(updates)} 행 / {n} 셀 갱신")
 
@@ -762,7 +795,6 @@ def run_cycle() -> dict:
     else:
         print("[TYPE-PREVIEW] C-column write disabled; preview-only")
 
-    kst_iso = datetime.now(kst).strftime("%Y-%m-%d %H:%M KST")
     for tab_name in sorted(set(tab_updates.keys()) | set(type_tab_updates.keys())):
         client.write_timestamp(tab_name, kst_iso)
 
@@ -860,6 +892,9 @@ def run_cycle() -> dict:
     summary["type_preview_write_cells"] = type_preview_write_cells
     summary["type_preview_write_audit_path"] = typewrite_audit_path
     summary["type_preview_write_audit_violations"] = len(type_preview_write_audit_issues)
+    summary["stale_formula_mode_enabled"] = stale_formula_mode_enabled
+    summary["stale_formula_mode_cells_written"] = stale_formula_mode_cells
+    summary["stale_formula_mode_setup"] = stale_formula_setup_summary
     summary["type_preview_bulk_guard_overridden"] = (
         type_preview_write_confirmed
         and type_preview_summary.get("type_preview_bulk_guard_triggered", False)

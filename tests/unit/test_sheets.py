@@ -583,6 +583,190 @@ class TestWriteTimestamp:
         client.spreadsheet.worksheet.assert_called_with("바디워시카외")
 
 
+class TestStaleFormulaMode:
+    def _make_client_with_ws(self, headers, *, col_count=None):
+        fake_creds = json.dumps({
+            "type": "service_account",
+            "client_email": "x@example.iam.gserviceaccount.com",
+            "private_key": "-----BEGIN PRIVATE KEY-----\nFAKE\n-----END PRIVATE KEY-----\n",
+            "token_uri": "https://oauth2.googleapis.com/token",
+        })
+        with patch("src.sheets.gspread.service_account_from_dict") as mock_auth:
+            mock_gc = MagicMock()
+            mock_sheet = MagicMock()
+            mock_ws = MagicMock()
+            mock_ws.id = 12345
+            mock_ws.col_count = col_count if col_count is not None else len(headers)
+            mock_ws.row_values.return_value = headers
+            mock_ws.get_all_values.return_value = [
+                headers,
+                [
+                    "5/21", "한수연", "AB", "지루성두피염원인", "", "", "", "", "",
+                    "https://cafe.naver.com/workee/1325909", "AB", "2", "2", "", "",
+                ],
+            ]
+            mock_sheet.worksheet.return_value = mock_ws
+            mock_gc.open_by_key.return_value = mock_sheet
+            mock_auth.return_value = mock_gc
+            client = SheetsClient(spreadsheet_id="abc", service_account_json=fake_creds)
+        return client, mock_ws, client.spreadsheet
+
+    def test_ensure_stale_formula_mode_adds_hidden_headers_backfills_and_formulas(self):
+        from src.sheets import (
+            HEADER_CURRENT_INPUT_KEY,
+            HEADER_LAST_CHECKED_INPUT_KEY,
+            HEADER_RAW_AREA,
+            HEADER_RAW_L,
+            STALE_DISPLAY_K,
+        )
+
+        headers = [
+            "작업일", "작업자", "유형", "키워드", "MB", "PC", "총합", "작업아이디",
+            "카페/게시글", "링크", "노출영역",
+            "노출여부(통합탭 순위)", "노출여부(카페구좌순위)", "블로그", "지식인탭",
+        ]
+        client, ws, spreadsheet = self._make_client_with_ws(headers, col_count=len(headers))
+
+        summary = client.ensure_stale_formula_mode(
+            "샴푸 카외",
+            [{
+                "_row": 2,
+                "키워드": "지루성두피염원인",
+                "링크": "https://cafe.naver.com/workee/1325909",
+                "노출영역": "AB",
+                "노출여부(통합탭 순위)": "2",
+                "노출여부(카페구좌순위)": "2",
+                "지식인탭": "",
+            }],
+        )
+
+        assert summary["headers_added"] >= 7
+        assert summary["rows_backfilled"] == 1
+        ws.add_cols.assert_called_once()
+        raw_calls = [call for call in ws.batch_update.call_args_list if call.kwargs.get("value_input_option") == "RAW"]
+        formula_calls = [call for call in ws.batch_update.call_args_list if call.kwargs.get("value_input_option") == "USER_ENTERED"]
+        assert raw_calls
+        assert formula_calls
+        raw_payload = str(raw_calls)
+        assert HEADER_LAST_CHECKED_INPUT_KEY in raw_payload
+        assert HEADER_RAW_AREA in raw_payload
+        assert HEADER_RAW_L in raw_payload
+        formula_payload = str(formula_calls)
+        assert HEADER_CURRENT_INPUT_KEY not in formula_payload
+        assert STALE_DISPLAY_K in formula_payload
+        assert '( \\\\(|$)' in formula_payload
+        assert "P1" not in raw_payload
+        assert "Q1" in raw_payload
+        spreadsheet.batch_update.assert_called_once()
+
+    def test_write_stale_formula_results_writes_raw_and_key_not_visible_k(self):
+        from src.stale_preview import build_input_key
+        from src.sheets import (
+            HEADER_LAST_CHECKED_AT,
+            HEADER_LAST_CHECKED_INPUT_KEY,
+            HEADER_RAW_AREA,
+            HEADER_RAW_JISIKIN,
+            HEADER_RAW_L,
+            HEADER_RAW_M,
+        )
+
+        headers = [
+            "작업일", "작업자", "유형", "키워드", "MB", "PC", "총합", "작업아이디",
+            "카페/게시글", "링크", "노출영역",
+            "노출여부(통합탭 순위)", "노출여부(카페구좌순위)", "블로그", "지식인탭",
+            "현재입력키", "마지막검사입력키", "raw_노출영역", "raw_통합순위",
+            "raw_카페순위", "raw_지식인탭", "마지막검사시각",
+        ]
+        client, ws, _spreadsheet = self._make_client_with_ws(headers, col_count=len(headers))
+        row = {
+            "_row": 2,
+            "키워드": "지루성두피염원인",
+            "링크": "https://cafe.naver.com/workee/1325909",
+        }
+        update = RowUpdate(row=2, columns={
+            "노출영역": "누락 (5/21 20:00~)",
+            "노출여부(통합탭 순위)": "",
+            "노출여부(카페구좌순위)": "",
+            "지식인탭": "",
+        })
+
+        cells = client.write_stale_formula_results(
+            "샴푸 카외",
+            [update],
+            row_context={2: row},
+            checked_at="2026-05-21 20:00 KST",
+        )
+
+        assert cells == 6
+        payload = ws.batch_update.call_args.args[0]
+        ranges = {item["range"] for item in payload}
+        assert "K2" not in ranges
+        assert "R2" in ranges
+        values = [item["values"][0][0] for item in payload]
+        assert "누락 (5/21 20:00~)" in values
+        assert build_input_key(row) in values
+        assert "2026-05-21 20:00 KST" in values
+        expected_ranges = {
+            "Q2",  # 마지막검사입력키
+            "R2",  # raw_노출영역
+            "S2",  # raw_통합순위
+            "T2",  # raw_카페순위
+            "U2",  # raw_지식인탭
+            "V2",  # 마지막검사시각
+        }
+        assert expected_ranges.issubset(ranges)
+        assert {HEADER_RAW_AREA, HEADER_RAW_L, HEADER_RAW_M, HEADER_RAW_JISIKIN, HEADER_LAST_CHECKED_INPUT_KEY, HEADER_LAST_CHECKED_AT}
+
+    def test_stale_formula_headers_do_not_collide_with_timestamp_cell_p1(self):
+        from src.sheets import HEADER_CURRENT_INPUT_KEY
+
+        headers = [
+            "작업일", "작업자", "유형", "키워드", "MB", "PC", "총합", "작업아이디",
+            "카페/게시글", "링크", "노출영역",
+            "노출여부(통합탭 순위)", "노출여부(카페구좌순위)", "블로그", "지식인탭",
+        ]
+        client, ws, _spreadsheet = self._make_client_with_ws(headers, col_count=len(headers))
+
+        client.ensure_stale_formula_mode("샴푸 카외", [])
+        client.write_timestamp("샴푸 카외", "2026-05-21 20:00 KST")
+
+        header_payload = str([call for call in ws.batch_update.call_args_list if call.kwargs.get("value_input_option") == "RAW"])
+        assert "P1" not in header_payload
+        assert "Q1" in header_payload
+        assert HEADER_CURRENT_INPUT_KEY in header_payload
+        ws.update_cell.assert_called_once_with(1, 16, "cron 갱신: 2026-05-21 20:00 KST")
+
+    def test_partial_stale_formula_migration_backfills_only_new_columns(self):
+        headers = [
+            "작업일", "작업자", "유형", "키워드", "MB", "PC", "총합", "작업아이디",
+            "카페/게시글", "링크", "노출영역",
+            "노출여부(통합탭 순위)", "노출여부(카페구좌순위)", "블로그", "지식인탭",
+            "cron 갱신", "현재입력키", "마지막검사입력키", "raw_노출영역",
+            "raw_통합순위", "raw_카페순위", "raw_지식인탭",
+        ]
+        client, ws, _spreadsheet = self._make_client_with_ws(headers, col_count=len(headers))
+
+        client.ensure_stale_formula_mode(
+            "샴푸 카외",
+            [{
+                "_row": 2,
+                "키워드": "지루성두피염원인",
+                "링크": "https://cafe.naver.com/workee/1325909",
+                "노출영역": "재검사필요",
+                "노출여부(통합탭 순위)": "",
+                "노출여부(카페구좌순위)": "",
+                "지식인탭": "",
+            }],
+        )
+
+        raw_calls = [call for call in ws.batch_update.call_args_list if call.kwargs.get("value_input_option") == "RAW"]
+        raw_payload = str(raw_calls)
+        assert "W1" in raw_payload
+        assert "W2" in raw_payload
+        assert "R2" not in raw_payload
+        assert "재검사필요" not in raw_payload
+
+
 class TestSheetsApiRetry:
     """T-M11 (2026-05-12): Google Sheets API 503/5xx retry.
     cron 25683405754 fail 분석 결과 = gspread default retry X. document-specialist 검증.

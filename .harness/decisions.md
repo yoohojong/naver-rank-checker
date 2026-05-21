@@ -861,3 +861,25 @@
 - `python -m py_compile src/stale_preview.py src/main.py scripts/post_summary_to_issue.py` 통과.
 - 전체 `pytest -q` = 489 passed.
 - 운영 검증 workflow_dispatch run `26220524026` 성공(head `ffb18c8`). diagnostics artifact `diagnostics-26220524026` 안에 stale-preview JSONL/MD 포함. stale preview 824행, `no_baseline` 824행, mask 0행, artifact 원문 `https://cafe.naver.com` 노출 없음, issue #1 comment에 stale-output preview 요약 표시.
+
+### D-040: K/L/M/O는 raw 출력 + 입력키 공식 모드로 전환한다
+
+**결정**: D-039 preview 검증 후 실제 차단 단계로 넘어간다. `STALE_OUTPUT_FORMULA_MODE=true`에서 숨김 컬럼 `현재입력키`, `마지막검사입력키`, `raw_노출영역`, `raw_통합순위`, `raw_카페순위`, `raw_지식인탭`, `마지막검사시각`을 만들고, 보이는 K/L/M/O는 공식으로 표시한다.
+
+**동작**:
+- 현재 키워드+링크 입력키와 마지막 검사 입력키가 같으면 raw K/L/M/O를 그대로 표시한다.
+- 입력키가 다르면 K는 `재검사필요`, L/M/O는 빈칸으로 표시한다.
+- 키워드/링크가 빈 행이면 시스템 K/L/M/O는 빈칸으로 보이고, raw K가 수동 메모이면 K에 보존한다.
+- cron 결과 write는 visible K/L/M/O가 아니라 raw 컬럼과 마지막 검사 입력키/시각만 갱신한다.
+
+**보호**:
+- P열은 기존 `cron 갱신` timestamp 자리로 유지하고, 새 숨김 컬럼은 Q열부터 추가한다.
+- partial migration에서 일부 stale header만 없는 경우 기존 raw baseline은 덮지 않고 새로 만든 컬럼만 backfill한다.
+- `유형(C)`은 기존 C열 confirmed write 경로와 분리한다.
+- 수동 workflow에서 `apply_stale_formula_mode=false`로 공식 모드를 끌 수 있다. schedule/default는 true.
+
+**검증**:
+- 공식 모드 targeted tests 109 passed.
+- `python -m py_compile src/sheets.py src/stale_preview.py src/main.py scripts/post_summary_to_issue.py` 통과.
+- 전체 `pytest -q` = 495 passed.
+- `git diff --check` 통과(CRLF warning only).

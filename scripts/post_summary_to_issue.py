@@ -90,6 +90,9 @@ def build_success_comment(summary: dict) -> str:
     stale_preview_stale = summary.get("stale_preview_stale_rows", 0)
     stale_preview_no_baseline = summary.get("stale_preview_no_baseline_rows", 0)
     stale_preview_mask = summary.get("stale_preview_would_mask_rows", 0)
+    stale_formula_mode_enabled = summary.get("stale_formula_mode_enabled", False)
+    stale_formula_mode_cells = summary.get("stale_formula_mode_cells_written", 0)
+    stale_formula_setup = summary.get("stale_formula_mode_setup", {}) or {}
 
     health_status = "🚨 code_change_suspected" if code_change else "✅ 정상"
 
@@ -167,6 +170,15 @@ def build_success_comment(summary: dict) -> str:
     else:
         stale_preview_line = "\n**stale-output preview**: 0행"
 
+    if stale_formula_mode_enabled:
+        stale_formula_line = (
+            f"\n**K/L/M/O stale 공식 모드**: ON / raw·입력키 write {stale_formula_mode_cells}셀"
+            f" / headers+{stale_formula_setup.get('headers_added', 0)}"
+            f" / backfill {stale_formula_setup.get('rows_backfilled', 0)}행"
+        )
+    else:
+        stale_formula_line = "\n**K/L/M/O stale 공식 모드**: OFF"
+
     return f"""{OWNER_MENTION} ## ✅ cron 완료 — {format_kst()}
 
 **처리 시간**: {minutes}분 {sec_remain}초
@@ -175,7 +187,7 @@ def build_success_comment(summary: dict) -> str:
 **성공률**: {success_pct}
 **재시도 큐 남음**: {retry_left}
 **예외 시 시트 보존 (D-024)**: {d024_skipped} 행
-**상태**: {health_status}{whitelist_line}{circuit_line}{audit_line}{type_preview_line}{stale_preview_line}
+**상태**: {health_status}{whitelist_line}{circuit_line}{audit_line}{type_preview_line}{stale_preview_line}{stale_formula_line}
 
 ---
 자세한 내역 (탭별 / K 분포 등) = Actions log 링크 클릭:

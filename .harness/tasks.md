@@ -441,3 +441,10 @@ deps = 의존성 (선행 task), parallel = 동시 작업 안전한 다른 task
   - UX: issue #1 summary에 stale-output preview count와 artifact basename을 표시한다.
   - 검증: stale preview unit/component/workflow/comment targeted 11 passed, `py_compile` 통과, 전체 `pytest -q` = 489 passed.
   - 운영 검증: workflow_dispatch run `26220524026` 성공(head `ffb18c8`), diagnostics artifact에 stale-preview JSONL/MD 포함, stale preview 824행/no-baseline 824행/mask 0행, post-write audit 0건.
+
+- 2026-05-21: **D-040 진행 - 입력키 공식 모드로 K/L/M/O stale 표시 즉시 차단**
+  - 구현: `STALE_OUTPUT_FORMULA_MODE=true`일 때 숨김 raw/입력키 컬럼을 만들고, 보이는 K/L/M/O는 공식으로 전환한다.
+  - 동작: `현재입력키 == 마지막검사입력키`이면 raw K/L/M/O 표시, 다르면 K=`재검사필요`, L/M/O=빈칸.
+  - 보호: P열은 기존 timestamp용으로 예약하고 새 숨김 컬럼은 Q열부터 추가한다. partial migration 때 기존 raw baseline은 덮지 않는다.
+  - 보호: C열 `유형` 경로는 계속 `write_type_results`로만 분리하고, K/L/M/O 공식 모드 writer는 raw/입력키 컬럼만 갱신한다.
+  - 검증: 공식 모드 targeted 109 passed, 전체 `pytest -q` = 495 passed, `py_compile` 통과, `git diff --check` 통과.

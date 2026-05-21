@@ -1319,6 +1319,36 @@ class TestOperation3SuccessCommentCircuitBlocks:
         assert "no-baseline 390" in comment
         assert "123_stale-preview.jsonl" in comment
 
+    def test_stale_formula_mode_shown_in_success_comment(self):
+        from scripts.post_summary_to_issue import build_success_comment
+
+        summary = {
+            "success_rate": 1.0,
+            "total_cells_written": 12,
+            "total_rows_processed": 2,
+            "cycle_seconds": 60,
+            "retry_queue_remaining": 0,
+            "code_change_suspected": False,
+            "d024_skipped_rows": 0,
+            "cafe_whitelist_size": 26,
+            "all_known_links_count": 80,
+            "circuit_breaker_blocks": 0,
+            "circuit_breaker_tripped": False,
+            "stale_formula_mode_enabled": True,
+            "stale_formula_mode_cells_written": 12,
+            "stale_formula_mode_setup": {
+                "headers_added": 7,
+                "rows_backfilled": 824,
+            },
+        }
+
+        comment = build_success_comment(summary)
+
+        assert "K/L/M/O stale 공식 모드" in comment
+        assert "ON" in comment
+        assert "raw·입력키 write 12셀" in comment
+        assert "backfill 824행" in comment
+
     def test_failure_comment_circuit_keyword_strong_alert(self):
         """운영 3: build_failure_comment reason 안 차단 키워드 포함 시 = ⚠️ 명시 + 자동 회복 안내."""
         from scripts.post_summary_to_issue import build_failure_comment

@@ -67,6 +67,7 @@ def _run_cycle_with_mocks(
     parse_error=None,
     type_write_confirmed=False,
     type_write_allow_bulk=False,
+    stale_formula_mode=False,
     post_write_rows=None,
     type_write_cells=0,
 ):
@@ -81,12 +82,21 @@ def _run_cycle_with_mocks(
         monkeypatch.setenv("TYPE_PREVIEW_WRITE_ALLOW_BULK", "true")
     else:
         monkeypatch.delenv("TYPE_PREVIEW_WRITE_ALLOW_BULK", raising=False)
+    if stale_formula_mode:
+        monkeypatch.setenv("STALE_OUTPUT_FORMULA_MODE", "true")
+    else:
+        monkeypatch.delenv("STALE_OUTPUT_FORMULA_MODE", raising=False)
     monkeypatch.setattr("src.main.SPREADSHEET_ID", "fake_id")
     monkeypatch.setattr("src.main.SERVICE_ACCOUNT_JSON", _service_account_json())
 
     mock_client = MagicMock()
-    mock_client.load_all_data_tabs.side_effect = [rows, post_write_rows or rows]
+    if stale_formula_mode:
+        mock_client.load_all_data_tabs.side_effect = [rows, rows, post_write_rows or rows]
+    else:
+        mock_client.load_all_data_tabs.side_effect = [rows, post_write_rows or rows]
     mock_client.write_results.return_value = 0
+    mock_client.ensure_stale_formula_mode.return_value = {"headers_added": 0, "rows_backfilled": 0, "formula_rows": len(next(iter(rows.values()), []))}
+    mock_client.write_stale_formula_results.return_value = 6
     mock_client.write_type_results.return_value = type_write_cells
     mock_client.write_timestamp.return_value = None
 
@@ -205,6 +215,28 @@ def test_run_cycle_writes_type_preview_artifact_without_c_column_write(tmp_path,
     written_updates = mock_client.write_results.call_args_list[0].args[1]
     assert HEADER_TYPE not in written_updates[0].columns
     mock_client.write_type_results.assert_not_called()
+
+
+def test_run_cycle_stale_formula_mode_writes_raw_outputs_instead_of_visible_columns(tmp_path, monkeypatch):
+    crawler = MagicMock()
+    crawler.warmup.return_value = None
+    crawler.fetch_search.return_value = "<html>" + ("정상" * 300) + "</html>"
+    crawler.fetch_cafe_url_status.return_value = None
+
+    summary, mock_client = _run_cycle_with_mocks(
+        tmp_path,
+        monkeypatch,
+        _base_rows(),
+        crawler,
+        parse_result=_matched_result(ExposureArea.AB, block_order=["AB", "인기글"]),
+        stale_formula_mode=True,
+    )
+
+    mock_client.ensure_stale_formula_mode.assert_called_once()
+    mock_client.write_stale_formula_results.assert_called_once()
+    mock_client.write_results.assert_not_called()
+    assert summary["stale_formula_mode_enabled"] is True
+    assert summary["stale_formula_mode_cells_written"] == 6
 
 
 def test_run_cycle_confirmed_type_preview_writes_c_column_candidates(tmp_path, monkeypatch):
