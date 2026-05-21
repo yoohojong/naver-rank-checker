@@ -96,6 +96,8 @@ jobs:
           path: |
             .harness/traces/*.jsonl
             .harness/audits/*.jsonl
+            .harness/type-previews/*.jsonl
+            .harness/type-previews/*.md
           retention-days: 14
           if-no-files-found: warn
 

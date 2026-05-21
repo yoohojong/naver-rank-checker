@@ -71,6 +71,11 @@ def build_success_comment(summary: dict) -> str:
     post_write_audit_error = summary.get("post_write_audit_error", "")
     trace_name = os.path.basename(summary.get("row_trace_path", ""))
     audit_name = os.path.basename(summary.get("post_write_audit_path", ""))
+    type_preview_name = os.path.basename(summary.get("type_preview_path", ""))
+    type_preview_summary_name = os.path.basename(summary.get("type_preview_summary_path", ""))
+    type_preview_rows = summary.get("type_preview_rows", 0)
+    type_preview_would_update = summary.get("type_preview_would_update_rows", 0)
+    type_preview_bulk_guard = summary.get("type_preview_bulk_guard_triggered", False)
 
     health_status = "🚨 code_change_suspected" if code_change else "✅ 정상"
 
@@ -103,6 +108,17 @@ def build_success_comment(summary: dict) -> str:
     else:
         audit_line = ""
 
+    if type_preview_rows:
+        bulk_note = " / ⚠️ 대량 변경 guard 감지" if type_preview_bulk_guard else ""
+        type_preview_line = (
+            f"\n**유형 preview**: {type_preview_rows}행 / C열 변경 후보 {type_preview_would_update}행"
+            f"{bulk_note}\n**type-preview artifact**: `{type_preview_name}`"
+            f"\n**사장님 확인용 요약**: `{type_preview_summary_name}`"
+            "\n**문제없으면 댓글 문구**: `preview 확인했어. C열 write 허용 단계 진행해.`"
+        )
+    else:
+        type_preview_line = "\n**유형 preview**: 0행"
+
     return f"""{OWNER_MENTION} ## ✅ cron 완료 — {format_kst()}
 
 **처리 시간**: {minutes}분 {sec_remain}초
@@ -111,7 +127,7 @@ def build_success_comment(summary: dict) -> str:
 **성공률**: {success_pct}
 **재시도 큐 남음**: {retry_left}
 **예외 시 시트 보존 (D-024)**: {d024_skipped} 행
-**상태**: {health_status}{whitelist_line}{circuit_line}{audit_line}
+**상태**: {health_status}{whitelist_line}{circuit_line}{audit_line}{type_preview_line}
 
 ---
 자세한 내역 (탭별 / K 분포 등) = Actions log 링크 클릭:

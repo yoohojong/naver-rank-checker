@@ -13,9 +13,10 @@
 1. 사장님이 Google Sheets 의 "샴푸 카외" / "바디워시 카외" / "두드러기 카외" 탭에 키워드 + 카페 글 링크 입력
 2. **6시간마다 자동**으로:
    - 네이버 검색
-   - 노출 영역 (AB / 인기글) 파악
+   - 노출 영역 (AB / 스마트블록 / 인기글) 파악
    - 순위 자동 계산
    - 시트의 K/L/M/지식인탭 컬럼 자동 갱신
+   - 유형(C) 후보는 `type-preview` artifact 로만 생성 (컨펌 전 C열 write 금지)
    - **노출됐다가 빠지면 K = "삭제"** 자동 표기 (사장님 즉시 인지)
 3. 사장님이 시트만 보면 됨. 클릭 0번.
 
@@ -24,8 +25,8 @@
 | 컬럼 | 의미 | 우리 시스템 |
 |------|-----|------------|
 | 작업일 / 작업자 / 유형 / 키워드 / MB / PC / 총합 / 작업아이디 / 카페·게시판 / 링크 | 사장님 운영 정보 | **건드리지 X** |
-| 유형 (C) | 검색 결과 박스 종류 최상단 1위 (AB / 인기글) | **자동 갱신** |
-| 노출영역 (K) | AB / 인기글 / 삭제 / 빈 칸(미노출) | **자동 갱신** |
+| 유형 (C) | 키워드 검색 결과 최상단 대표 구좌 타입 (AB / 스마트블록 / 인기글) | **1차 preview-only, 컨펌 전 write 금지** |
+| 노출영역 (K) | 내 링크가 실제로 노출된 구좌/상태 (AB / 스마트블록 / 인기글 / 미노출 / 누락 / 삭제) | **자동 갱신** |
 | 노출여부(통합탭 순위) (L) | 통합 검색 순위 | **자동 갱신** |
 | 노출여부(카페구좌순위) (M) | 카페 항목 중 순위 | **자동 갱신** |
 | 노출여부(블로그구좌순위) (N) | 사장님 삭제 예정 — 건드리지 X | **skip** |
@@ -60,6 +61,15 @@
 ### 수동 실행
 
 저장소 → Actions → "naver-rank-check" → "Run workflow" 버튼.
+
+### Type preview confirmation
+
+The workflow now uploads two files in the diagnostics artifact:
+- `*_type-preview.jsonl`: raw machine-readable rows
+- `*_type-preview-summary.md`: owner-readable review table
+
+Use the summary markdown, not the raw JSONL. If the summary table looks right, comment:
+`preview 확인했어. C열 write 허용 단계 진행해.`
 
 ### 사장님 새 키워드 추가
 

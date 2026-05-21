@@ -11,7 +11,7 @@
 사장님 컨벤션 (2026-05-08):
 - 처리 대상: ".카외" 끝 탭만 (3개)
 - 링크 빈 행: skip (작업자가 글 쓰기 전)
-- 컬럼: 유형 / 노출영역 / L / M / 지식인탭 만 갱신. 그 외 (작업일/작업자/MB/PC/총합/작업아이디/카페게시판) 건드리지 X.
+- 컬럼: 노출영역 / L / M / 지식인탭만 갱신. 유형(C)은 type-preview artifact만 만들고 컨펌 전 write 금지.
 """
 import gzip
 import json
@@ -34,6 +34,16 @@ from src.sheets import (
     HEADER_AREA, HEADER_L, HEADER_M, HEADER_JISIKIN, HEADER_LINK,
 )
 from src.transitions import compute_new_K, compute_new_K_with_stamp, parse_K_with_stamp, SYSTEM_K_VALUES
+from src.type_preview import (
+    TypePreviewCollector,
+    apply_final_k_area_to_preview_rows,
+    build_type_preview_error_row,
+    build_type_preview_row,
+    html_status_from_html,
+    summarize_type_preview,
+    write_type_preview_artifact,
+    write_type_preview_summary_artifact,
+)
 
 
 def _format_today_kst_stamp(dt) -> str:
@@ -87,6 +97,11 @@ def _blank_input_stale_output_cleanup(row: dict) -> Optional[dict]:
     }
 
 
+def _add_type_preview(collector: Optional[TypePreviewCollector], preview_row: dict) -> None:
+    if collector is not None:
+        collector.add(preview_row)
+
+
 def _process_row(
     row: dict,
     crawler: Crawler,
@@ -94,6 +109,7 @@ def _process_row(
     all_known_links: Optional[set] = None,  # D-026 Phase C+D (2026-05-16): 빈 link 자동 채움 logic 활용
     url_alive_cache: Optional[dict] = None,  # 호환성 유지 — 미사용 (T-M10.5 폐기)
     today_stamp: Optional[str] = None,  # D-030 (2026-05-18): "5/18 03:00" — K 시점 통합
+    type_preview_collector: Optional[TypePreviewCollector] = None,
 ) -> Optional[dict]:
     """한 행 처리 → 새 컬럼 dict 또는 None (skip).
 
@@ -133,16 +149,39 @@ def _process_row(
         # all_known_links 없음 (= 호출자가 구성 X) = 종전 동작 (미노출 표기)
         # D-030: K 통합 표기 = "미노출 (5/18 03:00~)" (= 사장님 결정 = 미노출 명시 일관)
         if not all_known_links:
-            return {
+            cols = {
                 HEADER_AREA: compute_new_K_with_stamp(prev_K_full, "미노출", today_stamp),
                 HEADER_L: "",
                 HEADER_M: "",
                 HEADER_JISIKIN: "",
             }
+            _add_type_preview(
+                type_preview_collector,
+                build_type_preview_row(
+                    row=row,
+                    result=None,
+                    columns=cols,
+                    html_status="not_fetched",
+                    reason="link_empty_no_known_links",
+                ),
+            )
+            return cols
 
         # 키워드 검색 + parser (target_url=None + link_set 매치)
         html = crawler.fetch_search(keyword)
-        result = parse_search_result(html, target_url=None, link_set=all_known_links)
+        html_status = html_status_from_html(html)
+        try:
+            result = parse_search_result(html, target_url=None, link_set=all_known_links)
+        except Exception as e:
+            _add_type_preview(
+                type_preview_collector,
+                build_type_preview_error_row(
+                    row=row,
+                    html_status="parse_failed",
+                    reason=f"parse_failed: {e}",
+                ),
+            )
+            raise
 
         if result.matched_url:
             # D-029: 매치 구좌 = result.exposure_area.value (= "AB" / "스마트블록" / "인기글")
@@ -171,16 +210,25 @@ def _process_row(
                 success=True,
                 block_type=new_K_base,  # health = base 만 (= 시점 무관)
             )
+            _add_type_preview(
+                type_preview_collector,
+                build_type_preview_row(row=row, result=result, columns=cols, html_status=html_status),
+            )
             return cols
 
         # 빈 link 행 + 매치 X = "미노출 (시점~)"
         health.record(parser_confidence=0.0, success=True, block_type=None)
-        return {
+        cols = {
             HEADER_AREA: compute_new_K_with_stamp(prev_K_full, "미노출", today_stamp),
             HEADER_L: "",
             HEADER_M: "",
             HEADER_JISIKIN: "",
         }
+        _add_type_preview(
+            type_preview_collector,
+            build_type_preview_row(row=row, result=result, columns=cols, html_status=html_status),
+        )
+        return cols
 
     # naver.me 단축 URL 해석
     if "naver.me" in link:
@@ -188,7 +236,19 @@ def _process_row(
 
     # 검색 + parser (target_url 단독 매치만)
     html = crawler.fetch_search(keyword)
-    result = parse_search_result(html, link)
+    html_status = html_status_from_html(html)
+    try:
+        result = parse_search_result(html, link)
+    except Exception as e:
+        _add_type_preview(
+            type_preview_collector,
+            build_type_preview_error_row(
+                row=row,
+                html_status="parse_failed",
+                reason=f"parse_failed: {e}",
+            ),
+        )
+        raise
 
     search_found = result.exposure_area.value != "미노출"
 
@@ -237,6 +297,10 @@ def _process_row(
         integrated_rank=result.integrated_rank if search_found else None,
         cafe_slot_rank=result.cafe_slot_rank if search_found else None,
         in_jisikin=result.in_jisikin,
+    )
+    _add_type_preview(
+        type_preview_collector,
+        build_type_preview_row(row=row, result=result, columns=cols, html_status=html_status),
     )
     return cols
 
@@ -373,6 +437,7 @@ def run_cycle() -> dict:
     crawler = Crawler(slowdown=SlowdownController(base=NAVER_SLOWDOWN_BASE_SEC, max_=NAVER_SLOWDOWN_MAX_SEC))
     health = HealthMonitor()
     retry_queue = RetryQueue()
+    type_preview = TypePreviewCollector()
     d024_skipped_rows = 0  # D-024 (2026-05-14): except 시 시트 보존 skip 카운트 (사장님 가시성)
 
     # 1. 시트 read
@@ -391,6 +456,8 @@ def run_cycle() -> dict:
     trace_path = f".harness/traces/{run_id}_{artifact_ts}_row-trace.jsonl"
     prewrite_audit_path = f".harness/audits/{run_id}_{artifact_ts}_prewrite-invariant.jsonl"
     postwrite_audit_path = f".harness/audits/{run_id}_{artifact_ts}_post-write-audit.jsonl"
+    type_preview_path = f".harness/type-previews/{run_id}_{artifact_ts}_type-preview.jsonl"
+    type_preview_summary_path = f".harness/type-previews/{run_id}_{artifact_ts}_type-preview-summary.md"
     try:
         backup_dir = ".harness/backups"
         os.makedirs(backup_dir, exist_ok=True)
@@ -468,7 +535,15 @@ def run_cycle() -> dict:
                     updates.append(RowUpdate(row=row["_row"], columns=cleanup_cols))
                     continue
 
-                cols = _process_row(row, crawler, health, all_known_links=all_known_links, url_alive_cache=url_alive_cache, today_stamp=today_kst_stamp)
+                cols = _process_row(
+                    row,
+                    crawler,
+                    health,
+                    all_known_links=all_known_links,
+                    url_alive_cache=url_alive_cache,
+                    today_stamp=today_kst_stamp,
+                    type_preview_collector=type_preview,
+                )
                 if cols is None:
                     continue  # link 빈 행 skip
                 # D-029 Pass 2 용 메타 — link 있는 행 = _row_link 주입 (= 양방향 갱신 매치 키).
@@ -485,6 +560,11 @@ def run_cycle() -> dict:
                 # 5 차단 연속 — cron 조기 종료 + 지금까지 결과 시트 반영
                 # 운영 3 (2026-05-18): 사장님 메일 알림 강화 = circuit_breaker_blocks 카운트.
                 print(f"❌ [{tab_name}] {e}")
+                type_preview.add(build_type_preview_error_row(
+                    row=row,
+                    html_status="blocked",
+                    reason=f"blocked: {e}",
+                ))
                 circuit_breaker_tripped = True
                 circuit_breaker_blocks += 1
                 break
@@ -511,7 +591,15 @@ def run_cycle() -> dict:
     if len(retry_queue) > 0 and not circuit_breaker_tripped:
         print(f"\n=== retry queue 처리: {len(retry_queue)} 행 ===")
         def retry_processor(row):
-            cols = _process_row(row, crawler, health, all_known_links=all_known_links, url_alive_cache=url_alive_cache, today_stamp=today_kst_stamp)
+            cols = _process_row(
+                row,
+                crawler,
+                health,
+                all_known_links=all_known_links,
+                url_alive_cache=url_alive_cache,
+                today_stamp=today_kst_stamp,
+                type_preview_collector=type_preview,
+            )
             return cols
         retry_results = retry_queue.process(retry_processor, slowdown_multiplier=2.0)
         for r in retry_results:
@@ -530,6 +618,17 @@ def run_cycle() -> dict:
                 # 이전 (critic 2026-05-08): "삭제" 기록 — 사장님 작업자 혼란 (차단≠진짜 삭제).
                 # 사장님 시트 손상 사례 후 폐기. 다음 cron 자연 재처리.
                 print(f"  [SKIP-PRESERVE] row={r['row'].get('_row')} kw={r['row'].get('키워드')!r}: retry 실패, K 보존")
+                error_text = str(r.get("error", ""))
+                html_status = "blocked" if any(
+                    token in error_text.lower()
+                    for token in ("blocked", "rate", "429", "차단", "limited")
+                ) else "parse_failed"
+                reason_prefix = "blocked" if html_status == "blocked" else "parse_failed"
+                type_preview.add(build_type_preview_error_row(
+                    row=r["row"],
+                    html_status=html_status,
+                    reason=f"{reason_prefix}: {error_text}",
+                ))
 
     # 3.5. D-029 Pass 2 양방향 "중복노출(구좌)" 갱신 (2026-05-18 — D-026 정정)
     # 사장님 5-18 명확 의도: 같은 link 가 여러 키워드 매치 시 = 빈 link 행 + 원본 link 행 모두 K="중복노출(구좌)"
@@ -545,6 +644,20 @@ def run_cycle() -> dict:
         for tab_name, updates in tab_updates.items()
         for upd in updates
     }
+
+    # 3.5.5. 유형(C) 1차 preview artifact. 시트 C열 write 금지, JSONL artifact 만 생성.
+    # suggested_type = 키워드 검색 결과 최상단 대표 구좌. k_area = 내 링크의 실제 K 상태.
+    type_preview_rows = apply_final_k_area_to_preview_rows(type_preview.rows(), tab_updates)
+    type_preview_summary = summarize_type_preview(type_preview_rows)
+    try:
+        write_type_preview_artifact(type_preview_path, type_preview_rows)
+        write_type_preview_summary_artifact(type_preview_summary_path, type_preview_rows, type_preview_summary)
+        print(f"[TYPE-PREVIEW] {type_preview_path} 저장 ({len(type_preview_rows)} rows)")
+        print(f"[TYPE-PREVIEW] {type_preview_summary_path} 저장 (human-readable)")
+    except Exception as e:
+        print(f"[TYPE-PREVIEW] 저장 실패 = {e} (cron 진행)")
+        type_preview_rows = []
+        type_preview_summary = summarize_type_preview(type_preview_rows)
 
     # 3.6. D-032: pre-write invariant gate + row-level trace artifact.
     # 빈 link 행이 plain AB/스마트블록/인기글 + L/M 으로 쓰이는 불가능 조합은 시트 반영 전 격리한다.
@@ -644,6 +757,9 @@ def run_cycle() -> dict:
     summary["row_trace_path"] = trace_path
     summary["prewrite_audit_path"] = prewrite_audit_path
     summary["post_write_audit_path"] = postwrite_audit_path
+    summary["type_preview_path"] = type_preview_path
+    summary["type_preview_summary_path"] = type_preview_summary_path
+    summary.update(type_preview_summary)
     summary["github_run_id"] = run_id
     summary["github_run_url"] = f"https://github.com/yoohojong/naver-rank-checker/actions/runs/{run_id}"
     if post_write_audit_error:

@@ -772,3 +772,24 @@
 - A-J 입력열까지 삭제: 사장님 입력 데이터 손상 위험이 있어 D-023/D-024 위반이다.
 - K를 `미노출`로 바꾸기: 실제 작업 row가 아니므로 순위 상태를 새로 만드는 것이고, 빈칸 cleanup이 더 정합하다.
 - 고정 입력 컬럼 목록만 사용: `검색량`, N 등 보호 컬럼 변형을 놓칠 수 있어, 비출력 실제 셀 전체를 기준으로 삼았다.
+
+### D-035: 유형(C)은 preview-first로만 제안하고, 사장님 확인용 summary를 같이 만든다
+
+**결정**: `유형(C)`은 컨펌 전까지 절대 시트에 쓰지 않는다. 1차 단계는 JSONL 원본과 사람이 읽는 markdown summary만 생성한다.
+
+**근거**:
+- `유형`은 키워드 검색 결과의 최상단 대표 구좌 타입이고, `K 노출영역`은 내 링크가 실제로 노출된 구좌/상태라 서로 의미가 다르다.
+- raw JSONL은 사장님 승인 UX로 부적합하므로 `*_type-preview-summary.md`에 변경 후보와 주의 행을 표로 제공한다.
+- 빈 HTML, 차단, 파싱 실패, 대량 변경은 C열 write 후보가 되면 안 된다.
+
+**구현**:
+- `src/type_preview.py`: exact preview schema, summary 계산, JSONL/markdown artifact writer.
+- `src/main.py`: run_cycle에서 preview 수집 후 `.harness/type-previews/*_type-preview.jsonl` 및 `*_type-preview-summary.md` 생성.
+- `scripts/post_summary_to_issue.py`: issue comment에 유형 preview count, summary artifact명, 컨펌 문구 표시.
+- `.github/workflows/rank-check.yml`: diagnostics artifact에 preview JSONL/MD 업로드.
+
+**검증**:
+- RED/GREEN: summary artifact 테스트가 구현 전 실패 후 통과.
+- `pytest -q` = 467 passed.
+- `python -m compileall src scripts tests` 통과.
+- `git diff --check` 통과(CRLF warning only).

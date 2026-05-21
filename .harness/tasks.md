@@ -398,3 +398,10 @@ deps = 의존성 (선행 task), parallel = 동시 작업 안전한 다른 task
   - 보호: K가 `SYSTEM_K_VALUES` 밖인 수동 메모(`확인중`) 또는 검색량/N 등 비출력 실제 셀이 있으면 cleanup하지 않음.
   - 검증: 신규 RED/GREEN 테스트, D-032+D-034 감사 묶음 10 passed, compileall 통과, 전체 `pytest -q` 460 passed.
   - 운영 검증: run `26177026372` 성공, post-write audit 0건, `바디워시 카외` row 230 cleanup trace 확인.
+
+- 2026-05-21: **D-035 완료 - 유형(C) preview-first + human-readable summary**
+  - 구현: `src/type_preview.py` 추가. `유형(C)` 후보는 `block_order[0]` 기반 `suggested_type`, `K 노출영역`은 실제 링크 노출 상태 `k_area`로 분리.
+  - 보호: C열 write 경로는 추가하지 않음. `type-preview.jsonl` + 사장님 확인용 `type-preview-summary.md` artifact만 생성.
+  - UX 보강: raw JSONL 확인이 필요 없도록 summary markdown에 C열 변경 후보, 주의 행, 컨펌 문구를 기록.
+  - 테스트: 빈 HTML/차단/파싱 실패/대량 변경 guard/K와 유형 혼동 방지 회귀 테스트 추가.
+  - 검증: `pytest -q` = 467 passed, `compileall src scripts tests` 통과, `git diff --check` 통과(CRLF warning only).
