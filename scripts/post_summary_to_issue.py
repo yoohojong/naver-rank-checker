@@ -83,6 +83,13 @@ def build_success_comment(summary: dict) -> str:
     type_preview_write_blocked = summary.get("type_preview_write_blocked_by_bulk_guard", False)
     type_preview_write_audit_violations = summary.get("type_preview_write_audit_violations", 0)
     type_preview_write_audit_name = os.path.basename(summary.get("type_preview_write_audit_path", ""))
+    stale_preview_name = os.path.basename(summary.get("stale_preview_path", ""))
+    stale_preview_summary_name = os.path.basename(summary.get("stale_preview_summary_path", ""))
+    stale_preview_rows = summary.get("stale_preview_rows", 0)
+    stale_preview_initialized = summary.get("stale_preview_initialized_rows", 0)
+    stale_preview_stale = summary.get("stale_preview_stale_rows", 0)
+    stale_preview_no_baseline = summary.get("stale_preview_no_baseline_rows", 0)
+    stale_preview_mask = summary.get("stale_preview_would_mask_rows", 0)
 
     health_status = "🚨 code_change_suspected" if code_change else "✅ 정상"
 
@@ -149,6 +156,17 @@ def build_success_comment(summary: dict) -> str:
     else:
         type_preview_line = "\n**유형 preview**: 0행"
 
+    if stale_preview_rows:
+        stale_preview_line = (
+            f"\n**stale-output preview**: {stale_preview_rows}행 / "
+            f"초기화 {stale_preview_initialized}행 / stale {stale_preview_stale}행 / "
+            f"no-baseline {stale_preview_no_baseline}행 / mask {stale_preview_mask}행"
+            f"\n**stale-preview artifact**: `{stale_preview_name}`"
+            f"\n**stale-preview 요약**: `{stale_preview_summary_name}`"
+        )
+    else:
+        stale_preview_line = "\n**stale-output preview**: 0행"
+
     return f"""{OWNER_MENTION} ## ✅ cron 완료 — {format_kst()}
 
 **처리 시간**: {minutes}분 {sec_remain}초
@@ -157,7 +175,7 @@ def build_success_comment(summary: dict) -> str:
 **성공률**: {success_pct}
 **재시도 큐 남음**: {retry_left}
 **예외 시 시트 보존 (D-024)**: {d024_skipped} 행
-**상태**: {health_status}{whitelist_line}{circuit_line}{audit_line}{type_preview_line}
+**상태**: {health_status}{whitelist_line}{circuit_line}{audit_line}{type_preview_line}{stale_preview_line}
 
 ---
 자세한 내역 (탭별 / K 분포 등) = Actions log 링크 클릭:

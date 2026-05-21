@@ -45,6 +45,12 @@ from src.type_preview import (
     write_type_preview_artifact,
     write_type_preview_summary_artifact,
 )
+from src.stale_preview import (
+    build_stale_preview_rows,
+    summarize_stale_preview,
+    write_stale_preview_artifact,
+    write_stale_preview_summary_artifact,
+)
 
 
 def _format_today_kst_stamp(dt) -> str:
@@ -489,6 +495,8 @@ def run_cycle() -> dict:
     typewrite_audit_path = f".harness/audits/{run_id}_{artifact_ts}_type-write-audit.jsonl"
     type_preview_path = f".harness/type-previews/{run_id}_{artifact_ts}_type-preview.jsonl"
     type_preview_summary_path = f".harness/type-previews/{run_id}_{artifact_ts}_type-preview-summary.md"
+    stale_preview_path = f".harness/stale-previews/{run_id}_{artifact_ts}_stale-preview.jsonl"
+    stale_preview_summary_path = f".harness/stale-previews/{run_id}_{artifact_ts}_stale-preview-summary.md"
     try:
         backup_dir = ".harness/backups"
         os.makedirs(backup_dir, exist_ok=True)
@@ -514,6 +522,22 @@ def run_cycle() -> dict:
     pre_write_issue_keys = {(issue.get("tab"), issue.get("row")) for issue in pre_write_sheet_issues}
     if pre_write_sheet_issues:
         print(f"[D-032-PRE-AUDIT] 기존 시트 불가능 조합 {len(pre_write_sheet_issues)}건 (baseline)")
+
+    # D-039: input-fingerprint stale-output preview. Preview-only:
+    # no hidden columns, formulas, raw-output columns, or visible K/L/M/O writes.
+    stale_preview_rows = build_stale_preview_rows(data)
+    stale_preview_summary = summarize_stale_preview(stale_preview_rows)
+    try:
+        write_stale_preview_artifact(stale_preview_path, stale_preview_rows)
+        write_stale_preview_summary_artifact(stale_preview_summary_path, stale_preview_rows, stale_preview_summary)
+        print(
+            f"[STALE-PREVIEW] {stale_preview_path} 저장 "
+            f"({len(stale_preview_rows)} rows, mask={stale_preview_summary.get('stale_preview_would_mask_rows', 0)})"
+        )
+    except Exception as e:
+        print(f"[STALE-PREVIEW] 저장 실패 = {e} (cron 진행)")
+        stale_preview_rows = []
+        stale_preview_summary = summarize_stale_preview(stale_preview_rows)
 
     # cookie warmup — Crawler 인스턴스 생성 직후 네이버 메인 1회 fetch
     # T-M26 (2026-05-12): Cold session 차단 회피. warmup 실패해도 cron 계속 진행.
@@ -825,6 +849,9 @@ def run_cycle() -> dict:
     summary["type_preview_path"] = type_preview_path
     summary["type_preview_summary_path"] = type_preview_summary_path
     summary.update(type_preview_summary)
+    summary["stale_preview_path"] = stale_preview_path
+    summary["stale_preview_summary_path"] = stale_preview_summary_path
+    summary.update(stale_preview_summary)
     summary["type_preview_write_confirmed"] = type_preview_write_confirmed
     summary["type_preview_write_allow_bulk"] = type_preview_write_allow_bulk
     summary["type_preview_write_blocked_by_bulk_guard"] = type_preview_write_blocked_by_bulk_guard

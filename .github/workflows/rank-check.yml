@@ -117,6 +117,8 @@ jobs:
             .harness/audits/*.jsonl
             .harness/type-previews/*.jsonl
             .harness/type-previews/*.md
+            .harness/stale-previews/*.jsonl
+            .harness/stale-previews/*.md
           retention-days: 14
           if-no-files-found: warn
 

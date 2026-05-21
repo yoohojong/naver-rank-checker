@@ -838,3 +838,25 @@
 - 수정 후 `omc ask codex` 재리뷰: `.harness/type-previews/` ignore 및 workflow 구조 테스트 보강 지적 → 반영.
 - 수정 후 `omc ask gemini` 재리뷰: blocking findings 없음.
 - 운영 검증: workflow_dispatch run `26203919700` 성공(head `1687d23`). 824행 처리, C열 변경 후보 12행, C열 12셀 반영, `[TYPE-WRITE-AUDIT] C열 write 불일치 0건`, post-write audit 0건, issue #1 comment `4505041750`에 confirmed write 요약 정상 표시.
+
+### D-039: stale K/L/M/O는 입력키 fingerprint로 막되, 1단계는 preview-only artifact로 검증한다
+
+**결정**: 키워드/링크가 바뀐 뒤 다음 cron 완료 전까지 이전 K/L/M/O가 보이는 문제는 `키워드+링크` 입력키와 마지막 검사 입력키 비교로 막는다. 단, 실제 시트 구조/공식 변경은 아직 하지 않고 `.harness/stale-previews/` artifact로만 검증한다.
+
+**근거**:
+- 최신 trace 기준 문제 행은 계산상 `누락`으로 바뀌었고, 오류의 본질은 parser가 아니라 사용자 입력 변경과 cron 사이의 stale output window였다.
+- 숨김 기준 컬럼이 아직 없는 현재 시트에서 빈 기준값을 stale로 보면 전 행 오탐이 발생한다. 따라서 baseline 미구축 상태는 `no_baseline`으로 분리하고 stale count에 넣지 않는다.
+- stale preview는 K/L/M/O 문제이므로 `유형(C)`/type-preview schema와 분리한다. `HEADER_TYPE`은 읽거나 쓰지 않는다.
+- artifact는 diagnostics로 업로드되므로 원본 URL과 전체 키워드를 새로 노출하지 않고 hash + redacted keyword만 기록한다.
+
+**구현**:
+- `src/stale_preview.py`: 입력키 계산, no-baseline/current/stale/manual-k/baseline-conflict 판정, JSONL/markdown writer.
+- `src/main.py`: run_cycle 초반 현재 시트 snapshot으로 stale preview artifact 생성. 실제 sheet write 없음.
+- `scripts/post_summary_to_issue.py`: issue #1 summary에 stale preview count와 artifact basename 표시.
+- `.github/workflows/rank-check.yml`: diagnostics artifact에 `.harness/stale-previews/*.jsonl`, `*.md` 포함.
+- `.gitignore`: `.harness/stale-previews/` 추가.
+
+**검증**:
+- targeted stale tests 11 passed.
+- `python -m py_compile src/stale_preview.py src/main.py scripts/post_summary_to_issue.py` 통과.
+- 전체 `pytest -q` = 489 passed.

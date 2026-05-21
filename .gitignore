@@ -45,3 +45,4 @@ docs/사장님-가이드/screenshots/
 .harness/audits/
 .harness/traces/
 .harness/type-previews/
+.harness/stale-previews/

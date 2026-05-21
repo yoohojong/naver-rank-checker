@@ -124,6 +124,50 @@ def _read_preview_summary(tmp_path):
     return files[0].read_text(encoding="utf-8")
 
 
+def _read_stale_preview_rows(tmp_path):
+    files = list((tmp_path / ".harness" / "stale-previews").glob("preview123_*_stale-preview.jsonl"))
+    assert len(files) == 1
+    return [json.loads(line) for line in files[0].read_text(encoding="utf-8").splitlines()]
+
+
+def _read_stale_preview_summary(tmp_path):
+    files = list((tmp_path / ".harness" / "stale-previews").glob("preview123_*_stale-preview-summary.md"))
+    assert len(files) == 1
+    return files[0].read_text(encoding="utf-8")
+
+
+def test_run_cycle_writes_stale_preview_artifact_without_hidden_column_write(tmp_path, monkeypatch):
+    crawler = MagicMock()
+    crawler.warmup.return_value = None
+    crawler.fetch_search.return_value = "<html>" + ("정상" * 300) + "</html>"
+    crawler.fetch_cafe_url_status.return_value = None
+
+    summary, mock_client = _run_cycle_with_mocks(
+        tmp_path,
+        monkeypatch,
+        _base_rows(),
+        crawler,
+        parse_result=_matched_result(ExposureArea.AB, block_order=["AB", "인기글"]),
+    )
+
+    rows = _read_stale_preview_rows(tmp_path)
+    assert rows[0]["tab"] == next(iter(_base_rows()))
+    assert rows[0]["row"] == 2
+    assert rows[0]["freshness_status"] == "no_baseline"
+    assert rows[0]["formula_mode_ready"] is False
+    assert rows[0]["would_mask_stale_output"] is False
+    assert summary["stale_preview_rows"] == 1
+    assert summary["stale_preview_no_baseline_rows"] == 1
+    assert summary["stale_preview_path"].endswith("_stale-preview.jsonl")
+    assert "Stale Output Preview" in _read_stale_preview_summary(tmp_path)
+    assert "https://cafe.naver.com" not in json.dumps(rows, ensure_ascii=False)
+
+    written_updates = mock_client.write_results.call_args_list[0].args[1]
+    for update in written_updates:
+        assert all(not name.startswith("raw_") for name in update.columns)
+        assert "마지막검사입력키" not in update.columns
+
+
 def test_run_cycle_writes_type_preview_artifact_without_c_column_write(tmp_path, monkeypatch):
     crawler = MagicMock()
     crawler.warmup.return_value = None

@@ -25,3 +25,8 @@ def test_rank_check_workflow_type_write_defaults_and_bulk_override():
     assert run_cycle_env["TYPE_PREVIEW_WRITE_ALLOW_BULK"] == (
         "${{ github.event_name == 'workflow_dispatch' && inputs.allow_bulk_type_preview == 'true' }}"
     )
+
+    diagnostics_step = next(step for step in run_cron_steps if step.get("name") == "Upload diagnostics artifact")
+    diagnostics_path = diagnostics_step["with"]["path"]
+    assert ".harness/stale-previews/*.jsonl" in diagnostics_path
+    assert ".harness/stale-previews/*.md" in diagnostics_path
