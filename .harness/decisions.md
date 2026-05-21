@@ -883,3 +883,12 @@
 - `python -m py_compile src/sheets.py src/stale_preview.py src/main.py scripts/post_summary_to_issue.py` 통과.
 - 전체 `pytest -q` = 495 passed.
 - `git diff --check` 통과(CRLF warning only).
+
+**운영 보정 및 최종 검증 (2026-05-22)**:
+- 최초 운영 run `26224612137`에서 공식 모드 자체는 켜졌지만 `두드러기 카외` 탭은 visible `지식인탭` 헤더가 없어 setup이 스킵되었고, stale preview가 `no-baseline 247`로 남았다.
+- 결정: `지식인탭` 헤더는 공식 모드 필수 조건에서 제외한다. K/L/M은 모든 데이터 탭에서 공식 모드로 전환하고, O열 공식은 visible `지식인탭` 헤더가 있는 탭에서만 적용한다.
+- 근거: stale window의 핵심 차단 대상은 K/L/M이며, O열 헤더가 없다는 이유로 K/L/M까지 스킵하면 `키워드+링크` 변경 직후 stale K/L/M/O 표시를 막지 못한다.
+- 구현: commit `bde6bd1` (`Allow stale formula mode without jisikin header`). `ensure_stale_formula_mode()`의 필수 헤더에서 `HEADER_JISIKIN`을 제거하고, visible O 공식 생성은 `HEADER_JISIKIN in mapping`일 때만 수행.
+- 검증: 신규 regression test가 구현 전 `formula_rows == 0`으로 실패한 뒤 통과. 전체 `pytest -q` = 496 passed, `py_compile` 통과, `git diff --check` 통과. code-reviewer blocking findings 0.
+- 운영 검증: run `26228477872` 성공, setup `tabs=3 headers_added=7 rows_backfilled=247 formula_rows=824`, stale preview `no-baseline 0`, post-write audit 0건.
+- 정기 경로 검증: cron-job.org dispatch run `26234168116` 성공, setup `tabs=3 headers_added=0 rows_backfilled=0 formula_rows=824`, stale preview `no-baseline 0`, post-write audit 0건, type-write audit 0건.

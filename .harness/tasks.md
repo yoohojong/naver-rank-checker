@@ -448,3 +448,12 @@ deps = 의존성 (선행 task), parallel = 동시 작업 안전한 다른 task
   - 보호: P열은 기존 timestamp용으로 예약하고 새 숨김 컬럼은 Q열부터 추가한다. partial migration 때 기존 raw baseline은 덮지 않는다.
   - 보호: C열 `유형` 경로는 계속 `write_type_results`로만 분리하고, K/L/M/O 공식 모드 writer는 raw/입력키 컬럼만 갱신한다.
   - 검증: 공식 모드 targeted 109 passed, 전체 `pytest -q` = 495 passed, `py_compile` 통과, `git diff --check` 통과.
+
+- 2026-05-22: **D-040 운영 검증 완료 - K/L/M/O stale 공식 모드 전 탭 적용**
+  - 보정: `두드러기 카외`처럼 visible `지식인탭` 헤더가 없는 탭도 K/L/M 공식 모드는 적용되게 수정. O열 공식만 해당 헤더가 있을 때 적용한다.
+  - 원인: 최초 운영 run `26224612137`은 `두드러기 카외` 247행이 `지식인탭` 헤더 누락으로 formula setup에서 스킵되어 `no-baseline 247`로 남았다.
+  - 코드: commit `bde6bd1` (`Allow stale formula mode without jisikin header`) push 완료.
+  - 로컬 검증: 신규 RED/GREEN 회귀 test, 공식 모드 targeted 7 passed, 전체 `pytest -q` = 496 passed, `py_compile` 통과, `git diff --check` 통과.
+  - 리뷰: code-reviewer blocking findings 0, approve.
+  - 운영 검증 1: workflow_dispatch run `26228477872` 성공(head `bde6bd1`), formula setup `tabs=3 headers_added=7 rows_backfilled=247 formula_rows=824`, stale preview `초기화 824 / no-baseline 0 / mask 0`, prewrite/post-write audit 0건.
+  - 운영 검증 2: cron-job.org dispatch run `26234168116` 성공(head `bde6bd1`), formula setup `tabs=3 headers_added=0 rows_backfilled=0 formula_rows=824`, stale preview `초기화 824 / no-baseline 0 / mask 0`, prewrite/post-write/type-write audit 0건, C열 유형 7행 write 정상.
