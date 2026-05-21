@@ -837,3 +837,4 @@
 - `git diff --check` 통과(CRLF warning only).
 - 수정 후 `omc ask codex` 재리뷰: `.harness/type-previews/` ignore 및 workflow 구조 테스트 보강 지적 → 반영.
 - 수정 후 `omc ask gemini` 재리뷰: blocking findings 없음.
+- 운영 검증: workflow_dispatch run `26203919700` 성공(head `1687d23`). 824행 처리, C열 변경 후보 12행, C열 12셀 반영, `[TYPE-WRITE-AUDIT] C열 write 불일치 0건`, post-write audit 0건, issue #1 comment `4505041750`에 confirmed write 요약 정상 표시.

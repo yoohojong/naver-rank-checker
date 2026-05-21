@@ -431,3 +431,4 @@ deps = 의존성 (선행 task), parallel = 동시 작업 안전한 다른 task
   - 변경: confirmed run의 markdown/issue summary에서 preview-only 컨펌 문구 제거, 요청 행/실제 반영 행/감사 위반 수 표시.
   - 보호: `.harness/type-previews/`를 `.gitignore`에 추가해 시트 파생 keyword/type artifact 실수 커밋 방지.
   - 검증: targeted 21 passed, 전체 `pytest -q` = 479 passed, `py_compile` 통과, `git diff --check` 통과(CRLF warning only).
+  - 운영 검증: workflow_dispatch run `26203919700` 성공(head `1687d23`), C열 후보 12행/12셀 반영, `[TYPE-WRITE-AUDIT] C열 write 불일치 0건`, post-write audit 0건.
