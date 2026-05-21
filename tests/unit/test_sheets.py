@@ -766,6 +766,38 @@ class TestStaleFormulaMode:
         assert "R2" not in raw_payload
         assert "재검사필요" not in raw_payload
 
+    def test_missing_jisikin_header_still_initializes_k_l_m_formula_mode(self):
+        headers = [
+            "작업일", "작업자", "유형", "키워드", "MB", "PC", "총합", "작업아이디",
+            "카페/게시글", "링크", "노출영역",
+            "노출여부(통합탭 순위)", "노출여부(카페구좌순위)", "블로그",
+        ]
+        client, ws, _spreadsheet = self._make_client_with_ws(headers, col_count=len(headers))
+
+        summary = client.ensure_stale_formula_mode(
+            "두드러기 카외",
+            [{
+                "_row": 2,
+                "키워드": "지루성두피염원인",
+                "링크": "https://cafe.naver.com/workee/1325909",
+                "노출영역": "AB",
+                "노출여부(통합탭 순위)": "2",
+                "노출여부(카페구좌순위)": "2",
+            }],
+        )
+
+        assert summary["formula_rows"] == 1
+        assert summary["rows_backfilled"] == 1
+        raw_calls = [call for call in ws.batch_update.call_args_list if call.kwargs.get("value_input_option") == "RAW"]
+        formula_calls = [call for call in ws.batch_update.call_args_list if call.kwargs.get("value_input_option") == "USER_ENTERED"]
+        assert raw_calls
+        assert formula_calls
+        formula_payload = str(formula_calls)
+        assert "K2:K2" in formula_payload
+        assert "L2:L2" in formula_payload
+        assert "M2:M2" in formula_payload
+        assert "O2:O2" not in formula_payload
+
 
 class TestSheetsApiRetry:
     """T-M11 (2026-05-12): Google Sheets API 503/5xx retry.

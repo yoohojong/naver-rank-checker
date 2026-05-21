@@ -194,7 +194,7 @@ class SheetsClient:
         ws = self.spreadsheet.worksheet(tab_name)
         headers = ws.row_values(1)
         mapping = map_headers_to_columns(headers)
-        required_for_formula = [HEADER_KEYWORD, HEADER_LINK, HEADER_AREA, HEADER_L, HEADER_M, HEADER_JISIKIN]
+        required_for_formula = [HEADER_KEYWORD, HEADER_LINK, HEADER_AREA, HEADER_L, HEADER_M]
         missing_required = [header for header in required_for_formula if header not in mapping]
         if missing_required:
             print(f"  [STALE-FORMULA] {tab_name}: required headers missing {missing_required}, skip")
@@ -267,8 +267,9 @@ class SheetsClient:
                 (HEADER_AREA, HEADER_RAW_AREA, True),
                 (HEADER_L, HEADER_RAW_L, False),
                 (HEADER_M, HEADER_RAW_M, False),
-                (HEADER_JISIKIN, HEADER_RAW_JISIKIN, False),
             ]
+            if HEADER_JISIKIN in mapping:
+                formula_specs.append((HEADER_JISIKIN, HEADER_RAW_JISIKIN, False))
             for target_header, raw_header, is_k in formula_specs:
                 col = mapping[target_header] + 1
                 col_letter = _column_letter(col)
