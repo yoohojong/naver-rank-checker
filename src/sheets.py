@@ -353,9 +353,24 @@ class SheetsClient:
         color_formats = []
         for upd in updates:
             source_row = row_context.get(upd.row) or row_context.get((tab_name, upd.row)) or {"_row": upd.row, "_tab": tab_name}
+            source_link = str(source_row.get(HEADER_LINK, "") or "").strip()
+            output_link = str(upd.columns.get(HEADER_LINK, "") or "").strip()
+            current_link = _row_current_link(upd.row)
+            if link_read_ok and current_link != "SENTINEL":
+                current_key_link = _normalize_input_link(current_link)
+                source_key_link = _normalize_input_link(source_link)
+                output_key_link = _normalize_input_link(output_link)
+                output_matches_current = bool(output_key_link) and output_key_link == current_key_link
+                if current_key_link != source_key_link and not output_matches_current:
+                    print(
+                        f"  [STALE-FORMULA-LINK-CHANGED] row {upd.row} skip raw write "
+                        f"(loaded_link={source_link!r}, current_link={current_link!r})"
+                    )
+                    continue
+
             effective_row = dict(source_row)
-            if upd.columns.get(HEADER_LINK):
-                effective_row[HEADER_LINK] = upd.columns.get(HEADER_LINK, "")
+            if output_link:
+                effective_row[HEADER_LINK] = output_link
             formula_columns = {
                 HEADER_LAST_CHECKED_INPUT_KEY: _build_input_key_for_sheet(effective_row),
                 HEADER_RAW_AREA: str(upd.columns.get(HEADER_AREA, "") or ""),
@@ -364,9 +379,8 @@ class SheetsClient:
                 HEADER_RAW_JISIKIN: str(upd.columns.get(HEADER_JISIKIN, "") or ""),
                 HEADER_LAST_CHECKED_AT: checked_at,
             }
-            current_link = _row_current_link(upd.row)
-            if not current_link and upd.columns.get(HEADER_LINK):
-                formula_columns[HEADER_LINK] = str(upd.columns.get(HEADER_LINK) or "")
+            if not current_link and output_link:
+                formula_columns[HEADER_LINK] = output_link
 
             for col_name, new_val in formula_columns.items():
                 if col_name == HEADER_LINK:

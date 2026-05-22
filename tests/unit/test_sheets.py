@@ -717,6 +717,53 @@ class TestStaleFormulaMode:
         assert expected_ranges.issubset(ranges)
         assert {HEADER_RAW_AREA, HEADER_RAW_L, HEADER_RAW_M, HEADER_RAW_JISIKIN, HEADER_LAST_CHECKED_INPUT_KEY, HEADER_LAST_CHECKED_AT}
 
+    def test_write_stale_formula_results_skips_if_link_changed_after_load(self):
+        from src.sheets import (
+            HEADER_CURRENT_INPUT_KEY,
+            HEADER_KEYWORD,
+            HEADER_LAST_CHECKED_AT,
+            HEADER_LAST_CHECKED_INPUT_KEY,
+            HEADER_RAW_AREA,
+            HEADER_RAW_JISIKIN,
+            HEADER_RAW_L,
+            HEADER_RAW_M,
+        )
+
+        headers = [
+            "작업일", "작업자", HEADER_TYPE, HEADER_KEYWORD, "MB", "PC", "총합", "작업아이디",
+            "카페/게시글", HEADER_LINK, HEADER_AREA,
+            HEADER_L, HEADER_M, "블로그", HEADER_JISIKIN,
+            HEADER_CURRENT_INPUT_KEY, HEADER_LAST_CHECKED_INPUT_KEY, HEADER_RAW_AREA, HEADER_RAW_L,
+            HEADER_RAW_M, HEADER_RAW_JISIKIN, HEADER_LAST_CHECKED_AT,
+        ]
+        client, ws, _spreadsheet = self._make_client_with_ws(headers, col_count=len(headers))
+        loaded_row = {
+            "_row": 2,
+            HEADER_KEYWORD: "닥터브러너스",
+            HEADER_LINK: "",
+        }
+        current_sheet_row = [""] * len(headers)
+        current_sheet_row[headers.index(HEADER_KEYWORD)] = "닥터브러너스"
+        current_sheet_row[headers.index(HEADER_LINK)] = "https://naver.me/G3vPZzJ8"
+        ws.get_all_values.return_value = [headers, current_sheet_row]
+        update = RowUpdate(row=2, columns={
+            HEADER_AREA: "미노출 (5/19 00:00~)",
+            HEADER_L: "",
+            HEADER_M: "",
+            HEADER_JISIKIN: "",
+        })
+
+        cells = client.write_stale_formula_results(
+            "샴푸 카외",
+            [update],
+            row_context={2: loaded_row},
+            checked_at="2026-05-22 17:05 KST",
+        )
+
+        assert cells == 0
+        ws.batch_update.assert_not_called()
+        ws.batch_format.assert_not_called()
+
     def test_stale_formula_headers_do_not_collide_with_timestamp_cell_p1(self):
         from src.sheets import HEADER_CURRENT_INPUT_KEY
 

@@ -892,3 +892,21 @@
 - 검증: 신규 regression test가 구현 전 `formula_rows == 0`으로 실패한 뒤 통과. 전체 `pytest -q` = 496 passed, `py_compile` 통과, `git diff --check` 통과. code-reviewer blocking findings 0.
 - 운영 검증: run `26228477872` 성공, setup `tabs=3 headers_added=7 rows_backfilled=247 formula_rows=824`, stale preview `no-baseline 0`, post-write audit 0건.
 - 정기 경로 검증: cron-job.org dispatch run `26234168116` 성공, setup `tabs=3 headers_added=0 rows_backfilled=0 formula_rows=824`, stale preview `no-baseline 0`, post-write audit 0건, type-write audit 0건.
+### D-041: 검사 중 링크가 바뀐 행은 마지막검사입력키를 쓰지 않는다
+
+**결정**: formula-mode 결과 write 직전에 실제 시트 링크를 다시 읽고, run 시작 시 읽은 링크와 달라졌으면 해당 행의 raw K/L/M/O 및 `마지막검사입력키` write를 건너뛴다. 이 행은 다음 안정 run에서 현재 링크 기준으로 다시 검사되게 둔다.
+
+**근거**:
+- 실제 증상 행은 `현재입력키=v1|닥터브러너스|naver.me/g3vpzzj8`, `마지막검사입력키=v1|닥터브러너스|` 상태였다.
+- 이는 run 시작 snapshot에는 링크가 없었지만 write 직전 또는 검사 중 시트에 링크가 추가된 TOCTOU 경로와 일치한다.
+- 이 상태에서 마지막검사입력키를 빈 링크 기준으로 쓰면, 표시 공식은 K=`재검사필요`를 반복 표시한다.
+
+**대안 검토**:
+- 공식에서 링크 차이를 무시: 링크 변경 후 오래된 결과를 정상처럼 보여 위험하다.
+- 마지막검사입력키를 현재 시트 링크로 강제 보정: 실제 검사 대상과 다른 입력을 검사 완료로 표시하므로 더 위험하다.
+- 해당 행 write skip 후 다음 run 재검사: 보수적이고 원본 시트 입력을 보존한다.
+
+**구현/검증**:
+- `src/sheets.py`: `write_stale_formula_results()`에 current sheet link 재확인 guard 추가.
+- `tests/unit/test_sheets.py`: 링크 빈 snapshot에서 현재 `naver.me` 링크로 바뀐 행은 raw write가 0건임을 재현.
+- 검증: stale formula targeted 2 passed, 관련 102 passed, 전체 `pytest -q` = 497 passed.

@@ -457,3 +457,10 @@ deps = 의존성 (선행 task), parallel = 동시 작업 안전한 다른 task
   - 리뷰: code-reviewer blocking findings 0, approve.
   - 운영 검증 1: workflow_dispatch run `26228477872` 성공(head `bde6bd1`), formula setup `tabs=3 headers_added=7 rows_backfilled=247 formula_rows=824`, stale preview `초기화 824 / no-baseline 0 / mask 0`, prewrite/post-write audit 0건.
   - 운영 검증 2: cron-job.org dispatch run `26234168116` 성공(head `bde6bd1`), formula setup `tabs=3 headers_added=0 rows_backfilled=0 formula_rows=824`, stale preview `초기화 824 / no-baseline 0 / mask 0`, prewrite/post-write/type-write audit 0건, C열 유형 7행 write 정상.
+
+- 2026-05-22: **D-041 진행 - 검사 중 링크 변경 행의 잘못된 마지막검사입력키 write 방어**
+  - 증상: `닥터브러너스` 같은 행에서 현재입력키는 `v1|키워드|naver.me/...`인데 마지막검사입력키는 `v1|키워드|`로 남아 K=`재검사필요`가 반복됨.
+  - 원인 후보 확정: formula-mode write 시 run 시작 snapshot(row_context)은 링크 빈값인데, write 직전 실제 시트 링크가 채워진 경우 raw 결과/마지막검사입력키를 빈 link 기준으로 쓰는 TOCTOU 경로.
+  - 조치: `SheetsClient.write_stale_formula_results()`가 write 직전 시트 링크를 다시 읽어 source/output link와 다르면 해당 row raw write를 skip하고 로그 `[STALE-FORMULA-LINK-CHANGED]`를 남기게 변경.
+  - 보호 의미: 검사 기준과 현재 시트 입력이 다른 행은 현재 링크 기준으로 검사 완료 처리하지 않고, 다음 안정 run에서 현재 링크 기준으로 재검사되게 둔다.
+  - 검증: stale formula targeted 2 passed, 관련 102 passed, 전체 `pytest -q` = 497 passed.
