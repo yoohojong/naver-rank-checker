@@ -923,3 +923,4 @@
 - `tests/unit/test_stale_preview.py`: `재검사필요` visible K + input key mismatch 행이 `manual_visible_k`가 아니라 `stale_input`으로 분류되는 테스트 추가.
 - `tests/unit/test_transitions.py`: `SYSTEM_K_VALUES` 상수에 `재검사필요` 포함.
 - 검증: targeted 3 passed, 관련 159 passed, 전체 `pytest -q` = 498 passed.
+- 운영 검증: workflow_dispatch run `26285503005` 성공. stale preview `manual visible-K 0`, audit 0건, `닥터브러너스` row 208 trace `prev_K=재검사필요` -> `new_K=미노출 (5/22 20:37~)`.

@@ -469,3 +469,4 @@ deps = 의존성 (선행 task), parallel = 동시 작업 안전한 다른 task
   - 원인 확정: `재검사필요`는 formula-mode의 시스템 표시값인데 `SYSTEM_K_VALUES`에 없어, stale-preview가 이를 사장님 수동 입력처럼 보호함.
   - 조치: `SYSTEM_K_VALUES`에 `재검사필요` 추가. `재검사필요` visible K + input key mismatch 행은 `stale_input`으로 분류되도록 회귀 테스트 추가.
   - 검증: targeted 3 passed, 관련 159 passed, 전체 `pytest -q` = 498 passed.
+  - 운영 검증: workflow_dispatch run `26285503005` 성공(head `d1c3443`), stale preview `stale 0 / manual visible-K 0 / mask 0`, prewrite/post-write/type-write audit 0건. `닥터브러너스` row 208 trace는 `prev_K=재검사필요` -> `new_K=미노출 (5/22 20:37~)`, `status=write_ready`; `바디워시 카외` 228행/1368셀 갱신.
