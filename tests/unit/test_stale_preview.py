@@ -196,6 +196,49 @@ def test_manual_visible_k_is_not_masked_by_preview():
     assert preview[0]["would_mask_stale_output"] is False
 
 
+def test_stale_display_k_is_system_owned_not_manual_visible_k():
+    from src.stale_preview import (
+        HEADER_CURRENT_INPUT_KEY,
+        HEADER_KEYWORD,
+        HEADER_LAST_CHECKED_INPUT_KEY,
+        HEADER_RAW_AREA,
+        HEADER_RAW_JISIKIN,
+        HEADER_RAW_L,
+        HEADER_RAW_M,
+        STALE_DISPLAY_K,
+        build_input_key,
+        build_stale_preview_rows,
+    )
+
+    old_row = {
+        HEADER_KEYWORD: "기존키워드",
+        HEADER_LINK: "https://cafe.naver.com/workee/1325909",
+    }
+    row = {
+        "_tab": "바디워시 카외",
+        "_row": 208,
+        HEADER_KEYWORD: "닥터브러너스",
+        HEADER_LINK: "https://naver.me/G3vPZzJ8",
+        HEADER_AREA: STALE_DISPLAY_K,
+        HEADER_L: "",
+        HEADER_M: "",
+        HEADER_JISIKIN: "",
+        HEADER_LAST_CHECKED_INPUT_KEY: build_input_key(old_row),
+        HEADER_RAW_AREA: "미노출 (5/19 00:00~)",
+        HEADER_RAW_L: "",
+        HEADER_RAW_M: "",
+        HEADER_RAW_JISIKIN: "",
+    }
+    row[HEADER_CURRENT_INPUT_KEY] = build_input_key(row)
+
+    preview = build_stale_preview_rows({"바디워시 카외": [row]})
+
+    assert preview[0]["freshness_status"] == "stale_input"
+    assert preview[0]["reason"] == "current_input_differs_from_last_check"
+    assert preview[0]["would_show_k"] == STALE_DISPLAY_K
+    assert preview[0]["would_mask_stale_output"] is True
+
+
 def test_sheet_current_key_conflict_is_attention_not_stale():
     from src.stale_preview import (
         HEADER_CURRENT_INPUT_KEY,

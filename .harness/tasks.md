@@ -464,3 +464,8 @@ deps = 의존성 (선행 task), parallel = 동시 작업 안전한 다른 task
   - 조치: `SheetsClient.write_stale_formula_results()`가 write 직전 시트 링크를 다시 읽어 source/output link와 다르면 해당 row raw write를 skip하고 로그 `[STALE-FORMULA-LINK-CHANGED]`를 남기게 변경.
   - 보호 의미: 검사 기준과 현재 시트 입력이 다른 행은 현재 링크 기준으로 검사 완료 처리하지 않고, 다음 안정 run에서 현재 링크 기준으로 재검사되게 둔다.
   - 검증: stale formula targeted 2 passed, 관련 102 passed, 전체 `pytest -q` = 497 passed.
+- 2026-05-22: **D-042 진행 - `재검사필요`를 수동 K로 오인하는 잔여 경로 수정**
+  - 운영 검증 run `26282199534`는 성공했지만, `닥터브러너스` 행이 stale-preview에서 `freshness_status=manual_visible_k`, `reason=visible_k_not_system_owned`, `visible_k=재검사필요`로 남는 것을 확인.
+  - 원인 확정: `재검사필요`는 formula-mode의 시스템 표시값인데 `SYSTEM_K_VALUES`에 없어, stale-preview가 이를 사장님 수동 입력처럼 보호함.
+  - 조치: `SYSTEM_K_VALUES`에 `재검사필요` 추가. `재검사필요` visible K + input key mismatch 행은 `stale_input`으로 분류되도록 회귀 테스트 추가.
+  - 검증: targeted 3 passed, 관련 159 passed, 전체 `pytest -q` = 498 passed.

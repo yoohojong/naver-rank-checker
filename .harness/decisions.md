@@ -910,3 +910,16 @@
 - `src/sheets.py`: `write_stale_formula_results()`에 current sheet link 재확인 guard 추가.
 - `tests/unit/test_sheets.py`: 링크 빈 snapshot에서 현재 `naver.me` 링크로 바뀐 행은 raw write가 0건임을 재현.
 - 검증: stale formula targeted 2 passed, 관련 102 passed, 전체 `pytest -q` = 497 passed.
+### D-042: `재검사필요`는 수동 K가 아니라 시스템 표시값이다
+
+**결정**: `재검사필요`를 `SYSTEM_K_VALUES`에 포함한다. 이 값은 사용자가 임의로 남긴 수동 메모가 아니라 stale formula mode가 current input과 last checked input의 불일치를 표시할 때 쓰는 시스템 K 상태다.
+
+**근거**:
+- 운영 run `26282199534`에서 `닥터브러너스` 행이 `visible_k=재검사필요`, `freshness_status=manual_visible_k`, `reason=visible_k_not_system_owned`로 분류됐다.
+- 이 분류 때문에 실제 input key mismatch가 `stale_input`으로 잡히지 않고 manual visible-K 보호 대상처럼 남았다.
+- `재검사필요`는 수동 메모가 아니라 공식/시스템이 만든 상태이므로 stale 판정과 정리 대상에 들어가야 한다.
+
+**검증**:
+- `tests/unit/test_stale_preview.py`: `재검사필요` visible K + input key mismatch 행이 `manual_visible_k`가 아니라 `stale_input`으로 분류되는 테스트 추가.
+- `tests/unit/test_transitions.py`: `SYSTEM_K_VALUES` 상수에 `재검사필요` 포함.
+- 검증: targeted 3 passed, 관련 159 passed, 전체 `pytest -q` = 498 passed.
