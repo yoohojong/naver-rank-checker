@@ -938,3 +938,4 @@
 - `src/sheets.py`: `_background_color_for_k()`에 팔레트 상수와 prefix 그룹을 두고, 일반 write와 formula-mode가 같은 함수로 색상을 결정한다.
 - `tests/unit/test_sheets.py`: 일반 write, stale formula-mode, timestamp가 붙은 K 값, 빈 K까지 회귀 테스트로 고정.
 - 검증: targeted 23 passed, `tests/unit/test_sheets.py` 86 passed, 전체 `pytest -q` = 499 passed.
+- 운영 검증: workflow_dispatch run `26335142451` 성공(head `7046c71`). formula mode 824행 설정, stale preview/manual visible-K/mask 0, post-write/type-write audit 0건, 전체 824행 성공.

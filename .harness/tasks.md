@@ -477,3 +477,4 @@ deps = 의존성 (선행 task), parallel = 동시 작업 안전한 다른 task
   - 색상: `AB`/`스마트블록`/`인기글`/`중복노출*`은 초록, `미노출`/`누락`/`삭제`는 붉은색, 빈값/실패/수동 메모는 무색.
   - 보존: `재검사필요`는 별도 주의 색상 유지.
   - 검증: RED targeted 21 failed, GREEN targeted 23 passed, `tests/unit/test_sheets.py` 86 passed, 전체 `pytest -q` 499 passed, `git diff --check` 통과(CRLF warning only).
+  - 운영 검증: workflow_dispatch run `26335142451` 성공(head `7046c71`), stale formula setup `tabs=3 headers_added=0 rows_backfilled=0 formula_rows=824`, stale preview `stale 0 / no-baseline 0 / manual visible-K 0 / mask 0`, post-write audit 0건, type-write audit 0건, 전체 824행 성공.
