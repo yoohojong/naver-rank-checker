@@ -924,3 +924,17 @@
 - `tests/unit/test_transitions.py`: `SYSTEM_K_VALUES` 상수에 `재검사필요` 포함.
 - 검증: targeted 3 passed, 관련 159 passed, 전체 `pytest -q` = 498 passed.
 - 운영 검증: workflow_dispatch run `26285503005` 성공. stale preview `manual visible-K 0`, audit 0건, `닥터브러너스` row 208 trace `prev_K=재검사필요` -> `new_K=미노출 (5/22 20:37~)`.
+### D-043: K열 색상은 노출=초록, 비노출=붉은색, 미작업=무색으로 단순화한다
+
+**결정**: 기존 노랑/오렌지/파랑/회색 팔레트를 없애고, K열 배경색을 사장님 판독 기준으로 단순화한다.
+
+**규칙**:
+- 노출 상태: `AB`, `스마트블록`, `인기글`, `중복노출*`은 초록색.
+- 비노출/문제 상태: `미노출`, `누락`, `삭제`는 같은 붉은색.
+- 미작업/기타: 빈 K, `실패`, 수동 메모처럼 시스템 상태 prefix가 아닌 값은 무색.
+- `재검사필요`는 stale formula mode의 주의 상태라 기존 별도 주의 색상을 유지한다.
+
+**구현/검증**:
+- `src/sheets.py`: `_background_color_for_k()`에 팔레트 상수와 prefix 그룹을 두고, 일반 write와 formula-mode가 같은 함수로 색상을 결정한다.
+- `tests/unit/test_sheets.py`: 일반 write, stale formula-mode, timestamp가 붙은 K 값, 빈 K까지 회귀 테스트로 고정.
+- 검증: targeted 23 passed, `tests/unit/test_sheets.py` 86 passed, 전체 `pytest -q` = 499 passed.

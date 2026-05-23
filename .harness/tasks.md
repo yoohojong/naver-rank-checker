@@ -470,3 +470,10 @@ deps = 의존성 (선행 task), parallel = 동시 작업 안전한 다른 task
   - 조치: `SYSTEM_K_VALUES`에 `재검사필요` 추가. `재검사필요` visible K + input key mismatch 행은 `stale_input`으로 분류되도록 회귀 테스트 추가.
   - 검증: targeted 3 passed, 관련 159 passed, 전체 `pytest -q` = 498 passed.
   - 운영 검증: workflow_dispatch run `26285503005` 성공(head `d1c3443`), stale preview `stale 0 / manual visible-K 0 / mask 0`, prewrite/post-write/type-write audit 0건. `닥터브러너스` row 208 trace는 `prev_K=재검사필요` -> `new_K=미노출 (5/22 20:37~)`, `status=write_ready`; `바디워시 카외` 228행/1368셀 갱신.
+
+- 2026-05-23: **D-043 진행 - K열 색상 규칙 단순화**
+  - 사장님 기준: 노출 상태는 초록, 미노출/누락/삭제는 같은 붉은색, 아예 작업 안 된 빈 K는 무색.
+  - 구현: `src/sheets.py`의 일반 write와 stale formula-mode 색상 경로를 `_background_color_for_k()` 기준으로 통합.
+  - 색상: `AB`/`스마트블록`/`인기글`/`중복노출*`은 초록, `미노출`/`누락`/`삭제`는 붉은색, 빈값/실패/수동 메모는 무색.
+  - 보존: `재검사필요`는 별도 주의 색상 유지.
+  - 검증: RED targeted 21 failed, GREEN targeted 23 passed, `tests/unit/test_sheets.py` 86 passed, 전체 `pytest -q` 499 passed, `git diff --check` 통과(CRLF warning only).

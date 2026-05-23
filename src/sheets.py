@@ -133,22 +133,25 @@ def _build_input_key_for_sheet(row: dict) -> str:
     return f"{INPUT_KEY_VERSION}|{keyword}|{link}"
 
 
+COLOR_NONE = {"red": 1.0, "green": 1.0, "blue": 1.0}
+COLOR_EXPOSED = {"red": 0.8, "green": 1.0, "blue": 0.8}
+COLOR_NEGATIVE = {"red": 1.0, "green": 0.8, "blue": 0.8}
+COLOR_RECHECK = {"red": 1.0, "green": 0.85, "blue": 0.4}
+EXPOSED_COLOR_PREFIXES = ("AB", "스마트블록", "인기글", "중복노출")
+NEGATIVE_COLOR_PREFIXES = ("미노출", "누락", "삭제")
+
+
 def _background_color_for_k(k_value: str) -> dict:
-    white = {"red": 1.0, "green": 1.0, "blue": 1.0}
     if not k_value:
-        return white
+        return COLOR_NONE
     s = str(k_value or "").strip()
-    if s.startswith("중복노출"):
-        return {"red": 0.6, "green": 0.8, "blue": 1.0}
-    if s.startswith("삭제"):
-        return {"red": 1.0, "green": 1.0, "blue": 0.0}
-    if s.startswith("누락"):
-        return {"red": 1.0, "green": 0.6, "blue": 0.2}
-    if s.startswith("미노출"):
-        return {"red": 0.9, "green": 0.9, "blue": 0.9}
+    if s.startswith(EXPOSED_COLOR_PREFIXES):
+        return COLOR_EXPOSED
+    if s.startswith(NEGATIVE_COLOR_PREFIXES):
+        return COLOR_NEGATIVE
     if s.startswith(STALE_DISPLAY_K):
-        return {"red": 1.0, "green": 0.85, "blue": 0.4}
-    return white
+        return COLOR_RECHECK
+    return COLOR_NONE
 
 
 class SheetsClient:
@@ -510,52 +513,18 @@ class SheetsClient:
                 ctx=tab_name,
             )
 
-        # D-029 (2026-05-18 — D-026 정정) 색상:
-        # - 삭제 = 노란 (T-M14 정합 유지)
-        # - 누락 = 오렌지 (= 떨어짐 경고)
-        # - 중복노출 / 중복노출(AB) / 중복노출(스마트블록) / 중복노출(인기글) = 파란 (= 신규 발견)
-        # - 미노출 = 회색 (옅은 회색)
-        # - AB / 스마트블록 / 인기글 / 빈 = 흰색 (= 정상 노출, reset)
-        # D-030 (2026-05-18): K 값 + 시점 통합 = "AB (5/10 03:00~)" 형식 = startswith 분기 의무.
-        # 사장님 결정 정합 (= exact match X) — 시점이 포함된 K 값도 base prefix 로 분기 매핑.
+        # D-043 (2026-05-23): 노출 상태는 초록, 미노출/누락/삭제는 같은 붉은색,
+        # 빈 값/실패/수동 메모는 무색. 시점이 포함된 K 값도 base prefix 로 매핑.
         if HEADER_AREA in mapping:
             k_col = mapping[HEADER_AREA] + 1  # 1-indexed
             color_formats = []
-            yellow = {"red": 1.0, "green": 1.0, "blue": 0.0}    # 삭제
-            orange = {"red": 1.0, "green": 0.6, "blue": 0.2}    # 누락
-            blue = {"red": 0.6, "green": 0.8, "blue": 1.0}      # 중복노출 (전 sub-enum 포함)
-            gray = {"red": 0.9, "green": 0.9, "blue": 0.9}      # 미노출
-            white = {"red": 1.0, "green": 1.0, "blue": 1.0}     # AB / 스마트블록 / 인기글 / 빈
-
-            def _color_for_k(k_value: str) -> dict:
-                """D-030: K 값 base prefix 분기 색상 매핑.
-
-                매칭 우선순위:
-                1) "중복노출" prefix (= 단일 + sub-enum 3종 모두) → blue
-                2) "삭제" prefix → yellow
-                3) "누락" prefix → orange
-                4) "미노출" prefix → gray
-                5) 그 외 (= AB / 스마트블록 / 인기글 / 빈 / "실패" / 사장님 수동) → white
-                """
-                if not k_value:
-                    return white
-                s = k_value.strip()
-                if s.startswith("중복노출"):
-                    return blue
-                if s.startswith("삭제"):
-                    return yellow
-                if s.startswith("누락"):
-                    return orange
-                if s.startswith("미노출"):
-                    return gray
-                return white
 
             for upd in color_updates:
                 if HEADER_AREA not in upd.columns:
                     continue
                 k_value = upd.columns[HEADER_AREA]
                 cell_range = gspread.utils.rowcol_to_a1(upd.row, k_col)
-                bg = _color_for_k(k_value)
+                bg = _background_color_for_k(k_value)
                 color_formats.append({"range": cell_range, "format": {"backgroundColor": bg}})
             if color_formats:
                 _sheets_api_retry(

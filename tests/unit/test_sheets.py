@@ -10,6 +10,10 @@ from src.sheets import (
     HEADER_LINK, SYSTEM_OUTPUT_COLUMNS, SYSTEM_OUTPUT_COLUMNS_EMPTY_LINK,
 )
 
+COLOR_EXPOSED = {"red": 0.8, "green": 1.0, "blue": 0.8}
+COLOR_NEGATIVE = {"red": 1.0, "green": 0.8, "blue": 0.8}
+COLOR_NONE = {"red": 1.0, "green": 1.0, "blue": 1.0}
+
 
 def _rows_from_link_col(headers, link_col_values):
     rows = [list(headers)]
@@ -715,6 +719,8 @@ class TestStaleFormulaMode:
             "V2",  # 마지막검사시각
         }
         assert expected_ranges.issubset(ranges)
+        formats = ws.batch_format.call_args.args[0]
+        assert formats == [{"range": "K2", "format": {"backgroundColor": COLOR_NEGATIVE}}]
         assert {HEADER_RAW_AREA, HEADER_RAW_L, HEADER_RAW_M, HEADER_RAW_JISIKIN, HEADER_LAST_CHECKED_INPUT_KEY, HEADER_LAST_CHECKED_AT}
 
     def test_write_stale_formula_results_skips_if_link_changed_after_load(self):
@@ -1273,11 +1279,9 @@ class TestD026ColorFiveTypes:
     """D-026 Phase C+D+E+F (2026-05-16) 회귀 test — 색상 5종 batch_format 검증.
 
     사장님 명시 컨벤션:
-    - 삭제 = 노란 (T-M14 정합 유지)
-    - 누락 = 오렌지
-    - 중복노출 = 파란
-    - 미노출 = 회색
-    - AB / 스마트블록 / 인기글 / 빈 = 흰색 (reset)
+    - AB / 스마트블록 / 인기글 / 중복노출 = 초록색
+    - 미노출 / 누락 / 삭제 = 같은 붉은색
+    - 빈 값 / 실패 / 수동 메모 = 무색
     """
 
     def _make_client_with_link_col(self, headers, link_col_values, ws_title="샴푸 카외"):
@@ -1313,47 +1317,52 @@ class TestD026ColorFiveTypes:
         assert len(formats) == 1
         return formats[0]["format"]["backgroundColor"]
 
-    def test_color_삭제_yellow(self):
-        """D-026 Phase E+F: K='삭제' = 노란 (T-M14 정합 유지)."""
+    def test_color_삭제_red(self):
+        """D-043: K='삭제' = 붉은색."""
         bg = self._get_color_for_value(None, "삭제")
-        assert bg == {"red": 1.0, "green": 1.0, "blue": 0.0}
+        assert bg == COLOR_NEGATIVE
 
-    def test_color_누락_orange(self):
-        """D-026 Phase B+C+D: K='누락' = 오렌지 (= 떨어짐 경고)."""
+    def test_color_누락_red(self):
+        """D-043: K='누락' = 붉은색."""
         bg = self._get_color_for_value(None, "누락")
-        assert bg == {"red": 1.0, "green": 0.6, "blue": 0.2}
+        assert bg == COLOR_NEGATIVE
 
-    def test_color_중복노출_blue(self):
-        """D-026 Phase C+D: K='중복노출' = 파란 (= 신규 발견)."""
+    def test_color_중복노출_green(self):
+        """D-043: K='중복노출' = 초록색."""
         bg = self._get_color_for_value(None, "중복노출")
-        assert bg == {"red": 0.6, "green": 0.8, "blue": 1.0}
+        assert bg == COLOR_EXPOSED
 
-    def test_color_미노출_gray(self):
-        """D-026 Phase C+D+E+F: K='미노출' = 옅은 회색."""
+    def test_color_미노출_red(self):
+        """D-043: K='미노출' = 붉은색."""
         bg = self._get_color_for_value(None, "미노출")
-        assert bg == {"red": 0.9, "green": 0.9, "blue": 0.9}
+        assert bg == COLOR_NEGATIVE
 
-    def test_color_AB_white(self):
-        """D-026: K='AB' = 흰색 (= reset, 정상 노출)."""
+    def test_color_AB_green(self):
+        """D-043: K='AB' = 초록색."""
         bg = self._get_color_for_value(None, "AB")
-        assert bg == {"red": 1.0, "green": 1.0, "blue": 1.0}
+        assert bg == COLOR_EXPOSED
 
-    def test_color_스마트블록_white(self):
-        """D-026: K='스마트블록' = 흰색 (= reset)."""
+    def test_color_스마트블록_green(self):
+        """D-043: K='스마트블록' = 초록색."""
         bg = self._get_color_for_value(None, "스마트블록")
-        assert bg == {"red": 1.0, "green": 1.0, "blue": 1.0}
+        assert bg == COLOR_EXPOSED
 
-    def test_color_인기글_white(self):
-        """D-026: K='인기글' = 흰색 (= reset)."""
+    def test_color_인기글_green(self):
+        """D-043: K='인기글' = 초록색."""
         bg = self._get_color_for_value(None, "인기글")
-        assert bg == {"red": 1.0, "green": 1.0, "blue": 1.0}
+        assert bg == COLOR_EXPOSED
+
+    def test_color_blank_no_fill(self):
+        """D-043: K='' = 무색."""
+        bg = self._get_color_for_value(None, "")
+        assert bg == COLOR_NONE
 
 
 class TestD029DuplicateSubEnumColors:
-    """D-029 (2026-05-18 — D-026 정정) 회귀 test — 중복노출(구좌) 3종 = 모두 파란.
+    """D-029 (2026-05-18 — D-026 정정) 회귀 test — 중복노출(구좌) 3종 = 모두 초록.
 
     사장님 5-18 명확 의도:
-    - 중복노출(AB) / 중복노출(스마트블록) / 중복노출(인기글) = 모두 파란 (= 신규 발견 일관)
+    - 중복노출(AB) / 중복노출(스마트블록) / 중복노출(인기글) = 모두 초록 (= 노출 상태 일관)
     - 색상 = "구좌 무관 = 중복노출 자체가 신규 발견" 통합 가시성.
     """
 
@@ -1388,36 +1397,36 @@ class TestD029DuplicateSubEnumColors:
         assert len(formats) == 1
         return formats[0]["format"]["backgroundColor"]
 
-    def test_color_중복노출_AB_blue(self):
-        """D-029: K='중복노출(AB)' = 파란 (= 신규 발견)."""
+    def test_color_중복노출_AB_green(self):
+        """D-043: K='중복노출(AB)' = 초록색."""
         bg = self._get_color_for_value("중복노출(AB)")
-        assert bg == {"red": 0.6, "green": 0.8, "blue": 1.0}
+        assert bg == COLOR_EXPOSED
 
-    def test_color_중복노출_스마트블록_blue(self):
-        """D-029: K='중복노출(스마트블록)' = 파란."""
+    def test_color_중복노출_스마트블록_green(self):
+        """D-043: K='중복노출(스마트블록)' = 초록색."""
         bg = self._get_color_for_value("중복노출(스마트블록)")
-        assert bg == {"red": 0.6, "green": 0.8, "blue": 1.0}
+        assert bg == COLOR_EXPOSED
 
-    def test_color_중복노출_인기글_blue(self):
-        """D-029: K='중복노출(인기글)' = 파란 (사장님 사례 = '도브바디스크럽' 키워드)."""
+    def test_color_중복노출_인기글_green(self):
+        """D-043: K='중복노출(인기글)' = 초록색."""
         bg = self._get_color_for_value("중복노출(인기글)")
-        assert bg == {"red": 0.6, "green": 0.8, "blue": 1.0}
+        assert bg == COLOR_EXPOSED
 
-    def test_color_중복노출_legacy_blue(self):
-        """D-026 호환 유지: K='중복노출' (단일 값) = 파란 (= D-029 sub-enum 과 일관)."""
+    def test_color_중복노출_legacy_green(self):
+        """D-043: K='중복노출' (단일 값) = 초록색."""
         bg = self._get_color_for_value("중복노출")
-        assert bg == {"red": 0.6, "green": 0.8, "blue": 1.0}
+        assert bg == COLOR_EXPOSED
 
 
 class TestD030ColorStartswithMatching:
     """D-030 (2026-05-18) 회귀 test — K 값 + 시점 통합 = startswith 색상 매핑 정합.
 
     사장님 결정 정합 (= K = "AB (5/10 03:00~)" 형식 = exact match X):
-    - "AB (5/10 03:00~)" prefix "AB" → white
-    - "미노출 (5/10 03:00~)" prefix "미노출" → gray
-    - "누락 (5/14 03:00~)" prefix "누락" → orange
-    - "삭제 (5/16 03:00)" prefix "삭제" → yellow
-    - "중복노출(AB) (5/10 03:00~)" prefix "중복노출" → blue
+    - "AB (5/10 03:00~)" prefix "AB" → green
+    - "미노출 (5/10 03:00~)" prefix "미노출" → red
+    - "누락 (5/14 03:00~)" prefix "누락" → red
+    - "삭제 (5/16 03:00)" prefix "삭제" → red
+    - "중복노출(AB) (5/10 03:00~)" prefix "중복노출" → green
     """
 
     def _make_client_with_link_col(self, headers, link_col_values, ws_title="샴푸 카외"):
@@ -1451,55 +1460,55 @@ class TestD030ColorStartswithMatching:
         assert len(formats) == 1
         return formats[0]["format"]["backgroundColor"]
 
-    def test_d030_color_AB_with_stamp_white(self):
-        """D-030: "AB (5/10 03:00~)" = AB prefix = 흰색 (= 정상 노출 reset)."""
+    def test_d030_color_AB_with_stamp_green(self):
+        """D-043: "AB (5/10 03:00~)" = AB prefix = 초록색."""
         bg = self._get_color_for_value("AB (5/10 03:00~)")
-        assert bg == {"red": 1.0, "green": 1.0, "blue": 1.0}
+        assert bg == COLOR_EXPOSED
 
-    def test_d030_color_미노출_with_stamp_gray(self):
-        """D-030: "미노출 (5/10 03:00~)" = 미노출 prefix = 회색."""
+    def test_d030_color_미노출_with_stamp_red(self):
+        """D-043: "미노출 (5/10 03:00~)" = 미노출 prefix = 붉은색."""
         bg = self._get_color_for_value("미노출 (5/10 03:00~)")
-        assert bg == {"red": 0.9, "green": 0.9, "blue": 0.9}
+        assert bg == COLOR_NEGATIVE
 
-    def test_d030_color_누락_with_stamp_orange(self):
-        """D-030: "누락 (5/14 03:00~)" = 누락 prefix = 오렌지 (= 떨어짐 경고)."""
+    def test_d030_color_누락_with_stamp_red(self):
+        """D-043: "누락 (5/14 03:00~)" = 누락 prefix = 붉은색."""
         bg = self._get_color_for_value("누락 (5/14 03:00~)")
-        assert bg == {"red": 1.0, "green": 0.6, "blue": 0.2}
+        assert bg == COLOR_NEGATIVE
 
-    def test_d030_color_삭제_with_stamp_yellow(self):
-        """D-030: "삭제 (5/16 03:00)" = 삭제 prefix = 노란 (= ~ 없음 + 단일 시점)."""
+    def test_d030_color_삭제_with_stamp_red(self):
+        """D-043: "삭제 (5/16 03:00)" = 삭제 prefix = 붉은색."""
         bg = self._get_color_for_value("삭제 (5/16 03:00)")
-        assert bg == {"red": 1.0, "green": 1.0, "blue": 0.0}
+        assert bg == COLOR_NEGATIVE
 
-    def test_d030_color_중복노출_AB_with_stamp_blue(self):
-        """D-030: "중복노출(AB) (5/10 03:00~)" = 중복노출 prefix = 파란."""
+    def test_d030_color_중복노출_AB_with_stamp_green(self):
+        """D-043: "중복노출(AB) (5/10 03:00~)" = 중복노출 prefix = 초록색."""
         bg = self._get_color_for_value("중복노출(AB) (5/10 03:00~)")
-        assert bg == {"red": 0.6, "green": 0.8, "blue": 1.0}
+        assert bg == COLOR_EXPOSED
 
-    def test_d030_color_중복노출_인기글_with_stamp_blue(self):
-        """D-030: "중복노출(인기글) (5/10 03:00~)" = 중복노출 prefix = 파란 (사장님 사례)."""
+    def test_d030_color_중복노출_인기글_with_stamp_green(self):
+        """D-043: "중복노출(인기글) (5/10 03:00~)" = 중복노출 prefix = 초록색."""
         bg = self._get_color_for_value("중복노출(인기글) (5/10 03:00~)")
-        assert bg == {"red": 0.6, "green": 0.8, "blue": 1.0}
+        assert bg == COLOR_EXPOSED
 
-    def test_d030_color_스마트블록_with_stamp_white(self):
-        """D-030: "스마트블록 (5/10 03:00~)" = 흰색 (= 정상 노출 reset)."""
+    def test_d030_color_스마트블록_with_stamp_green(self):
+        """D-043: "스마트블록 (5/10 03:00~)" = 초록색."""
         bg = self._get_color_for_value("스마트블록 (5/10 03:00~)")
-        assert bg == {"red": 1.0, "green": 1.0, "blue": 1.0}
+        assert bg == COLOR_EXPOSED
 
-    def test_d030_color_인기글_with_stamp_white(self):
-        """D-030: "인기글 (5/10 03:00~)" = 흰색."""
+    def test_d030_color_인기글_with_stamp_green(self):
+        """D-043: "인기글 (5/10 03:00~)" = 초록색."""
         bg = self._get_color_for_value("인기글 (5/10 03:00~)")
-        assert bg == {"red": 1.0, "green": 1.0, "blue": 1.0}
+        assert bg == COLOR_EXPOSED
 
     def test_d030_color_실패_white(self):
         """D-030: "실패" = 시점 X = 흰색 (= 일시 상태 = reset)."""
         bg = self._get_color_for_value("실패")
-        assert bg == {"red": 1.0, "green": 1.0, "blue": 1.0}
+        assert bg == COLOR_NONE
 
     def test_d030_color_legacy_base_only_compatibility(self):
         """D-030: 기존 시트 base 만 (= 시점 X) 호환 = startswith 정합 유지."""
         # 832 행 마이그레이션 전 = base 만 = 동일 색상 매핑
-        assert self._get_color_for_value("AB") == {"red": 1.0, "green": 1.0, "blue": 1.0}
-        assert self._get_color_for_value("미노출") == {"red": 0.9, "green": 0.9, "blue": 0.9}
-        assert self._get_color_for_value("누락") == {"red": 1.0, "green": 0.6, "blue": 0.2}
-        assert self._get_color_for_value("삭제") == {"red": 1.0, "green": 1.0, "blue": 0.0}
+        assert self._get_color_for_value("AB") == COLOR_EXPOSED
+        assert self._get_color_for_value("미노출") == COLOR_NEGATIVE
+        assert self._get_color_for_value("누락") == COLOR_NEGATIVE
+        assert self._get_color_for_value("삭제") == COLOR_NEGATIVE
