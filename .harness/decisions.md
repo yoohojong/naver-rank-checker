@@ -939,3 +939,16 @@
 - `tests/unit/test_sheets.py`: 일반 write, stale formula-mode, timestamp가 붙은 K 값, 빈 K까지 회귀 테스트로 고정.
 - 검증: targeted 23 passed, `tests/unit/test_sheets.py` 86 passed, 전체 `pytest -q` = 499 passed.
 - 운영 검증: workflow_dispatch run `26335142451` 성공(head `7046c71`). formula mode 824행 설정, stale preview/manual visible-K/mask 0, post-write/type-write audit 0건, 전체 824행 성공.
+### D-044: Actions 기본 GITHUB_TOKEN checkout 403은 PAT secret으로 우회한다
+
+**결정**: `actions/checkout`과 issue summary 댓글 토큰은 `secrets.ACTIONS_PAT || github.token`을 사용한다. `ACTIONS_PAT`은 로컬에서 정상 동작하는 GitHub 인증 토큰을 repo secret으로 저장한 것이다.
+
+**근거**:
+- 실패 run `26447585263`와 재실행 attempt 2 모두 checkout 단계에서 `remote: Your account is suspended` / HTTP 403으로 실패했다.
+- 같은 시점에 로컬 `gh api user`는 `suspended_at=null`, repo는 ADMIN 접근 가능, 무인증 public clone도 성공했다.
+- 따라서 크롤러/시트 코드 문제가 아니라 hosted Actions 기본 `github.token`이 fetch 계층에서 거절되는 문제다.
+
+**검증**:
+- workflow YAML parse 통과.
+- 복구 run `26449098240` 성공(head `2fddf6f`): checkout, cron cycle, issue summary, artifact upload 모두 성공.
+- 운영 결과: 전체 823행 성공, post-write/type-write audit 0건, stale preview/manual visible-K/mask 0.

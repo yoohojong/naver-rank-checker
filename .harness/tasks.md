@@ -478,3 +478,10 @@ deps = 의존성 (선행 task), parallel = 동시 작업 안전한 다른 task
   - 보존: `재검사필요`는 별도 주의 색상 유지.
   - 검증: RED targeted 21 failed, GREEN targeted 23 passed, `tests/unit/test_sheets.py` 86 passed, 전체 `pytest -q` 499 passed, `git diff --check` 통과(CRLF warning only).
   - 운영 검증: workflow_dispatch run `26335142451` 성공(head `7046c71`), stale formula setup `tabs=3 headers_added=0 rows_backfilled=0 formula_rows=824`, stale preview `stale 0 / no-baseline 0 / manual visible-K 0 / mask 0`, post-write audit 0건, type-write audit 0건, 전체 824행 성공.
+
+- 2026-05-26: **D-044 완료 - GitHub Actions checkout 403 장애 복구**
+  - 증상: schedule run `26447585263`가 `Checkout` 단계에서 `remote: Your account is suspended` / HTTP 403으로 실패해 Python/크론/시트 갱신이 시작되지 않음. 재실행 attempt 2도 동일 실패.
+  - 원인: 로컬 PAT와 무인증 public clone은 정상이고 repo/API도 `suspended_at=null`, ADMIN 접근 정상이라 코드 문제가 아니라 hosted Actions 기본 `github.token` checkout 계층 문제로 확정.
+  - 조치: repo secret `ACTIONS_PAT`를 추가하고 `.github/workflows/rank-check.yml`에서 checkout 및 issue summary `GH_TOKEN`이 `secrets.ACTIONS_PAT || github.token`을 우선 사용하게 변경.
+  - 검증: workflow YAML parse 통과, 커밋 `2fddf6f` push 완료, 복구 run `26449098240` 성공(head `2fddf6f`). Checkout/summary/artifact upload 모두 성공.
+  - 운영 결과: stale formula setup `tabs=3 headers_added=0 rows_backfilled=0 formula_rows=823`, stale preview `stale 0 / no-baseline 0 / manual visible-K 0 / mask 0`, post-write/type-write audit 0건, 전체 823행 성공.
