@@ -61,6 +61,12 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v6.0.2
+        with:
+          # 2026-05-26: hosted Actions GITHUB_TOKEN checkout intermittently returned
+          # "Your account is suspended" / 403 while owner PAT and public clone worked.
+          # Prefer a repo secret PAT so sheet refresh can continue; fall back to
+          # github.token if the secret is not configured.
+          token: ${{ secrets.ACTIONS_PAT || github.token }}
 
       - name: Setup Python 3.13
         uses: actions/setup-python@v6.2.0
@@ -94,7 +100,7 @@ jobs:
         if: always()
         shell: bash
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.ACTIONS_PAT || github.token }}
           RUN_STATUS: ${{ steps.run_cycle.outcome }}
         run: |
           ./.venv/bin/python -u scripts/post_summary_to_issue.py
