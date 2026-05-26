@@ -952,3 +952,16 @@
 - workflow YAML parse 통과.
 - 복구 run `26449098240` 성공(head `2fddf6f`): checkout, cron cycle, issue summary, artifact upload 모두 성공.
 - 운영 결과: 전체 823행 성공, post-write/type-write audit 0건, stale preview/manual visible-K/mask 0.
+### D-045: PAT도 실패할 수 있으므로 public checkout fallback을 둔다
+
+**결정**: `actions/checkout` 실패가 곧바로 job 실패로 끝나지 않게 하고, 실패 시 public repo를 토큰 없이 직접 `git fetch`하는 fallback을 실행한다. fallback 후에는 `requirements.txt`와 `src/main.py` 존재를 확인해 실제 checkout 성공 여부를 검증한다.
+
+**근거**:
+- D-044의 `ACTIONS_PAT`는 당장 기본 `github.token` 403을 해결했지만, PAT 만료/폐기/계정 제한이 생기면 같은 checkout 계열 장애가 다시 날 수 있다.
+- 현재 repo는 public이고 무인증 clone이 성공하므로, checkout만큼은 토큰 의존성을 제거할 수 있다.
+- issue summary 댓글은 인증이 필요하므로 `ACTIONS_PAT || github.token`을 유지한다. 댓글 토큰이 실패해도 GitHub run 실패 메일은 계속 문제 알림 역할을 한다.
+
+**검증**:
+- workflow YAML parse 통과.
+- 운영 run `26453146053` 성공(head `71bb735`): token checkout 성공, fallback skip, verify checkout 성공, cron cycle 성공.
+- 운영 결과: 전체 824행 성공, post-write/type-write audit 0건. stale preview의 mask 40은 현재 입력과 마지막 검사 입력이 달라 `재검사필요`를 표시하는 의도된 stale 보호 상태다.

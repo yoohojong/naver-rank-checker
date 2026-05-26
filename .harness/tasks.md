@@ -485,3 +485,10 @@ deps = 의존성 (선행 task), parallel = 동시 작업 안전한 다른 task
   - 조치: repo secret `ACTIONS_PAT`를 추가하고 `.github/workflows/rank-check.yml`에서 checkout 및 issue summary `GH_TOKEN`이 `secrets.ACTIONS_PAT || github.token`을 우선 사용하게 변경.
   - 검증: workflow YAML parse 통과, 커밋 `2fddf6f` push 완료, 복구 run `26449098240` 성공(head `2fddf6f`). Checkout/summary/artifact upload 모두 성공.
   - 운영 결과: stale formula setup `tabs=3 headers_added=0 rows_backfilled=0 formula_rows=823`, stale preview `stale 0 / no-baseline 0 / manual visible-K 0 / mask 0`, post-write/type-write audit 0건, 전체 823행 성공.
+
+- 2026-05-27: **D-045 완료 - checkout 장애 재발 방지 fallback 추가**
+  - 판단: `ACTIONS_PAT` 우회만으로는 PAT 만료/폐기/계정 제한 시 같은 checkout 계열 장애가 재발할 수 있음.
+  - 조치: `actions/checkout`은 `continue-on-error`로 두고, 실패 시 public repo를 무토큰 `git fetch`로 직접 checkout하는 `Checkout fallback without token` 단계를 추가. 이후 `Verify checkout`에서 `requirements.txt`와 `src/main.py` 존재를 검증.
+  - 안전장치: fallback은 `$GITHUB_WORKSPACE` 실제 경로와 현재 경로가 일치할 때만 workspace를 정리하고, credentials/extraheader 없이 public fetch를 수행.
+  - 검증: workflow YAML parse 통과, 커밋 `71bb735` push 완료, 운영 run `26453146053` 성공(head `71bb735`). Checkout 성공, fallback은 정상 skip, Verify checkout 성공.
+  - 운영 결과: stale formula setup `formula_rows=824`, 전체 824행 성공, post-write/type-write audit 0건. stale preview는 입력 변경 40행을 `재검사필요`로 보호 표시(mask 40), manual visible-K/no-baseline 0.
