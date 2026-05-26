@@ -60,13 +60,43 @@ jobs:
 
     steps:
       - name: Checkout
+        id: checkout
         uses: actions/checkout@v6.0.2
+        continue-on-error: true
         with:
           # 2026-05-26: hosted Actions GITHUB_TOKEN checkout intermittently returned
           # "Your account is suspended" / 403 while owner PAT and public clone worked.
           # Prefer a repo secret PAT so sheet refresh can continue; fall back to
           # github.token if the secret is not configured.
           token: ${{ secrets.ACTIONS_PAT || github.token }}
+
+      - name: Checkout fallback without token
+        if: steps.checkout.outcome != 'success'
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "[CHECKOUT-FALLBACK] token checkout failed; trying public unauthenticated fetch"
+          cd "$GITHUB_WORKSPACE"
+          workspace="$(realpath "$GITHUB_WORKSPACE")"
+          cwd="$(pwd -P)"
+          if [[ "$cwd" != "$workspace" ]]; then
+            echo "::error::Refusing to clean unexpected workspace cwd=$cwd expected=$workspace"
+            exit 1
+          fi
+          find "$workspace" -mindepth 1 -maxdepth 1 -exec rm -rf {} +
+          git init "$workspace"
+          git -C "$workspace" config --local gc.auto 0
+          git config --global --add safe.directory "$workspace"
+          git -C "$workspace" remote add origin "https://github.com/${GITHUB_REPOSITORY}.git"
+          git -C "$workspace" -c credential.helper= -c http.https://github.com/.extraheader= \
+            fetch --no-tags --prune --depth=1 origin "+${GITHUB_SHA}:refs/remotes/origin/${GITHUB_REF_NAME}"
+          git -C "$workspace" checkout --force "$GITHUB_SHA"
+
+      - name: Verify checkout
+        shell: bash
+        run: |
+          test -f requirements.txt
+          test -f src/main.py
 
       - name: Setup Python 3.13
         uses: actions/setup-python@v6.2.0
