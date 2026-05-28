@@ -497,3 +497,6 @@ deps = 의존성 (선행 task), parallel = 동시 작업 안전한 다른 task
   - Workflow: 수동 실행 입력 `recheck_stale_only` 추가. 기본값은 `false`라 정기 cron 전체 갱신 동작은 유지.
   - 검증: `tests/component/test_type_preview_flow.py`에 stale 1행/current 1행 fixture 추가, workflow config test 보강.
   - 로컬 검증: 관련 테스트 11 passed, 전체 `pytest -q` 500 passed.
+- 2026-05-28: **D-046 운영 검증 완료**
+  - 적용 run `26570728503`: `RECHECK_STALE_ONLY=true`, stale preview `mask=25`, target rows 25, `Total: 25, Success: 25 (100.0%)`, post-write/type-write audit 0건.
+  - 확인 run `26570917095`: stale preview `mask=0`, target rows 0, `Total: 0, Success: 0 (100.0%)`, post-write/type-write audit 0건.
