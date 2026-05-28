@@ -471,12 +471,15 @@ def run_cycle() -> dict:
     type_preview_write_confirmed = _env_truthy("TYPE_PREVIEW_WRITE_CONFIRMED")
     type_preview_write_allow_bulk = _env_truthy("TYPE_PREVIEW_WRITE_ALLOW_BULK")
     stale_formula_mode_enabled = _env_truthy("STALE_OUTPUT_FORMULA_MODE")
+    recheck_stale_only_enabled = _env_truthy("RECHECK_STALE_ONLY")
     if type_preview_write_confirmed:
         print("[TYPE-PREVIEW] confirmed C-column write enabled")
     if type_preview_write_allow_bulk:
         print("[TYPE-PREVIEW] bulk-change guard override enabled")
     if stale_formula_mode_enabled:
         print("[STALE-FORMULA] K/L/M/O formula mode enabled")
+    if recheck_stale_only_enabled:
+        print("[RECHECK-STALE-ONLY] stale_input rows only")
     d024_skipped_rows = 0  # D-024 (2026-05-14): except 시 시트 보존 skip 카운트 (사장님 가시성)
 
     # 1. 시트 read
@@ -561,6 +564,23 @@ def run_cycle() -> dict:
         stale_preview_rows = []
         stale_preview_summary = summarize_stale_preview(stale_preview_rows)
 
+    processing_data = data
+    recheck_stale_only_targets = {
+        (str(row.get("tab") or "").strip(), int(row.get("row")))
+        for row in stale_preview_rows
+        if row.get("freshness_status") == "stale_input" and row.get("tab") and row.get("row")
+    }
+    if recheck_stale_only_enabled:
+        processing_data = {
+            tab_name: [
+                row for row in rows
+                if (tab_name, int(row.get("_row"))) in recheck_stale_only_targets
+            ]
+            for tab_name, rows in data.items()
+        }
+        processing_data = {tab_name: rows for tab_name, rows in processing_data.items() if rows}
+        print(f"[RECHECK-STALE-ONLY] target rows={len(recheck_stale_only_targets)} tabs={list(processing_data.keys())}")
+
     # cookie warmup — Crawler 인스턴스 생성 직후 네이버 메인 1회 fetch
     # T-M26 (2026-05-12): Cold session 차단 회피. warmup 실패해도 cron 계속 진행.
     crawler.warmup()
@@ -592,7 +612,7 @@ def run_cycle() -> dict:
     # CircuitBreakerOpen raise 시 = 그 시점 누적 연속 차단 + circuit_breaker_blocks += 1.
     # 다음 cron 자동 회복 시도 정합 (= cron 빈도 6h = 최대 24시간 = 4회 자동 회복 윈도우).
     circuit_breaker_blocks = 0
-    for tab_name, rows in data.items():
+    for tab_name, rows in processing_data.items():
         if circuit_breaker_tripped:
             print(f"[{tab_name}] circuit breaker open — skip")
             tab_updates[tab_name] = []
@@ -895,6 +915,8 @@ def run_cycle() -> dict:
     summary["stale_formula_mode_enabled"] = stale_formula_mode_enabled
     summary["stale_formula_mode_cells_written"] = stale_formula_mode_cells
     summary["stale_formula_mode_setup"] = stale_formula_setup_summary
+    summary["recheck_stale_only_enabled"] = recheck_stale_only_enabled
+    summary["recheck_stale_only_target_rows"] = len(recheck_stale_only_targets)
     summary["type_preview_bulk_guard_overridden"] = (
         type_preview_write_confirmed
         and type_preview_summary.get("type_preview_bulk_guard_triggered", False)

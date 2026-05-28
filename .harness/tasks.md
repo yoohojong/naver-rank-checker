@@ -492,3 +492,8 @@ deps = 의존성 (선행 task), parallel = 동시 작업 안전한 다른 task
   - 안전장치: fallback은 `$GITHUB_WORKSPACE` 실제 경로와 현재 경로가 일치할 때만 workspace를 정리하고, credentials/extraheader 없이 public fetch를 수행.
   - 검증: workflow YAML parse 통과, 커밋 `71bb735` push 완료, 운영 run `26453146053` 성공(head `71bb735`). Checkout 성공, fallback은 정상 skip, Verify checkout 성공.
   - 운영 결과: stale formula setup `formula_rows=824`, 전체 824행 성공, post-write/type-write audit 0건. stale preview는 입력 변경 40행을 `재검사필요`로 보호 표시(mask 40), manual visible-K/no-baseline 0.
+- 2026-05-28: **D-046 진행 - `재검사필요` 행만 재갱신하는 수동 실행 모드**
+  - 구현: `RECHECK_STALE_ONLY=true`일 때 stale preview의 `freshness_status=stale_input` 행만 `run_cycle` 처리 대상으로 제한.
+  - Workflow: 수동 실행 입력 `recheck_stale_only` 추가. 기본값은 `false`라 정기 cron 전체 갱신 동작은 유지.
+  - 검증: `tests/component/test_type_preview_flow.py`에 stale 1행/current 1행 fixture 추가, workflow config test 보강.
+  - 로컬 검증: 관련 테스트 11 passed, 전체 `pytest -q` 500 passed.

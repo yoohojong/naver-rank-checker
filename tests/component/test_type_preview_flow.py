@@ -3,7 +3,18 @@ from unittest.mock import MagicMock, patch
 
 from src.crawler import CrawlerError
 from src.parser import ExposureArea, RankResult
-from src.sheets import HEADER_AREA, HEADER_LINK, HEADER_TYPE
+from src.sheets import (
+    HEADER_AREA,
+    HEADER_CURRENT_INPUT_KEY,
+    HEADER_LAST_CHECKED_INPUT_KEY,
+    HEADER_LINK,
+    HEADER_RAW_AREA,
+    HEADER_RAW_JISIKIN,
+    HEADER_RAW_L,
+    HEADER_RAW_M,
+    HEADER_TYPE,
+)
+from src.stale_preview import build_input_key
 
 
 def _service_account_json() -> str:
@@ -47,6 +58,38 @@ def _many_base_rows(count: int) -> dict:
     }
 
 
+def _formula_ready_rows_with_one_stale() -> dict:
+    stale_row = {
+        "_row": 2,
+        "_tab": "샴푸 카외",
+        "키워드": "탈모샴푸",
+        HEADER_LINK: "https://cafe.naver.com/cosmania/123",
+        HEADER_TYPE: "",
+        HEADER_AREA: "재검사필요",
+        HEADER_RAW_AREA: "AB",
+        HEADER_RAW_L: "1",
+        HEADER_RAW_M: "1",
+        HEADER_RAW_JISIKIN: "",
+    }
+    current_row = {
+        "_row": 3,
+        "_tab": "샴푸 카외",
+        "키워드": "비듬샴푸",
+        HEADER_LINK: "https://cafe.naver.com/cosmania/456",
+        HEADER_TYPE: "",
+        HEADER_AREA: "AB",
+        HEADER_RAW_AREA: "AB",
+        HEADER_RAW_L: "1",
+        HEADER_RAW_M: "1",
+        HEADER_RAW_JISIKIN: "",
+    }
+    stale_row[HEADER_CURRENT_INPUT_KEY] = build_input_key(stale_row)
+    stale_row[HEADER_LAST_CHECKED_INPUT_KEY] = "v1|이전키워드|cafe.naver.com/cosmania/123"
+    current_row[HEADER_CURRENT_INPUT_KEY] = build_input_key(current_row)
+    current_row[HEADER_LAST_CHECKED_INPUT_KEY] = build_input_key(current_row)
+    return {"샴푸 카외": [stale_row, current_row]}
+
+
 def _matched_result(area: ExposureArea = ExposureArea.AB, block_order=None) -> RankResult:
     result = RankResult()
     result.exposure_area = area
@@ -68,6 +111,7 @@ def _run_cycle_with_mocks(
     type_write_confirmed=False,
     type_write_allow_bulk=False,
     stale_formula_mode=False,
+    recheck_stale_only=False,
     post_write_rows=None,
     type_write_cells=0,
 ):
@@ -86,6 +130,10 @@ def _run_cycle_with_mocks(
         monkeypatch.setenv("STALE_OUTPUT_FORMULA_MODE", "true")
     else:
         monkeypatch.delenv("STALE_OUTPUT_FORMULA_MODE", raising=False)
+    if recheck_stale_only:
+        monkeypatch.setenv("RECHECK_STALE_ONLY", "true")
+    else:
+        monkeypatch.delenv("RECHECK_STALE_ONLY", raising=False)
     monkeypatch.setattr("src.main.SPREADSHEET_ID", "fake_id")
     monkeypatch.setattr("src.main.SERVICE_ACCOUNT_JSON", _service_account_json())
 
@@ -237,6 +285,31 @@ def test_run_cycle_stale_formula_mode_writes_raw_outputs_instead_of_visible_colu
     mock_client.write_results.assert_not_called()
     assert summary["stale_formula_mode_enabled"] is True
     assert summary["stale_formula_mode_cells_written"] == 6
+
+
+def test_run_cycle_recheck_stale_only_processes_only_stale_input_rows(tmp_path, monkeypatch):
+    crawler = MagicMock()
+    crawler.warmup.return_value = None
+    crawler.fetch_search.return_value = "<html>" + ("정상" * 300) + "</html>"
+    crawler.fetch_cafe_url_status.return_value = None
+
+    summary, mock_client = _run_cycle_with_mocks(
+        tmp_path,
+        monkeypatch,
+        _formula_ready_rows_with_one_stale(),
+        crawler,
+        parse_result=_matched_result(ExposureArea.AB, block_order=["AB"]),
+        stale_formula_mode=True,
+        recheck_stale_only=True,
+    )
+
+    tab_name, updates = mock_client.write_stale_formula_results.call_args.args[:2]
+    assert tab_name == "샴푸 카외"
+    assert [update.row for update in updates] == [2]
+    assert crawler.fetch_search.call_count == 1
+    assert summary["recheck_stale_only_enabled"] is True
+    assert summary["recheck_stale_only_target_rows"] == 1
+    assert summary["total_rows_processed"] == 1
 
 
 def test_run_cycle_confirmed_type_preview_writes_c_column_candidates(tmp_path, monkeypatch):

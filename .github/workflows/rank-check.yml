@@ -35,6 +35,14 @@ on:
         options:
           - 'true'
           - 'false'
+      recheck_stale_only:
+        description: 'Only process stale-input rows currently shown as 재검사필요'
+        required: false
+        default: 'false'
+        type: choice
+        options:
+          - 'false'
+          - 'true'
 
 # critic 2026-05-08 Critical 2: cron overlap 방지.
 concurrency:
@@ -122,6 +130,7 @@ jobs:
           TYPE_PREVIEW_WRITE_CONFIRMED: ${{ github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.apply_type_preview != 'false') }}
           TYPE_PREVIEW_WRITE_ALLOW_BULK: ${{ github.event_name == 'workflow_dispatch' && inputs.allow_bulk_type_preview == 'true' }}
           STALE_OUTPUT_FORMULA_MODE: ${{ github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.apply_stale_formula_mode != 'false') }}
+          RECHECK_STALE_ONLY: ${{ github.event_name == 'workflow_dispatch' && inputs.recheck_stale_only == 'true' }}
           PYTHONIOENCODING: 'utf-8'
         run: |
           ./.venv/bin/python -u -m src.main

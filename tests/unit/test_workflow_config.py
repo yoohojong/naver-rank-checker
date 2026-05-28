@@ -16,6 +16,8 @@ def test_rank_check_workflow_type_write_defaults_and_bulk_override():
     assert dispatch_inputs["allow_bulk_type_preview"]["options"] == ["false", "true"]
     assert dispatch_inputs["apply_stale_formula_mode"]["default"] == "true"
     assert dispatch_inputs["apply_stale_formula_mode"]["options"] == ["true", "false"]
+    assert dispatch_inputs["recheck_stale_only"]["default"] == "false"
+    assert dispatch_inputs["recheck_stale_only"]["options"] == ["false", "true"]
 
     run_cron_steps = workflow["jobs"]["run-cron"]["steps"]
     run_cycle_step = next(step for step in run_cron_steps if step.get("name") == "Run cron cycle")
@@ -30,6 +32,9 @@ def test_rank_check_workflow_type_write_defaults_and_bulk_override():
     assert run_cycle_env["STALE_OUTPUT_FORMULA_MODE"] == (
         "${{ github.event_name == 'schedule' || "
         "(github.event_name == 'workflow_dispatch' && inputs.apply_stale_formula_mode != 'false') }}"
+    )
+    assert run_cycle_env["RECHECK_STALE_ONLY"] == (
+        "${{ github.event_name == 'workflow_dispatch' && inputs.recheck_stale_only == 'true' }}"
     )
 
     diagnostics_step = next(step for step in run_cron_steps if step.get("name") == "Upload diagnostics artifact")

@@ -965,3 +965,16 @@
 - workflow YAML parse 통과.
 - 운영 run `26453146053` 성공(head `71bb735`): token checkout 성공, fallback skip, verify checkout 성공, cron cycle 성공.
 - 운영 결과: 전체 824행 성공, post-write/type-write audit 0건. stale preview의 mask 40은 현재 입력과 마지막 검사 입력이 달라 `재검사필요`를 표시하는 의도된 stale 보호 상태다.
+### D-046: `재검사필요`만 다시 돌리는 모드는 수동 실행 전용으로 둔다
+
+**결정**: `RECHECK_STALE_ONLY=true`일 때 stale preview에서 `freshness_status=stale_input`으로 잡힌 행만 처리한다. GitHub Actions 수동 실행에는 `recheck_stale_only` 입력을 추가하되 기본값은 `false`로 둔다.
+
+**근거**:
+- `재검사필요`는 노출 결과가 아니라 현재 입력키와 마지막 검사 입력키가 달라진 보호 표시다.
+- 전체 800여 행을 다시 돌릴 필요 없이 stale 행만 재검사하면 사용자가 바꾼 행을 빠르게 갱신할 수 있다.
+- 정기 cron 기본 동작을 바꾸면 정상 전체 갱신 범위가 좁아질 위험이 있으므로, 이 모드는 명시 수동 실행에서만 켠다.
+
+**검증**:
+- `tests/component/test_type_preview_flow.py::test_run_cycle_recheck_stale_only_processes_only_stale_input_rows`에서 stale 1행만 crawler/write 대상이 되는지 고정.
+- `tests/unit/test_workflow_config.py`에서 workflow input/env 연결을 고정.
+- 로컬 전체 `pytest -q` = 500 passed.
