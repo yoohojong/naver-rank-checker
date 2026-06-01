@@ -139,6 +139,8 @@ COLOR_NEGATIVE = {"red": 1.0, "green": 0.8, "blue": 0.8}
 COLOR_RECHECK = {"red": 1.0, "green": 0.85, "blue": 0.4}
 EXPOSED_COLOR_PREFIXES = ("AB", "스마트블록", "인기글", "중복노출")
 NEGATIVE_COLOR_PREFIXES = ("미노출", "누락", "삭제")
+EXPOSURE_RESULT_ALIGNMENT_HEADERS = (HEADER_L, HEADER_M)
+EXPOSURE_RESULT_ALIGNMENT_FORMAT = {"horizontalAlignment": "CENTER", "verticalAlignment": "MIDDLE"}
 
 
 def _background_color_for_k(k_value: str) -> dict:
@@ -152,6 +154,23 @@ def _background_color_for_k(k_value: str) -> dict:
     if s.startswith(STALE_DISPLAY_K):
         return COLOR_RECHECK
     return COLOR_NONE
+
+
+def _exposure_result_alignment_formats(mapping: dict, rows) -> list[dict]:
+    formats = []
+    seen_rows = set()
+    for row in rows:
+        if row in seen_rows:
+            continue
+        seen_rows.add(row)
+        for header in EXPOSURE_RESULT_ALIGNMENT_HEADERS:
+            if header not in mapping:
+                continue
+            formats.append({
+                "range": gspread.utils.rowcol_to_a1(row, mapping[header] + 1),
+                "format": dict(EXPOSURE_RESULT_ALIGNMENT_FORMAT),
+            })
+    return formats
 
 
 class SheetsClient:
@@ -354,6 +373,7 @@ class SheetsClient:
 
         cells = []
         color_formats = []
+        alignment_rows = []
         for upd in updates:
             source_row = row_context.get(upd.row) or row_context.get((tab_name, upd.row)) or {"_row": upd.row, "_tab": tab_name}
             source_link = str(source_row.get(HEADER_LINK, "") or "").strip()
@@ -405,11 +425,13 @@ class SheetsClient:
                     "range": gspread.utils.rowcol_to_a1(upd.row, mapping[HEADER_AREA] + 1),
                     "format": {"backgroundColor": _background_color_for_k(formula_columns.get(HEADER_RAW_AREA, ""))},
                 })
+            alignment_rows.append(upd.row)
 
         if cells:
             _sheets_api_retry(lambda: ws.batch_update(cells, value_input_option="RAW"), ctx=f"{tab_name} (stale formula raw write)")
-        if color_formats:
-            _sheets_api_retry(lambda: ws.batch_format(color_formats), ctx=f"{tab_name} (stale formula colors)")
+        format_payload = color_formats + _exposure_result_alignment_formats(mapping, alignment_rows)
+        if format_payload:
+            _sheets_api_retry(lambda: ws.batch_format(format_payload), ctx=f"{tab_name} (stale formula formats)")
         return len(cells)
 
     def write_results(self, tab_name: str, updates: list["RowUpdate"]) -> int:
@@ -471,6 +493,7 @@ class SheetsClient:
 
         cells = []
         color_updates = []
+        alignment_rows = []
         for upd in updates:
             # D-026 Phase C+D (2026-05-16): 행 현재 link 값 read → 빈 link 행만 EMPTY_LINK 화이트리스트 사용
             current_link = _row_current_link(upd.row)
@@ -489,8 +512,7 @@ class SheetsClient:
                         f"M={upd.columns.get(HEADER_M)!r}, output_link={upd.columns.get(HEADER_LINK)!r})"
                     )
                     continue
-            color_updates.append(upd)
-
+            row_cell_count_before = len(cells)
             for col_name, new_val in upd.columns.items():
                 if col_name not in mapping:
                     continue  # 사장님 시트에 없는 컬럼은 skip (예: blog_slot_rank)
@@ -506,6 +528,10 @@ class SheetsClient:
                     "range": gspread.utils.rowcol_to_a1(upd.row, col_idx),
                     "values": [[new_val]],
                 })
+            if len(cells) > row_cell_count_before:
+                color_updates.append(upd)
+                if HEADER_AREA in upd.columns or HEADER_L in upd.columns or HEADER_M in upd.columns:
+                    alignment_rows.append(upd.row)
         if cells:
             # 2026-05-12 T-M11: 503/5xx retry (document-specialist gspread default retry X).
             _sheets_api_retry(
@@ -515,9 +541,9 @@ class SheetsClient:
 
         # D-043 (2026-05-23): 노출 상태는 초록, 미노출/누락/삭제는 같은 붉은색,
         # 빈 값/실패/수동 메모는 무색. 시점이 포함된 K 값도 base prefix 로 매핑.
+        format_payload = []
         if HEADER_AREA in mapping:
             k_col = mapping[HEADER_AREA] + 1  # 1-indexed
-            color_formats = []
 
             for upd in color_updates:
                 if HEADER_AREA not in upd.columns:
@@ -525,12 +551,13 @@ class SheetsClient:
                 k_value = upd.columns[HEADER_AREA]
                 cell_range = gspread.utils.rowcol_to_a1(upd.row, k_col)
                 bg = _background_color_for_k(k_value)
-                color_formats.append({"range": cell_range, "format": {"backgroundColor": bg}})
-            if color_formats:
-                _sheets_api_retry(
-                    lambda: ws.batch_format(color_formats),
-                    ctx=f"{tab_name} (색상)",
-                )
+                format_payload.append({"range": cell_range, "format": {"backgroundColor": bg}})
+        format_payload.extend(_exposure_result_alignment_formats(mapping, alignment_rows))
+        if format_payload:
+            _sheets_api_retry(
+                lambda: ws.batch_format(format_payload),
+                ctx=f"{tab_name} (format)",
+            )
         return len(cells)
 
     def write_type_results(self, tab_name: str, updates: list["RowUpdate"]) -> int:

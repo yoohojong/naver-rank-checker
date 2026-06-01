@@ -13,6 +13,7 @@ from src.sheets import (
 COLOR_EXPOSED = {"red": 0.8, "green": 1.0, "blue": 0.8}
 COLOR_NEGATIVE = {"red": 1.0, "green": 0.8, "blue": 0.8}
 COLOR_NONE = {"red": 1.0, "green": 1.0, "blue": 1.0}
+ALIGNMENT_CENTER_MIDDLE = {"horizontalAlignment": "CENTER", "verticalAlignment": "MIDDLE"}
 
 
 def _rows_from_link_col(headers, link_col_values):
@@ -720,7 +721,13 @@ class TestStaleFormulaMode:
         }
         assert expected_ranges.issubset(ranges)
         formats = ws.batch_format.call_args.args[0]
-        assert formats == [{"range": "K2", "format": {"backgroundColor": COLOR_NEGATIVE}}]
+        assert {"range": "K2", "format": {"backgroundColor": COLOR_NEGATIVE}} in formats
+        aligned_ranges = {
+            item["range"]
+            for item in formats
+            if item.get("format") == ALIGNMENT_CENTER_MIDDLE
+        }
+        assert aligned_ranges == {"L2", "M2"}
         assert {HEADER_RAW_AREA, HEADER_RAW_L, HEADER_RAW_M, HEADER_RAW_JISIKIN, HEADER_LAST_CHECKED_INPUT_KEY, HEADER_LAST_CHECKED_AT}
 
     def test_write_stale_formula_results_skips_if_link_changed_after_load(self):
@@ -1273,6 +1280,108 @@ class TestD026EmptyLinkColumnGuard:
         assert HEADER_TYPE not in SYSTEM_OUTPUT_COLUMNS_EMPTY_LINK
         # 정확히 5 컬럼 (4 시스템 + HEADER_LINK)
         assert len(SYSTEM_OUTPUT_COLUMNS_EMPTY_LINK) == 5
+
+
+class TestExposureResultAlignment:
+    def _make_client_with_link_col(self, headers, link_col_values, ws_title="샴푸 카외"):
+        fake_creds = json.dumps({
+            "type": "service_account",
+            "client_email": "x@example.iam.gserviceaccount.com",
+            "private_key": "-----BEGIN PRIVATE KEY-----\nFAKE\n-----END PRIVATE KEY-----\n",
+            "token_uri": "https://oauth2.googleapis.com/token",
+        })
+        with patch("src.sheets.gspread.service_account_from_dict") as mock_auth:
+            mock_gc = MagicMock()
+            mock_sheet = MagicMock()
+            mock_ws = MagicMock()
+            mock_ws.row_values.return_value = headers
+            mock_ws.get_all_values.return_value = _rows_from_link_col(headers, link_col_values)
+            mock_sheet.worksheet.return_value = mock_ws
+            mock_gc.open_by_key.return_value = mock_sheet
+            mock_auth.return_value = mock_gc
+            client = SheetsClient(spreadsheet_id="abc", service_account_json=fake_creds)
+        return client, mock_ws
+
+    def test_write_results_centers_exposure_result_columns(self):
+        headers = [HEADER_LINK, HEADER_AREA, HEADER_L, HEADER_M, HEADER_JISIKIN]
+        client, ws = self._make_client_with_link_col(
+            headers,
+            [HEADER_LINK, "https://cafe.naver.com/cosmania/12345"],
+        )
+        upd = RowUpdate(row=2, columns={
+            HEADER_AREA: "AB",
+            HEADER_L: "1",
+            HEADER_M: "2",
+            HEADER_JISIKIN: "O",
+        })
+
+        n = client.write_results("샴푸 카외", [upd])
+
+        assert n == 4
+        formats = ws.batch_format.call_args[0][0]
+        aligned_ranges = {
+            item["range"]
+            for item in formats
+            if item.get("format") == ALIGNMENT_CENTER_MIDDLE
+        }
+        assert aligned_ranges == {"C2", "D2"}
+
+    def test_write_stale_formula_results_centers_visible_exposure_result_columns(self):
+        from src.sheets import (
+            HEADER_KEYWORD,
+            HEADER_LAST_CHECKED_AT,
+            HEADER_LAST_CHECKED_INPUT_KEY,
+            HEADER_RAW_AREA,
+            HEADER_RAW_JISIKIN,
+            HEADER_RAW_L,
+            HEADER_RAW_M,
+        )
+
+        headers = [
+            HEADER_KEYWORD,
+            HEADER_LINK,
+            HEADER_AREA,
+            HEADER_L,
+            HEADER_M,
+            HEADER_JISIKIN,
+            HEADER_LAST_CHECKED_INPUT_KEY,
+            HEADER_RAW_AREA,
+            HEADER_RAW_L,
+            HEADER_RAW_M,
+            HEADER_RAW_JISIKIN,
+            HEADER_LAST_CHECKED_AT,
+        ]
+        client, ws = self._make_client_with_link_col(
+            headers,
+            [HEADER_LINK, "https://cafe.naver.com/cosmania/12345"],
+        )
+        source_row = {
+            "_row": 2,
+            HEADER_KEYWORD: "바디워시",
+            HEADER_LINK: "https://cafe.naver.com/cosmania/12345",
+        }
+        upd = RowUpdate(row=2, columns={
+            HEADER_AREA: "AB",
+            HEADER_L: "1",
+            HEADER_M: "2",
+            HEADER_JISIKIN: "",
+        })
+
+        cells = client.write_stale_formula_results(
+            "샴푸 카외",
+            [upd],
+            row_context={2: source_row},
+            checked_at="2026-06-02 12:00 KST",
+        )
+
+        assert cells > 0
+        formats = ws.batch_format.call_args[0][0]
+        aligned_ranges = {
+            item["range"]
+            for item in formats
+            if item.get("format") == ALIGNMENT_CENTER_MIDDLE
+        }
+        assert aligned_ranges == {"D2", "E2"}
 
 
 class TestD026ColorFiveTypes:
