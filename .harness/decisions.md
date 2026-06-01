@@ -978,3 +978,13 @@
 - `tests/component/test_type_preview_flow.py::test_run_cycle_recheck_stale_only_processes_only_stale_input_rows`에서 stale 1행만 crawler/write 대상이 되는지 고정.
 - `tests/unit/test_workflow_config.py`에서 workflow input/env 연결을 고정.
 - 로컬 전체 `pytest -q` = 500 passed.
+
+### D-047: `노출여부` 결과 컬럼은 가운데 정렬로 표시한다
+
+**결정**: `노출여부(통합탭 순위)`와 `노출여부(카페구좌순위)` 셀은 값이 갱신될 때 가로 가운데, 세로 가운데 정렬을 같이 적용한다. K `노출영역`은 색상 의미가 있으므로 정렬 범위에 포함하지 않고, O `지식인탭`은 헤더가 `노출여부` 계열이 아니므로 이번 변경 범위에서 제외한다.
+
+**구현/검증**:
+- `src/sheets.py`: 일반 write와 stale formula raw write 모두 동일한 alignment format을 `batch_format` payload에 합쳐 적용한다.
+- `tests/unit/test_sheets.py`: 일반 write와 stale formula mode에서 L/M visible cell 정렬이 적용되는 회귀 테스트를 추가했다.
+- 검증: `pytest -q` = 502 passed.
+- 배포: commit `1597dc5` push 완료, 새 workflow_dispatch run `26765582647` queued(head `1597dc5`).
