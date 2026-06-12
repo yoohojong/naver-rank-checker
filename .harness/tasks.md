@@ -1,6 +1,6 @@
 # tasks: naver-rank-checker
 
-**Last updated**: 2026-05-19
+**Last updated**: 2026-06-12
 **Overall progress**: 99% ━━━━━━━━━━━━ (운영 안정화 완료, Codex 이식 점검 중)
 **Protocol**: 멀티 Claude 안전 협업. claim 메커니즘 적용 (`.harness/PROTOCOL.md` 참고).
 
@@ -500,3 +500,36 @@ deps = 의존성 (선행 task), parallel = 동시 작업 안전한 다른 task
 - 2026-05-28: **D-046 운영 검증 완료**
   - 적용 run `26570728503`: `RECHECK_STALE_ONLY=true`, stale preview `mask=25`, target rows 25, `Total: 25, Success: 25 (100.0%)`, post-write/type-write audit 0건.
   - 확인 run `26570917095`: stale preview `mask=0`, target rows 0, `Total: 0, Success: 0 (100.0%)`, post-write/type-write audit 0건.
+
+- 2026-06-12: **D-047 사건 기록 - 검사 도중 시트 대량 편집으로 74행 `재검사필요` 표류 (자연 회복 확인됨)**
+  - 증상: 사장님 시트에서 작업일 6/12 행 다수가 K=`재검사필요` + 마지막검사시각 `07:09`에 멈춤 (L/M raw 순위는 존재).
+  - 타임라인 (증거: run 로그 + 백업 artifact 대조):
+    - run `27377108588` (06:00 시작 → 07:09 기록): 825행 전부 정상 기록, LINK-CHANGED skip 0건.
+    - run `27382481731` (07:52 읽기 → 09:00 기록): 07:52 백업 기준 `재검사필요` 0건 = 전부 정상. 그러나 07:53~09:01 사이 마케터 편집(행 추가/링크 교체/작업일 6/12 갱신)으로 쓰기 단계에서 `[STALE-FORMULA-LINK-CHANGED]` 다수 행 skip (바디워시 116~187행 구간 등).
+    - 09:01~12:01 사이 추가 편집/정렬로 행 위치 대거 이동 (예: 알라딘필링후기 25행→103행). 12:01 백업 기준 `재검사필요` 74행, 일부 행은 raw_노출영역에 `재검사필요` 글자 자체가 값으로 들어감 (시트 측 복사/이동 잔해 — 파이프라인은 이 값을 기록한 적 없음, trace 전수 검색 0건).
+    - run `27391636975` (12:00 시작 → 13:12 기록): prev_K=`재검사필요` 74행 전부 재검사 → 실제 값으로 회복 (skip 0건, post-audit 0건). **자연 회복 확인.**
+  - 근본 원인 (3계층):
+    1. 직접: read(시작)→70분 크롤→write(끝) 사이 시트 편집 → 행 번호 어긋남 → D-041 가드가 의도적으로 skip → 한 사이클 동안 `재검사필요` 표류.
+    2. 증폭: 마케터가 신규 행을 기존 행 통째 복사로 생성 → 숨김 시스템 컬럼(입력키/raw/검사시각)까지 복사된 유령 값 (07:52 백업에서 신규 30행 실증: 입력키 빈칸 + 검사시각 `07:09` 복사됨).
+    3. 구조: 행 식별이 "행 번호" 기반 + 검사 1회 약 70분 + 마케터 근무시간(아침) 겹침.
+  - 디벨롭 전략 → M9 신설 (아래 Task 표). 사장님 "전부 ㄱ" 컨펌 (2026-06-12).
+
+- 2026-06-12: **D-047 구현 - M9.1~9.3 동시 편집 면역 (Codex 게이트 2회 통과)**
+  - 사전 태클 (Codex): "PROCEED WITH CHANGES" — Critical 1 (중복 identity payload 충돌 = 보류 의무) + Major 6 (naver.me 대소문자 / Python·수식 정규화 불일치 / 유령 오판(migration·수동 K) / 잔여 TOCTOU 인정 / 배치 청크 / summary 연결) 전부 반영.
+  - 구현:
+    - `src/sheets.py` `_normalize_input_link`: 내부 슬래시 압축 제거 = 시트 수식과 동일 규칙 (영구 키 불일치 잠재 버그 수정).
+    - `src/sheets.py` `_normalize_link_for_relocation` + `_relocation_identity`: 재배치용 identity — 호스트 소문자, naver.me 경로만 대소문자 보존.
+    - `src/sheets.py` `write_stale_formula_results` 재작성: write 직전 re-read → (키워드,링크) identity 로 행 재탐색 → 밀린 행 따라가서 기록. 중복 행 fan-out / payload 충돌 보류 / 미발견 skip+카운트 / re-read 실패 시 종전 행번호 경로 / 500셀 청크 / stats_out.
+    - `src/sheets.py` `clear_stale_formula_cells`: 숨김 시스템 칸만 초기화 (D-023 정합).
+    - `src/main.py` `_detect_ghost_stale_rows` + run_cycle 소독 단계: 행 복사 잔해(입력키 없는 raw/시각, raw 에 "재검사필요" 글자) 검출 → 초기화 → 같은 run 재검사. summary 4필드 추가 (relocation_miss/conflict/fanout, ghost_sanitized).
+  - 사후 리뷰 (Codex): "FIX REQUIRED 2건" → 즉시 반영: ① 빈 link 행 link 자동 채움 fan-out 금지 (채워진 행 우선 + 빈 행 유일 매치만, 다수 = 모호 보류) ② 일반 cafe URL 재배치 = 대소문자 무시 (naver.me 만 보존).
+  - 검증: 신규 회귀 test 19개 (재배치 8 + 유령 검출 9 + 정규화 2), 전체 `pytest -q` = **521 passed**, compileall 통과.
+  - 의미: 마케터가 검사 도중 행을 추가/정렬/복사해도 — 기록은 행을 따라가고, 복사 잔해는 자동 소독되고, 남는 것은 카운트로 보임. 2026-06-12 사건 전 패턴 면역.
+
+### M9 동시 편집 면역 (2026-06-12 신설 — D-047 재발 방지)
+| ID | Title | 분류 | deps | 상태 |
+|----|-------|------|------|------|
+| T-M9.1 | 키 기반 행 재탐색 write — 쓰기 직전 시트 re-read 후 키워드+링크로 행을 다시 찾아 기록 (행 번호 의존 제거, 같은 키 중복 행은 전부 갱신, D-041 가드는 최후 방어선으로 유지) | 대 (Codex 사전 태클 + TDD + 사후 리뷰) | — | **done** (2026-06-12, 운영 검증 대기) |
+| T-M9.2 | 복사 잔해 자동 소독 — (a) 입력키 빈칸인데 raw/검사시각 존재("migration" 제외), (b) raw_노출영역 = `재검사필요` 글자 행 = 잔해 판정 → 숨김 칸 초기화 후 정상 재검사 (Codex 태클 반영: 수동 K 보존) | 대 | T-M9.1 | **done** (2026-06-12, 운영 검증 대기) |
+| T-M9.3 | 재배치 가시성 — relocation miss/conflict/fanout + ghost_sanitized 카운트 = summary/issue 연결 (재배치 도입으로 "skip 후 재시도"는 불필요해짐 — miss = 입력이 진짜 바뀐 행 = 재시도 무의미, 다음 cron 이 정답) | 대 | T-M9.1 | **done** (2026-06-12, T-M9.1 에 포함 구현) |
+| T-M9.4 | 시트 범위 보호 가이드 — K~W열 편집 경고 설정 + 마케터 입력 규칙 (검사 시간대 회피 / 신규 행은 빈 행에 A~J만) 1장 문서 | 소 | — | **done** (2026-06-12, docs/사장님-가이드/시트-편집-규칙.md) |
