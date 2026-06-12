@@ -1355,6 +1355,11 @@ class TestExposureResultAlignment:
             headers,
             [HEADER_LINK, "https://cafe.naver.com/cosmania/12345"],
         )
+        # T-M9.1 재배치 정합: write 직전 시트에도 같은 (키워드, 링크) 행이 있어야 기록된다
+        sheet_row = [""] * len(headers)
+        sheet_row[headers.index(HEADER_KEYWORD)] = "바디워시"
+        sheet_row[headers.index(HEADER_LINK)] = "https://cafe.naver.com/cosmania/12345"
+        ws.get_all_values.return_value = [list(headers), sheet_row]
         source_row = {
             "_row": 2,
             HEADER_KEYWORD: "바디워시",
@@ -1621,3 +1626,232 @@ class TestD030ColorStartswithMatching:
         assert self._get_color_for_value("미노출") == COLOR_NEGATIVE
         assert self._get_color_for_value("누락") == COLOR_NEGATIVE
         assert self._get_color_for_value("삭제") == COLOR_NEGATIVE
+
+
+class TestStaleFormulaRelocation:
+    """T-M9.1 (2026-06-12, D-047) 회귀 test — write 직전 (키워드, 링크) 행 재탐색.
+
+    배경: 검사 70분 사이 마케터 행 삽입/정렬로 행 번호가 밀리면, 종전에는 D-041 가드가
+    그 행을 통째로 skip → 한 사이클 `재검사필요` 표류. 이제는 행을 다시 찾아 기록한다.
+    """
+
+    HEADERS = [
+        "작업일", "작업자", "유형", "키워드", "MB", "PC", "총합", "작업아이디",
+        "카페/게시글", "링크", "노출영역",
+        "노출여부(통합탭 순위)", "노출여부(카페구좌순위)", "블로그", "지식인탭",
+        "현재입력키", "마지막검사입력키", "raw_노출영역", "raw_통합순위",
+        "raw_카페순위", "raw_지식인탭", "마지막검사시각",
+    ]
+
+    def _sheet_row(self, keyword="", link=""):
+        row = [""] * len(self.HEADERS)
+        row[3] = keyword
+        row[9] = link
+        return row
+
+    def _make_client(self, sheet_rows):
+        fake_creds = json.dumps({
+            "type": "service_account",
+            "client_email": "x@example.iam.gserviceaccount.com",
+            "private_key": "-----BEGIN PRIVATE KEY-----\nFAKE\n-----END PRIVATE KEY-----\n",
+            "token_uri": "https://oauth2.googleapis.com/token",
+        })
+        with patch("src.sheets.gspread.service_account_from_dict") as mock_auth:
+            mock_gc = MagicMock()
+            mock_sheet = MagicMock()
+            mock_ws = MagicMock()
+            mock_ws.id = 1
+            mock_ws.col_count = len(self.HEADERS)
+            mock_ws.row_values.return_value = list(self.HEADERS)
+            mock_ws.get_all_values.return_value = [list(self.HEADERS)] + sheet_rows
+            mock_sheet.worksheet.return_value = mock_ws
+            mock_gc.open_by_key.return_value = mock_sheet
+            mock_auth.return_value = mock_gc
+            client = SheetsClient(spreadsheet_id="abc", service_account_json=fake_creds)
+        return client, mock_ws
+
+    def _update(self, row, k="AB (6/12 12:00~)", L="1", M="1"):
+        return RowUpdate(row=row, columns={
+            HEADER_AREA: k,
+            HEADER_L: L,
+            HEADER_M: M,
+            HEADER_JISIKIN: "",
+        })
+
+    def test_relocates_write_to_shifted_row(self):
+        """읽기 시점 행 2 였던 행이 write 시점 행 5 로 밀림 → 행 5 에 기록 (행 2 X)."""
+        sheet_rows = [
+            self._sheet_row("새행1", "https://cafe.naver.com/x/1"),
+            self._sheet_row("새행2", "https://cafe.naver.com/x/2"),
+            self._sheet_row("새행3", "https://cafe.naver.com/x/3"),
+            self._sheet_row("알라딘필링후기", "https://cafe.naver.com/llchyll/2449021"),
+        ]
+        client, ws = self._make_client(sheet_rows)
+        loaded = {
+            "_row": 2,
+            "키워드": "알라딘필링후기",
+            # 쿼리스트링은 identity 정규화로 제거됨 = 시트의 깨끗한 링크와 매치
+            "링크": "https://cafe.naver.com/llchyll/2449021?art=xyz",
+        }
+        stats = {}
+        cells = client.write_stale_formula_results(
+            "바디워시 카외", [self._update(2)],
+            row_context={2: loaded}, checked_at="2026-06-12 13:00 KST", stats_out=stats,
+        )
+        assert cells == 6
+        payload = ws.batch_update.call_args.args[0]
+        ranges = {item["range"] for item in payload}
+        assert all(r.endswith("5") for r in ranges)
+        assert stats["relocation_miss_rows"] == 0
+        assert stats["relocation_conflict_keys"] == 0
+
+    def test_fanout_writes_same_result_to_duplicate_rows(self):
+        """같은 (키워드, 링크) 행 2개 (= 마케터 일자별 중복 행) = 둘 다 갱신."""
+        sheet_rows = [
+            self._sheet_row("알라딘필링후기", "https://cafe.naver.com/llchyll/2449021"),
+            self._sheet_row("알라딘필링후기", "https://cafe.naver.com/llchyll/2449021"),
+        ]
+        client, ws = self._make_client(sheet_rows)
+        loaded = {"_row": 2, "키워드": "알라딘필링후기", "링크": "https://cafe.naver.com/llchyll/2449021"}
+        stats = {}
+        cells = client.write_stale_formula_results(
+            "바디워시 카외", [self._update(2)],
+            row_context={2: loaded}, checked_at="2026-06-12 13:00 KST", stats_out=stats,
+        )
+        assert cells == 12
+        payload = ws.batch_update.call_args.args[0]
+        ranges = {item["range"] for item in payload}
+        assert any(r.endswith("2") for r in ranges)
+        assert any(r.endswith("3") for r in ranges)
+        assert stats["relocation_fanout_rows"] == 1
+
+    def test_conflicting_duplicate_updates_are_quarantined(self):
+        """Codex Critical 1: 같은 identity 의 update payload 가 다르면 = 충돌 = 전체 보류."""
+        sheet_rows = [
+            self._sheet_row("알라딘필링후기", "https://cafe.naver.com/llchyll/2449021"),
+            self._sheet_row("알라딘필링후기", "https://cafe.naver.com/llchyll/2449021"),
+        ]
+        client, ws = self._make_client(sheet_rows)
+        loaded_2 = {"_row": 2, "키워드": "알라딘필링후기", "링크": "https://cafe.naver.com/llchyll/2449021"}
+        loaded_3 = {"_row": 3, "키워드": "알라딘필링후기", "링크": "https://cafe.naver.com/llchyll/2449021"}
+        stats = {}
+        cells = client.write_stale_formula_results(
+            "바디워시 카외",
+            [self._update(2, k="AB (6/8 17:19~)"), self._update(3, k="AB (6/12 12:00~)")],
+            row_context={2: loaded_2, 3: loaded_3}, checked_at="2026-06-12 13:00 KST", stats_out=stats,
+        )
+        assert cells == 0
+        ws.batch_update.assert_not_called()
+        assert stats["relocation_conflict_keys"] == 1
+
+    def test_miss_skips_when_input_edited_midrun(self):
+        """identity 미발견 (입력이 검사 도중 변경/삭제) = skip = 다음 cron 재검사 (D-041 의미 유지)."""
+        sheet_rows = [self._sheet_row("알라딘필링후기", "https://naver.me/NEWLINK1")]
+        client, ws = self._make_client(sheet_rows)
+        loaded = {"_row": 2, "키워드": "알라딘필링후기", "링크": "https://naver.me/OLDLINK9"}
+        stats = {}
+        cells = client.write_stale_formula_results(
+            "바디워시 카외", [self._update(2)],
+            row_context={2: loaded}, checked_at="2026-06-12 13:00 KST", stats_out=stats,
+        )
+        assert cells == 0
+        ws.batch_update.assert_not_called()
+        assert stats["relocation_miss_rows"] == 1
+
+    def test_naverme_short_link_relocation_is_case_sensitive(self):
+        """Codex Major 3: naver.me 단축링크 = 경로 대소문자 구분 = 재배치 충돌 방지."""
+        sheet_rows = [
+            self._sheet_row("일리윤립앤아이리무버", "https://naver.me/IDk3rxSi"),
+            self._sheet_row("일리윤립앤아이리무버", "https://naver.me/idk3rxsi"),
+        ]
+        client, ws = self._make_client(sheet_rows)
+        loaded = {"_row": 2, "키워드": "일리윤립앤아이리무버", "링크": "https://naver.me/IDk3rxSi"}
+        cells = client.write_stale_formula_results(
+            "바디워시 카외", [self._update(2)],
+            row_context={2: loaded}, checked_at="2026-06-12 13:00 KST",
+        )
+        assert cells == 6
+        payload = ws.batch_update.call_args.args[0]
+        ranges = {item["range"] for item in payload}
+        assert all(r.endswith("2") for r in ranges)
+
+    def test_clear_stale_formula_cells_clears_hidden_columns_only(self):
+        """T-M9.2: 잔해 소독 = 숨김 시스템 칸 6개만 빈 값으로 초기화 (보이는 칸 X)."""
+        sheet_rows = [
+            self._sheet_row("kw1", "https://cafe.naver.com/x/1"),
+            self._sheet_row("kw2", "https://cafe.naver.com/x/2"),
+        ]
+        client, ws = self._make_client(sheet_rows)
+        cells = client.clear_stale_formula_cells("바디워시 카외", [2, 3])
+        assert cells == 12
+        payload = ws.batch_update.call_args.args[0]
+        assert all(item["values"] == [[""]] for item in payload)
+        ranges = {item["range"] for item in payload}
+        # 숨김 칸 (Q~V = 마지막검사입력키/raw_*/마지막검사시각) 만 — 보이는 K(열 11=K) 침범 X
+        assert "K2" not in ranges and "K3" not in ranges
+        assert "Q2" in ranges and "Q3" in ranges
+
+    def test_normalize_input_link_matches_sheet_formula_rule(self):
+        """Codex Major 4: Python input_key 링크 정규화 = 시트 수식과 동일 (끝 슬래시만 제거)."""
+        from src.sheets import _normalize_input_link
+        # 내부 이중 슬래시 보존 (수식 REGEXREPLACE "/+$" 정합)
+        assert _normalize_input_link("https://cafe.naver.com/a//b/") == "cafe.naver.com/a//b"
+        assert _normalize_input_link("https://m.cafe.naver.com/X/1?art=z") == "cafe.naver.com/x/1"
+
+    def test_relocation_matches_case_only_difference_in_cafe_url(self):
+        """Codex 사후 Minor 2: 일반 cafe URL = 대소문자 차이는 같은 행으로 재배치."""
+        sheet_rows = [self._sheet_row("알라딘필링후기", "https://cafe.naver.com/llchyll/2449021")]
+        client, ws = self._make_client(sheet_rows)
+        loaded = {"_row": 2, "키워드": "알라딘필링후기", "링크": "https://Cafe.Naver.com/LLchyll/2449021"}
+        cells = client.write_stale_formula_results(
+            "바디워시 카외", [self._update(2)],
+            row_context={2: loaded}, checked_at="2026-06-12 13:00 KST",
+        )
+        assert cells == 6
+
+    def test_blank_link_autofill_requires_unique_match(self):
+        """Codex 사후 Major 1: 빈 link + 같은 키워드 행 다수 = 모호 = link 자동 채움 보류."""
+        sheet_rows = [
+            self._sheet_row("도브바디스크럽", ""),
+            self._sheet_row("도브바디스크럽", ""),
+        ]
+        client, ws = self._make_client(sheet_rows)
+        loaded = {"_row": 2, "키워드": "도브바디스크럽", "링크": ""}
+        upd = RowUpdate(row=2, columns={
+            HEADER_AREA: "중복노출(AB) (6/12 12:00~)",
+            HEADER_L: "1", HEADER_M: "1", HEADER_JISIKIN: "",
+            HEADER_LINK: "https://cafe.naver.com/llchyll/9999999",
+        })
+        stats = {}
+        cells = client.write_stale_formula_results(
+            "바디워시 카외", [upd],
+            row_context={2: loaded}, checked_at="2026-06-12 13:00 KST", stats_out=stats,
+        )
+        assert cells == 0
+        ws.batch_update.assert_not_called()
+        assert stats["relocation_conflict_keys"] == 1
+
+    def test_blank_link_autofill_unique_match_fills_link(self):
+        """빈 link + 같은 키워드 행 1개 = 그 행에만 raw 기록 + link 자동 채움 (D-026 유지)."""
+        sheet_rows = [
+            self._sheet_row("다른키워드", "https://cafe.naver.com/x/1"),
+            self._sheet_row("도브바디스크럽", ""),
+        ]
+        client, ws = self._make_client(sheet_rows)
+        loaded = {"_row": 2, "키워드": "도브바디스크럽", "링크": ""}
+        upd = RowUpdate(row=2, columns={
+            HEADER_AREA: "중복노출(AB) (6/12 12:00~)",
+            HEADER_L: "1", HEADER_M: "1", HEADER_JISIKIN: "",
+            HEADER_LINK: "https://cafe.naver.com/llchyll/9999999",
+        })
+        cells = client.write_stale_formula_results(
+            "바디워시 카외", [upd],
+            row_context={2: loaded}, checked_at="2026-06-12 13:00 KST",
+        )
+        # 숨김 6칸 + link 자동 채움 1칸 = 7칸, 전부 행 3 (재배치)
+        assert cells == 7
+        payload = ws.batch_update.call_args.args[0]
+        ranges = {item["range"] for item in payload}
+        assert all(r.endswith("3") for r in ranges)
+        values = [item["values"][0][0] for item in payload]
+        assert "https://cafe.naver.com/llchyll/9999999" in values

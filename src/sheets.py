@@ -115,14 +115,44 @@ def _normalize_input_text(value: object) -> str:
 
 
 def _normalize_input_link(value: object) -> str:
+    # T-M9.1 (D-047, Codex Major 4): 시트 수식(현재입력키)과 동일 규칙 의무 —
+    # 수식은 끝 슬래시만 제거하므로 Python 도 내부 슬래시 압축 없이 끝 슬래시만 제거.
+    # (이전 내부 "/+" 압축은 수식과 어긋나 영구 키 불일치 = 영구 재검사필요 위험)
     text = str(value or "").strip().casefold()
     if not text:
         return ""
     text = re.sub(r"^https?://", "", text)
     text = re.sub(r"^m\.", "", text)
     text = re.sub(r"[\?#].*$", "", text)
-    text = re.sub(r"/+", "/", text)
-    return text.rstrip("/")
+    return re.sub(r"/+$", "", text)
+
+
+def _normalize_link_for_relocation(value: object) -> str:
+    # T-M9.1 (D-047, Codex Major 3 + 사후 리뷰 Minor 2): 행 재배치용 링크 정규화.
+    # - 호스트 = 항상 소문자 (대소문자 무관)
+    # - naver.me 단축링크 경로 = 대소문자 구분이므로 보존 (서로 다른 글 충돌 방지)
+    # - 일반 cafe URL 경로 = 수식 input_key 와 동일하게 대소문자 무시
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    text = re.sub(r"^https?://", "", text, flags=re.IGNORECASE)
+    text = re.sub(r"^m\.", "", text, flags=re.IGNORECASE)
+    text = re.sub(r"[\?#].*$", "", text)
+    text = re.sub(r"/+$", "", text)
+    host, sep, path = text.partition("/")
+    host = host.casefold()
+    if host == "naver.me":
+        return host + sep + path
+    return host + sep + path.casefold()
+
+
+def _relocation_identity(keyword: object, link: object) -> Optional[tuple[str, str]]:
+    """T-M9.1 (D-047): write 직전 행 재탐색용 identity = (정규화 키워드, 대소문자 보존 링크)."""
+    kw = _normalize_input_text(keyword)
+    lk = _normalize_link_for_relocation(link)
+    if not kw and not lk:
+        return None
+    return (kw, lk)
 
 
 def _build_input_key_for_sheet(row: dict) -> str:
@@ -340,61 +370,77 @@ class SheetsClient:
         *,
         row_context: dict,
         checked_at: str,
+        stats_out: Optional[dict] = None,
     ) -> int:
-        """Write cron outputs to hidden raw columns for formula-mode sheets."""
+        """Write cron outputs to hidden raw columns for formula-mode sheets.
+
+        T-M9.1 (2026-06-12, D-047): 행 번호가 아니라 write 직전 시트 re-read 에서
+        (키워드, 링크) identity 로 행을 다시 찾아 기록 — 검사 도중 행 삽입/삭제/정렬 면역.
+        - 같은 identity 행 여러 개 = 같은 검색 결과 = 전부 갱신 (fan-out).
+        - 같은 identity 의 update payload 가 서로 다름 = 충돌 = 그 identity 보류 (Codex Critical 1).
+        - identity 미발견 = skip + log (입력이 도중 변경/삭제 = 다음 cron 자연 재검사, D-041 의미 유지).
+        - re-read 실패 = 종전 행 번호 기준 write (가드 불가 시 기존 보수 경로 유지).
+        - 잔여 TOCTOU (re-read ~ batch_update 사이 편집) = 창이 70분 → 수 초로 축소될 뿐
+          0 은 아님 (Codex Major 2) — post-write audit + 다음 cron 재검사가 최후 방어선.
+        """
         if not updates:
             return 0
         ws = self.spreadsheet.worksheet(tab_name)
         headers = ws.row_values(1)
         mapping = map_headers_to_columns(headers)
 
-        link_rows: Optional[list[list[str]]] = None
-        link_read_ok = False
-        if HEADER_LINK in mapping:
+        stats = stats_out if stats_out is not None else {}
+        stats.setdefault("relocation_miss_rows", 0)
+        stats.setdefault("relocation_conflict_keys", 0)
+        stats.setdefault("relocation_fanout_rows", 0)
+
+        sheet_rows: Optional[list[list[str]]] = None
+        sheet_read_ok = False
+        if HEADER_LINK in mapping and HEADER_KEYWORD in mapping:
             try:
-                link_rows = _sheets_api_retry(lambda: ws.get_all_values(), ctx=f"{tab_name} (stale formula link read)")
-                if isinstance(link_rows, list):
-                    link_read_ok = True
+                sheet_rows = _sheets_api_retry(lambda: ws.get_all_values(), ctx=f"{tab_name} (stale formula relocation read)")
+                if isinstance(sheet_rows, list):
+                    sheet_read_ok = True
             except Exception as e:
-                print(f"  [STALE-FORMULA-LINK-READ-FAIL] {tab_name}: {e} — link write guard conservative")
+                print(f"  [STALE-FORMULA-RELOCATION-READ-FAIL] {tab_name}: {e} — 행 번호 기준 write 진행")
+
+        kw_idx = mapping.get(HEADER_KEYWORD)
+        link_idx = mapping.get(HEADER_LINK)
+
+        def _cell(row_values, idx) -> str:
+            if idx is None or not isinstance(row_values, list) or idx >= len(row_values):
+                return ""
+            return str(row_values[idx] or "")
+
+        # write 직전 시트의 identity → 행 번호 목록 (재배치 index)
+        identity_to_rows: dict[tuple[str, str], list[int]] = {}
+        if sheet_read_ok and sheet_rows:
+            for row_num, row_values in enumerate(sheet_rows[1:], start=2):
+                identity = _relocation_identity(_cell(row_values, kw_idx), _cell(row_values, link_idx))
+                if identity is None:
+                    continue
+                identity_to_rows.setdefault(identity, []).append(row_num)
 
         def _row_current_link(row_1based: int) -> str:
-            if not link_read_ok or link_rows is None:
+            if not sheet_read_ok or sheet_rows is None:
                 return "SENTINEL"
             row_idx = row_1based - 1
-            link_idx = mapping[HEADER_LINK]
-            if 0 <= row_idx < len(link_rows):
-                row_values = link_rows[row_idx]
-                if isinstance(row_values, list) and link_idx < len(row_values):
-                    return (row_values[link_idx] or "").strip()
-                if isinstance(row_values, list):
-                    return ""
-            return "SENTINEL"
+            if 0 <= row_idx < len(sheet_rows):
+                return _cell(sheet_rows[row_idx], link_idx).strip()
+            return ""
 
-        cells = []
-        color_formats = []
-        alignment_rows = []
+        # 1차: update 별 payload 계산 + identity 재배치 + 충돌 검출 (Codex Critical 1)
+        planned: dict[tuple[str, str], dict] = {}
+        conflicted: set = set()
+        legacy_writes: list[tuple[int, dict, str]] = []  # re-read 실패 시 (행, payload, output_link)
         for upd in updates:
             source_row = row_context.get(upd.row) or row_context.get((tab_name, upd.row)) or {"_row": upd.row, "_tab": tab_name}
             source_link = str(source_row.get(HEADER_LINK, "") or "").strip()
             output_link = str(upd.columns.get(HEADER_LINK, "") or "").strip()
-            current_link = _row_current_link(upd.row)
-            if link_read_ok and current_link != "SENTINEL":
-                current_key_link = _normalize_input_link(current_link)
-                source_key_link = _normalize_input_link(source_link)
-                output_key_link = _normalize_input_link(output_link)
-                output_matches_current = bool(output_key_link) and output_key_link == current_key_link
-                if current_key_link != source_key_link and not output_matches_current:
-                    print(
-                        f"  [STALE-FORMULA-LINK-CHANGED] row {upd.row} skip raw write "
-                        f"(loaded_link={source_link!r}, current_link={current_link!r})"
-                    )
-                    continue
-
             effective_row = dict(source_row)
             if output_link:
                 effective_row[HEADER_LINK] = output_link
-            formula_columns = {
+            payload = {
                 HEADER_LAST_CHECKED_INPUT_KEY: _build_input_key_for_sheet(effective_row),
                 HEADER_RAW_AREA: str(upd.columns.get(HEADER_AREA, "") or ""),
                 HEADER_RAW_L: str(upd.columns.get(HEADER_L, "") or ""),
@@ -402,36 +448,135 @@ class SheetsClient:
                 HEADER_RAW_JISIKIN: str(upd.columns.get(HEADER_JISIKIN, "") or ""),
                 HEADER_LAST_CHECKED_AT: checked_at,
             }
-            if not current_link and output_link:
-                formula_columns[HEADER_LINK] = output_link
+            if not sheet_read_ok:
+                legacy_writes.append((upd.row, payload, output_link))
+                continue
 
-            for col_name, new_val in formula_columns.items():
+            source_keyword = str(source_row.get(HEADER_KEYWORD, "") or "")
+            identity = _relocation_identity(source_keyword, source_link)
+            if not source_link:
+                # 빈 link 행 (Codex 사후 리뷰 Major 1): link 자동 채움 fan-out 금지.
+                # 1순위 = output_link 로 이미 채워진 행 (write 전에 link 가 채워진 경우)
+                # 2순위 = 빈 link + 같은 키워드 행이 정확히 1개일 때만 (다수 = 모호 = 보류)
+                targets: list = []
+                if output_link:
+                    alt_identity = _relocation_identity(source_keyword, output_link)
+                    if alt_identity:
+                        filled_targets = list(identity_to_rows.get(alt_identity, []))
+                        if filled_targets:
+                            identity, targets = alt_identity, filled_targets
+                if not targets and identity:
+                    blank_targets = list(identity_to_rows.get(identity, []))
+                    if len(blank_targets) > 1:
+                        stats["relocation_conflict_keys"] += 1
+                        print(
+                            f"  [STALE-FORMULA-RELOCATION-AMBIGUOUS] row {upd.row} "
+                            f"빈 link 동일 키워드 행 {len(blank_targets)}개 = 보류"
+                        )
+                        continue
+                    targets = blank_targets
+            else:
+                targets = list(identity_to_rows.get(identity, [])) if identity else []
+            if identity is None or not targets:
+                stats["relocation_miss_rows"] += 1
+                print(
+                    f"  [STALE-FORMULA-RELOCATION-MISS] row {upd.row} skip raw write "
+                    f"(입력 변경/삭제 감지 — 다음 cron 재검사)"
+                )
+                continue
+            if identity in conflicted:
+                continue
+            existing = planned.get(identity)
+            if existing is not None:
+                if existing["payload"] != payload:
+                    conflicted.add(identity)
+                    planned.pop(identity, None)
+                    stats["relocation_conflict_keys"] += 1
+                    print(
+                        f"  [STALE-FORMULA-RELOCATION-CONFLICT] identity 충돌 = 보류 "
+                        f"(rows {existing['source_rows']} vs {upd.row})"
+                    )
+                else:
+                    existing["source_rows"].append(upd.row)
+                continue
+            planned[identity] = {
+                "payload": payload,
+                "output_link": output_link,
+                "targets": targets,
+                "source_rows": [upd.row],
+            }
+
+        cells = []
+        color_formats = []
+        alignment_rows = []
+
+        def _emit(target_row: int, payload: dict, output_link: str) -> None:
+            current_link = _row_current_link(target_row)
+            columns = dict(payload)
+            if output_link and current_link != "SENTINEL" and not current_link:
+                columns[HEADER_LINK] = output_link
+            for col_name, new_val in columns.items():
                 if col_name == HEADER_LINK:
                     if current_link:
-                        print(f"  [STALE-FORMULA-LINK-GUARD] '{col_name}' write 거부 (row {upd.row}, 현재 link 비어있지 않음)")
+                        print(f"  [STALE-FORMULA-LINK-GUARD] '{col_name}' write 거부 (row {target_row}, 현재 link 비어있지 않음)")
                         continue
                 elif col_name not in STALE_FORMULA_WRITE_COLUMNS:
-                    print(f"  [STALE-FORMULA-GUARD] '{col_name}' write 거부 (row {upd.row})")
+                    print(f"  [STALE-FORMULA-GUARD] '{col_name}' write 거부 (row {target_row})")
                     continue
                 if col_name not in mapping:
                     continue
                 cells.append({
-                    "range": gspread.utils.rowcol_to_a1(upd.row, mapping[col_name] + 1),
+                    "range": gspread.utils.rowcol_to_a1(target_row, mapping[col_name] + 1),
                     "values": [[new_val]],
                 })
-
             if HEADER_AREA in mapping:
                 color_formats.append({
-                    "range": gspread.utils.rowcol_to_a1(upd.row, mapping[HEADER_AREA] + 1),
-                    "format": {"backgroundColor": _background_color_for_k(formula_columns.get(HEADER_RAW_AREA, ""))},
+                    "range": gspread.utils.rowcol_to_a1(target_row, mapping[HEADER_AREA] + 1),
+                    "format": {"backgroundColor": _background_color_for_k(payload.get(HEADER_RAW_AREA, ""))},
                 })
-            alignment_rows.append(upd.row)
+            alignment_rows.append(target_row)
 
-        if cells:
-            _sheets_api_retry(lambda: ws.batch_update(cells, value_input_option="RAW"), ctx=f"{tab_name} (stale formula raw write)")
+        for plan in planned.values():
+            stats["relocation_fanout_rows"] += max(0, len(plan["targets"]) - len(plan["source_rows"]))
+            for target_row in plan["targets"]:
+                _emit(target_row, plan["payload"], plan["output_link"])
+        for row_num, payload, output_link in legacy_writes:
+            _emit(row_num, payload, output_link)
+
+        # Codex Major 7: fan-out 시 payload 폭증 대비 — 셀 500개 단위 청크
+        for chunk_start in range(0, len(cells), 500):
+            chunk = cells[chunk_start:chunk_start + 500]
+            _sheets_api_retry(lambda c=chunk: ws.batch_update(c, value_input_option="RAW"), ctx=f"{tab_name} (stale formula raw write)")
         format_payload = color_formats + _exposure_result_alignment_formats(mapping, alignment_rows)
-        if format_payload:
-            _sheets_api_retry(lambda: ws.batch_format(format_payload), ctx=f"{tab_name} (stale formula formats)")
+        for chunk_start in range(0, len(format_payload), 500):
+            chunk = format_payload[chunk_start:chunk_start + 500]
+            _sheets_api_retry(lambda c=chunk: ws.batch_format(c), ctx=f"{tab_name} (stale formula formats)")
+        return len(cells)
+
+    def clear_stale_formula_cells(self, tab_name: str, row_numbers: list[int]) -> int:
+        """T-M9.2 (2026-06-12, D-047): 행 복사 잔해 행의 숨김 시스템 칸만 초기화.
+
+        대상 = STALE_FORMULA_WRITE_COLUMNS (마지막검사입력키 / raw_* / 마지막검사시각).
+        사장님 입력 컬럼(A~J/N)과 보이는 K/L/M/O 수식은 건드리지 않는다 (D-023 정합).
+        초기화 후 해당 행은 "검사한 적 없는 행"으로 취급되어 같은 run 에서 정상 재검사된다.
+        """
+        if not row_numbers:
+            return 0
+        ws = self.spreadsheet.worksheet(tab_name)
+        headers = ws.row_values(1)
+        mapping = map_headers_to_columns(headers)
+        cells = []
+        for row_num in sorted({int(r) for r in row_numbers if int(r) >= 2}):
+            for col_name in sorted(STALE_FORMULA_WRITE_COLUMNS):
+                if col_name not in mapping:
+                    continue
+                cells.append({
+                    "range": gspread.utils.rowcol_to_a1(row_num, mapping[col_name] + 1),
+                    "values": [[""]],
+                })
+        for chunk_start in range(0, len(cells), 500):
+            chunk = cells[chunk_start:chunk_start + 500]
+            _sheets_api_retry(lambda c=chunk: ws.batch_update(c, value_input_option="RAW"), ctx=f"{tab_name} (stale formula ghost clear)")
         return len(cells)
 
     def write_results(self, tab_name: str, updates: list["RowUpdate"]) -> int:

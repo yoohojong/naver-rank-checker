@@ -32,6 +32,9 @@ from src.sheets import (
     SheetsClient, RowUpdate,
     rank_result_to_columns,
     HEADER_AREA, HEADER_L, HEADER_M, HEADER_JISIKIN, HEADER_LINK, HEADER_TYPE,
+    HEADER_KEYWORD, HEADER_LAST_CHECKED_INPUT_KEY, HEADER_LAST_CHECKED_AT,
+    HEADER_RAW_AREA, HEADER_RAW_L, HEADER_RAW_M, HEADER_RAW_JISIKIN,
+    STALE_DISPLAY_K,
 )
 from src.transitions import compute_new_K, compute_new_K_with_stamp, parse_K_with_stamp, SYSTEM_K_VALUES
 from src.type_preview import (
@@ -102,6 +105,46 @@ def _blank_input_stale_output_cleanup(row: dict) -> Optional[dict]:
         HEADER_M: "",
         HEADER_JISIKIN: "",
     }
+
+
+def _detect_ghost_stale_rows(rows: list) -> list:
+    """T-M9.2 (2026-06-12, D-047): 행 복사로 들어온 숨김 시스템 칸 잔해(유령 값) 행 검출.
+
+    배경: 마케터가 기존 행을 통째로 복사해 신규 행을 만들면 숨김 칸(마지막검사입력키/
+    raw_*/마지막검사시각)까지 복사되어 "검사한 적 있는 척"하는 유령 값이 생긴다
+    (2026-06-12 사건 — 07:52 백업에서 신규 30행 실증).
+
+    잔해 판정 (Codex 태클 Major 5·6 반영 — 보수적):
+    - 키워드/링크 있는 행만 대상 (입력 없는 행 = 사장님 수동 메모 영역 = 보호)
+    - (a) 마지막검사입력키 빈칸인데 raw_* 또는 마지막검사시각이 남아있음
+      (정상적으로 검사된 행은 항상 입력키+raw+시각이 한 묶음으로 기록됨.
+       단 마이그레이션 backfill 의 "migration" 시각은 잔해 아님 = 제외)
+    - (b) raw_노출영역 base 가 정확히 STALE_DISPLAY_K — 시스템이 raw 에 절대 쓰지 않는 값
+      (사장님 수동 K 값("확인중" 등)은 transitions 보존 경로로 raw 에 합법 진입 가능 = 제외)
+    """
+    ghosts = []
+    for row in rows:
+        row_num = row.get("_row")
+        if not row_num or int(row_num) < 2:
+            continue
+        keyword = _clean_cell(row.get(HEADER_KEYWORD, ""))
+        link = _clean_cell(row.get(HEADER_LINK, ""))
+        if not keyword and not link:
+            continue
+        last_key = _clean_cell(row.get(HEADER_LAST_CHECKED_INPUT_KEY, ""))
+        raw_values = [
+            _clean_cell(row.get(header, ""))
+            for header in (HEADER_RAW_AREA, HEADER_RAW_L, HEADER_RAW_M, HEADER_RAW_JISIKIN)
+        ]
+        checked_at = _clean_cell(row.get(HEADER_LAST_CHECKED_AT, ""))
+        ghost_orphan_output = (not last_key) and (
+            any(raw_values) or (bool(checked_at) and checked_at != "migration")
+        )
+        raw_base, _ = parse_K_with_stamp(_clean_cell(row.get(HEADER_RAW_AREA, "")))
+        ghost_stale_marker_in_raw = raw_base == STALE_DISPLAY_K
+        if ghost_orphan_output or ghost_stale_marker_in_raw:
+            ghosts.append(int(row_num))
+    return ghosts
 
 
 def _add_type_preview(collector: Optional[TypePreviewCollector], preview_row: dict) -> None:
@@ -541,6 +584,22 @@ def run_cycle() -> dict:
             f"formula_rows={stale_formula_setup_summary['formula_rows']}"
         )
 
+    # T-M9.2 (D-047): 행 복사 잔해 소독 — 유령 검사값 초기화 후 이번 run 에서 정상 재검사.
+    # read 직후 즉시 수행 = 행 번호 어긋남 창 최소화. 숨김 시스템 칸만 초기화 (D-023 정합).
+    ghost_sanitized_rows = 0
+    if stale_formula_mode_enabled:
+        for tab_name, rows in data.items():
+            ghost_rows = _detect_ghost_stale_rows(rows)
+            if not ghost_rows:
+                continue
+            try:
+                cleared = client.clear_stale_formula_cells(tab_name, ghost_rows)
+                ghost_sanitized_rows += len(ghost_rows)
+                print(f"[D-047-GHOST-CLEAR] [{tab_name}] 복사 잔해 {len(ghost_rows)} 행 숨김 칸 초기화 ({cleared} 셀)")
+            except Exception as e:
+                # 소독 실패 = cron 중단 X (어차피 write 단계 재배치가 올바른 값으로 덮음)
+                print(f"[D-047-GHOST-CLEAR] [{tab_name}] 초기화 실패 = {e} (cron 진행)")
+
     # D-032: post-write audit baseline. 기존 시트 debt 는 artifact/comment 에 남기되,
     # 이번 run 이 새로 만들었거나 건드린 행만 workflow 실패 조건으로 본다.
     pre_write_sheet_issues = audit_sheet_rows(data)
@@ -777,6 +836,12 @@ def run_cycle() -> dict:
     kst_iso = datetime.now(kst).strftime("%Y-%m-%d %H:%M KST")
     total_cells = 0
     stale_formula_mode_cells = 0
+    # T-M9.1/9.3 (D-047): 재배치 통계 누적 (모든 탭 합산) — summary + issue 가시성
+    stale_relocation_stats = {
+        "relocation_miss_rows": 0,
+        "relocation_conflict_keys": 0,
+        "relocation_fanout_rows": 0,
+    }
     for tab_name, updates in tab_updates.items():
         if updates:
             if stale_formula_mode_enabled:
@@ -785,6 +850,7 @@ def run_cycle() -> dict:
                     updates,
                     row_context=row_context,
                     checked_at=kst_iso,
+                    stats_out=stale_relocation_stats,
                 )
                 stale_formula_mode_cells += n
             else:
@@ -915,6 +981,11 @@ def run_cycle() -> dict:
     summary["stale_formula_mode_enabled"] = stale_formula_mode_enabled
     summary["stale_formula_mode_cells_written"] = stale_formula_mode_cells
     summary["stale_formula_mode_setup"] = stale_formula_setup_summary
+    # T-M9.1~9.3 (D-047): 동시 편집 면역 가시성
+    summary["relocation_miss_rows"] = stale_relocation_stats["relocation_miss_rows"]
+    summary["relocation_conflict_keys"] = stale_relocation_stats["relocation_conflict_keys"]
+    summary["relocation_fanout_rows"] = stale_relocation_stats["relocation_fanout_rows"]
+    summary["ghost_sanitized_rows"] = ghost_sanitized_rows
     summary["recheck_stale_only_enabled"] = recheck_stale_only_enabled
     summary["recheck_stale_only_target_rows"] = len(recheck_stale_only_targets)
     summary["type_preview_bulk_guard_overridden"] = (
