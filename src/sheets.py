@@ -429,10 +429,29 @@ class SheetsClient:
                 return _cell(sheet_rows[row_idx], link_idx).strip()
             return ""
 
+        def _row_identity_matches(row_1based: int, identity: tuple[str, str]) -> bool:
+            # 위치 fallback 용 D-047 동시편집 면역: 측정된 원본 행(upd.row)의 재read identity 가
+            # 측정 당시 identity 와 같을 때만 그 위치에 기록. 다르면(=검사 도중 사장님이 그 행 변경)
+            # skip → 다음 cron 자연 재검사 (relocation MISS 와 동일 의미).
+            if not sheet_read_ok or sheet_rows is None:
+                return False
+            row_idx = row_1based - 1
+            if not (0 <= row_idx < len(sheet_rows)):
+                return False
+            current = _relocation_identity(
+                _cell(sheet_rows[row_idx], kw_idx), _cell(sheet_rows[row_idx], link_idx)
+            )
+            return current == identity
+
         # 1차: update 별 payload 계산 + identity 재배치 + 충돌 검출 (Codex Critical 1)
         planned: dict[tuple[str, str], dict] = {}
         conflicted: set = set()
         legacy_writes: list[tuple[int, dict, str]] = []  # re-read 실패 시 (행, payload, output_link)
+        # 만성버그 fix (2026-06-18): identity 충돌/모호로 fan-out 매칭이 보류될 때,
+        # 각 측정 행(upd.row)을 자기 위치에 1:1 로 닫는다 (위치 fallback).
+        # link 자동 채움은 모호하므로 하지 않고(output_link=""), 숨김 baseline 만 자기 위치에 기록.
+        # re-read 에서 그 행의 identity 가 측정 당시와 같을 때만 기록(D-047 동시편집 면역 보존).
+        positional_writes: list[tuple[int, dict, tuple[str, str]]] = []  # (행, payload, 측정당시 identity)
         for upd in updates:
             source_row = row_context.get(upd.row) or row_context.get((tab_name, upd.row)) or {"_row": upd.row, "_tab": tab_name}
             source_link = str(source_row.get(HEADER_LINK, "") or "").strip()
@@ -468,11 +487,15 @@ class SheetsClient:
                 if not targets and identity:
                     blank_targets = list(identity_to_rows.get(identity, []))
                     if len(blank_targets) > 1:
+                        # 빈 link 동일 키워드 다수 = link 자동 채움은 모호 = 보류(D-026 fan-out 금지).
+                        # 그러나 각 측정 행(upd.row)의 숨김 baseline 은 자기 위치에 닫는다 (영구 재검사필요 해소).
                         stats["relocation_conflict_keys"] += 1
                         print(
                             f"  [STALE-FORMULA-RELOCATION-AMBIGUOUS] row {upd.row} "
-                            f"빈 link 동일 키워드 행 {len(blank_targets)}개 = 보류"
+                            f"빈 link 동일 키워드 행 {len(blank_targets)}개 = link 자동채움 보류, "
+                            f"숨김 baseline 만 자기 위치 기록"
                         )
+                        positional_writes.append((upd.row, payload, identity))
                         continue
                     targets = blank_targets
             else:
@@ -485,17 +508,27 @@ class SheetsClient:
                 )
                 continue
             if identity in conflicted:
+                # 이미 충돌로 전환된 identity = 각 측정 행을 자기 위치에 1:1 로 닫는다.
+                positional_writes.append((upd.row, payload, identity))
                 continue
             existing = planned.get(identity)
             if existing is not None:
                 if existing["payload"] != payload:
+                    # 같은 identity 인데 측정 payload 가 다름 = 서로 다른 행이 각자 독립 측정됨
+                    # (fan-out 전파가 아님). fan-out 매칭을 취소하고 각 측정 행을 자기 위치에 닫는다.
                     conflicted.add(identity)
-                    planned.pop(identity, None)
+                    dropped = planned.pop(identity, None)
                     stats["relocation_conflict_keys"] += 1
                     print(
-                        f"  [STALE-FORMULA-RELOCATION-CONFLICT] identity 충돌 = 보류 "
-                        f"(rows {existing['source_rows']} vs {upd.row})"
+                        f"  [STALE-FORMULA-RELOCATION-CONFLICT] identity 충돌 = "
+                        f"각 측정 행 자기 위치 기록 "
+                        f"(rows {dropped['source_rows'] if dropped else '?'} vs {upd.row})"
                     )
+                    # 이미 planned 였던 측정 행들 + 현재 upd.row = 전부 위치 fallback 으로 이관.
+                    if dropped is not None:
+                        for src_row in dropped["source_rows"]:
+                            positional_writes.append((src_row, dropped["payload"], identity))
+                    positional_writes.append((upd.row, payload, identity))
                 else:
                     existing["source_rows"].append(upd.row)
                 continue
@@ -542,6 +575,22 @@ class SheetsClient:
                 _emit(target_row, plan["payload"], plan["output_link"])
         for row_num, payload, output_link in legacy_writes:
             _emit(row_num, payload, output_link)
+        # 위치 fallback: 충돌/모호로 fan-out 매칭이 보류된 각 측정 행을 자기 위치에 1:1 기록.
+        # D-047 동시편집 면역: 재read 에서 그 행 identity 가 측정 당시와 같을 때만 기록.
+        # output_link="" (link 자동 채움 안 함 = D-023/링크가드 정합). 같은 행 중복 기록 방지.
+        positional_emitted: set = set()
+        for row_num, payload, identity in positional_writes:
+            if row_num in positional_emitted:
+                continue
+            if not _row_identity_matches(row_num, identity):
+                stats["relocation_miss_rows"] += 1
+                print(
+                    f"  [STALE-FORMULA-POSITIONAL-MISS] row {row_num} skip "
+                    f"(재read identity 불일치 = 검사 도중 입력 변경 — 다음 cron 재검사)"
+                )
+                continue
+            positional_emitted.add(row_num)
+            _emit(row_num, payload, "")
 
         # Codex Major 7: fan-out 시 payload 폭증 대비 — 셀 500개 단위 청크
         for chunk_start in range(0, len(cells), 500):

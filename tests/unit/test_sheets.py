@@ -8,6 +8,7 @@ from src.sheets import (
     RowUpdate, rank_result_to_columns,
     HEADER_TYPE, HEADER_AREA, HEADER_L, HEADER_M, HEADER_JISIKIN,
     HEADER_LINK, SYSTEM_OUTPUT_COLUMNS, SYSTEM_OUTPUT_COLUMNS_EMPTY_LINK,
+    HEADER_LAST_CHECKED_INPUT_KEY,
 )
 
 COLOR_EXPOSED = {"red": 0.8, "green": 1.0, "blue": 0.8}
@@ -1725,8 +1726,13 @@ class TestStaleFormulaRelocation:
         assert any(r.endswith("3") for r in ranges)
         assert stats["relocation_fanout_rows"] == 1
 
-    def test_conflicting_duplicate_updates_are_quarantined(self):
-        """Codex Critical 1: 같은 identity 의 update payload 가 다르면 = 충돌 = 전체 보류."""
+    def test_conflicting_duplicate_updates_close_each_row_at_own_position(self):
+        """만성버그 fix (2026-06-18): 같은 identity 의 update payload 가 다르면 = 서로 다른 행이
+        각자 독립 측정됨 = fan-out 매칭 취소 + 각 측정 행을 자기 위치에 1:1 로 닫는다.
+
+        (종전: Codex Critical 1 로 둘 다 드롭 → 측정됐는데 마지막검사입력키 안 써져 영구 재검사필요.
+        이게 샴푸 카외 row 278·283 만성버그의 정확한 경로였다.)
+        """
         sheet_rows = [
             self._sheet_row("알라딘필링후기", "https://cafe.naver.com/llchyll/2449021"),
             self._sheet_row("알라딘필링후기", "https://cafe.naver.com/llchyll/2449021"),
@@ -1740,8 +1746,12 @@ class TestStaleFormulaRelocation:
             [self._update(2, k="AB (6/8 17:19~)"), self._update(3, k="AB (6/12 12:00~)")],
             row_context={2: loaded_2, 3: loaded_3}, checked_at="2026-06-12 13:00 KST", stats_out=stats,
         )
-        assert cells == 0
-        ws.batch_update.assert_not_called()
+        # 각 측정 행 = 숨김 6칸씩, 자기 위치(행 2 / 행 3)에 기록. link 자동 채움은 안 함.
+        assert cells == 12
+        ws.batch_update.assert_called()
+        last_keys = self._last_key_cells(ws.batch_update.call_args.args[0])
+        assert 2 in last_keys and last_keys[2]
+        assert 3 in last_keys and last_keys[3]
         assert stats["relocation_conflict_keys"] == 1
 
     def test_miss_skips_when_input_edited_midrun(self):
@@ -1810,7 +1820,11 @@ class TestStaleFormulaRelocation:
         assert cells == 6
 
     def test_blank_link_autofill_requires_unique_match(self):
-        """Codex 사후 Major 1: 빈 link + 같은 키워드 행 다수 = 모호 = link 자동 채움 보류."""
+        """Codex 사후 Major 1 (link 자동채움 가드 유지) + 만성버그 fix (baseline 위치 기록).
+
+        빈 link + 같은 키워드 행 다수 = 모호 = link 자동 채움은 여전히 보류(D-023/링크가드).
+        그러나 측정된 그 행(upd.row=2)의 숨김 baseline 은 자기 위치에 기록 → 영구 재검사필요 해소.
+        """
         sheet_rows = [
             self._sheet_row("도브바디스크럽", ""),
             self._sheet_row("도브바디스크럽", ""),
@@ -1827,8 +1841,17 @@ class TestStaleFormulaRelocation:
             "바디워시 카외", [upd],
             row_context={2: loaded}, checked_at="2026-06-12 13:00 KST", stats_out=stats,
         )
-        assert cells == 0
-        ws.batch_update.assert_not_called()
+        # 숨김 baseline 6칸만 (link 자동 채움 없음) = 6칸, 전부 측정 행(행 2) 자기 위치.
+        assert cells == 6
+        ws.batch_update.assert_called()
+        payload = ws.batch_update.call_args.args[0]
+        ranges = {item["range"] for item in payload}
+        assert all(r.endswith("2") for r in ranges)
+        # link 자동 채움은 보류 (D-023/링크가드) — 자동 채움 link 값이 payload 에 없어야 한다.
+        values = [item["values"][0][0] for item in payload]
+        assert "https://cafe.naver.com/llchyll/9999999" not in values
+        last_keys = self._last_key_cells(payload)
+        assert 2 in last_keys and last_keys[2]
         assert stats["relocation_conflict_keys"] == 1
 
     def test_blank_link_autofill_unique_match_fills_link(self):
@@ -1855,3 +1878,92 @@ class TestStaleFormulaRelocation:
         assert all(r.endswith("3") for r in ranges)
         values = [item["values"][0][0] for item in payload]
         assert "https://cafe.naver.com/llchyll/9999999" in values
+
+    def _last_key_cells(self, payload):
+        """payload 에서 '마지막검사입력키' 셀만 {행번호: 값} 으로 추출."""
+        import gspread as _gs
+        q_cell = _gs.utils.rowcol_to_a1(2, self.HEADERS.index("마지막검사입력키") + 1)
+        q_col = q_cell[:-1]  # 행번호 제거 → 컬럼 문자
+        out = {}
+        for item in payload:
+            rng = item["range"]
+            suffix = rng[len(q_col):]
+            if rng.startswith(q_col) and suffix.isdigit():
+                out[int(suffix)] = item["values"][0][0]
+        return out
+
+    def test_same_keyword_same_link_two_rows_each_measured_both_get_last_key_at_own_position(self):
+        """만성버그: 같은 (키워드,링크) identity 2행이 각각 독립 측정되고 payload 가 다르면
+        둘 다 자기 위치에 마지막검사입력키가 써진다.
+
+        실증: 샴푸 카외 row 278·283 ('다이소엘라스틴샴푸') 매 cron 측정되나 identity 충돌로
+        baseline writeback 이 둘 다 드롭 → 영구 '재검사필요'. 각 측정행을 자기 위치에 1:1 로 닫아야 한다.
+        (종전 코드: line 491-498 conflicted.add + planned.pop → 둘 다 드롭.)
+        """
+        sheet_rows = [
+            self._sheet_row("다이소엘라스틴샴푸", "https://cafe.naver.com/a/1"),
+            self._sheet_row("다이소엘라스틴샴푸", "https://cafe.naver.com/a/1"),
+        ]
+        client, ws = self._make_client(sheet_rows)
+        loaded_2 = {"_row": 2, "키워드": "다이소엘라스틴샴푸", "링크": "https://cafe.naver.com/a/1"}
+        loaded_3 = {"_row": 3, "키워드": "다이소엘라스틴샴푸", "링크": "https://cafe.naver.com/a/1"}
+        stats = {}
+        # 서로 다른 행이 각각 독립 측정됨 (payload 도 다름) → identity 충돌처럼 보이지만 실제는 각자 측정.
+        client.write_stale_formula_results(
+            "샴푸 카외",
+            [self._update(2, k="AB (6/18 12:00~)"), self._update(3, k="인기글 (6/18 12:00~)")],
+            row_context={2: loaded_2, 3: loaded_3}, checked_at="2026-06-18 13:00 KST", stats_out=stats,
+        )
+        ws.batch_update.assert_called()
+        last_keys = self._last_key_cells(ws.batch_update.call_args.args[0])
+        # 각 측정행이 자기 위치에 마지막검사입력키를 받아야 영구 재검사필요가 해소된다.
+        assert 2 in last_keys and last_keys[2]
+        assert 3 in last_keys and last_keys[3]
+
+    def test_same_keyword_two_blank_link_rows_each_measured_both_get_last_key(self):
+        """빈 link 동일 키워드 2행이 각각 측정되면 둘 다 자기 위치에 마지막검사입력키가 써진다.
+
+        종전: 빈 link 동일 키워드 다수 = 모호 = 보류 → 영구 재검사필요. 각 측정행을 자기 위치에 닫는다.
+        link 자동 채움은 모호하므로 하지 않되(D-023/링크가드), 숨김 baseline 은 각 행에 기록.
+        """
+        sheet_rows = [
+            self._sheet_row("다이소엘라스틴샴푸", ""),
+            self._sheet_row("다이소엘라스틴샴푸", ""),
+        ]
+        client, ws = self._make_client(sheet_rows)
+        loaded_2 = {"_row": 2, "키워드": "다이소엘라스틴샴푸", "링크": ""}
+        loaded_3 = {"_row": 3, "키워드": "다이소엘라스틴샴푸", "링크": ""}
+        stats = {}
+        client.write_stale_formula_results(
+            "샴푸 카외",
+            [self._update(2, k="미노출 (6/18 12:00~)"), self._update(3, k="미노출 (6/18 12:00~)")],
+            row_context={2: loaded_2, 3: loaded_3}, checked_at="2026-06-18 13:00 KST", stats_out=stats,
+        )
+        ws.batch_update.assert_called()
+        last_keys = self._last_key_cells(ws.batch_update.call_args.args[0])
+        assert 2 in last_keys and last_keys[2]
+        assert 3 in last_keys and last_keys[3]
+
+    def test_positional_fallback_respects_concurrent_edit_immunity(self):
+        """D-047 보존: 측정 도중 사장님이 그 행을 바꿨으면(재read identity 불일치) 위치 fallback 도 skip.
+
+        측정 당시 row 2·3 모두 (다이소엘라스틴샴푸, /a/1) identity (= 충돌 → 위치 fallback 경로) 였으나,
+        write 직전 재read 에서 row 3 이 다른 키워드로 변경됨 → row 3 만 skip, row 2 는 기록.
+        """
+        sheet_rows = [
+            self._sheet_row("다이소엘라스틴샴푸", "https://cafe.naver.com/a/1"),
+            self._sheet_row("사장님이바꾼키워드", "https://cafe.naver.com/a/1"),
+        ]
+        client, ws = self._make_client(sheet_rows)
+        loaded_2 = {"_row": 2, "키워드": "다이소엘라스틴샴푸", "링크": "https://cafe.naver.com/a/1"}
+        loaded_3 = {"_row": 3, "키워드": "다이소엘라스틴샴푸", "링크": "https://cafe.naver.com/a/1"}
+        stats = {}
+        client.write_stale_formula_results(
+            "샴푸 카외",
+            [self._update(2, k="AB (6/18 12:00~)"), self._update(3, k="인기글 (6/18 12:00~)")],
+            row_context={2: loaded_2, 3: loaded_3}, checked_at="2026-06-18 13:00 KST", stats_out=stats,
+        )
+        last_keys = self._last_key_cells(ws.batch_update.call_args.args[0])
+        # row 2 = identity 그대로 → 기록. row 3 = 재read 에서 키워드 바뀜 → skip (동시편집 면역).
+        assert 2 in last_keys and last_keys[2]
+        assert 3 not in last_keys
