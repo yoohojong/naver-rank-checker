@@ -91,7 +91,7 @@ def build_evening_report(reports: list[TabReport], kst: str, status_line: str = 
         if kc.get("내림"):
             L.append(f"   순위 하락: {kc['내림']}개")
         if kc.get("누락"):
-            L.append(f"   누락: {kc['누락']}개  ← 점검!")
+            L.append(f"   누락: {kc['누락']}개 (보통 다음 검사에 회복)")
         if kc.get("삭제"):
             L.append(f"   삭제: {kc['삭제']}개  ← 점검!")
         if not (kc.get("신규노출") or kc.get("오름") or kc.get("내림") or lost):
