@@ -851,6 +851,81 @@ class SheetsClient:
             result[ws.title] = rows
         return result
 
+    def read_tab_records(self, tab_name: str) -> list[dict]:
+        """스테이징 탭 1개를 [{헤더이름: 값, _row: 행번호}] 로 read.
+
+        탭이 없으면 빈 list (= 아직 안 만들어짐 = 적재 전 정상 상태).
+        헤더 매핑 실패(빈 탭 등) 시에도 빈 list.
+
+        C3 (수집결과_지식인 / 수집결과_리뷰) 중복방지용 — 기존 행을 읽어
+        같은 키워드+수집일이 이미 적재됐는지 확인한다.
+        """
+        try:
+            ws = self.spreadsheet.worksheet(tab_name)
+        except gspread.exceptions.WorksheetNotFound:
+            return []
+        all_values = _sheets_api_retry(lambda: ws.get_all_values(), ctx=f"{tab_name} (read records)")
+        if not all_values:
+            return []
+        headers = all_values[0]
+        try:
+            mapping = map_headers_to_columns(headers)
+        except ValueError:
+            return []
+        records: list[dict] = []
+        for row_idx, row_values in enumerate(all_values[1:], start=2):
+            rec = {h: (row_values[i] if i < len(row_values) else "") for h, i in mapping.items()}
+            rec["_row"] = row_idx
+            records.append(rec)
+        return records
+
+    def append_staging_rows(
+        self,
+        tab_name: str,
+        header: list[str],
+        rows: list[list],
+    ) -> int:
+        """스테이징 탭에 행을 append. 탭/헤더 없으면 자동 생성.
+
+        C3 적재용 — 수집 코어(지식인/리뷰) 결과를 고정 스키마로 시트에 쌓는다.
+        사장님 입력 탭(카외)이 아니라 **수집 전용 탭**이라 자유롭게 행 추가 가능.
+
+        Args:
+            tab_name: 대상 스테이징 탭 이름 (예: '수집결과_지식인').
+            header: 고정 헤더 list (탭/헤더가 없을 때만 1행에 기록).
+            rows: append 할 행들 (각 행 = header 와 같은 길이의 값 list).
+
+        Returns:
+            실제 append 한 행 수.
+        """
+        if not rows:
+            return 0
+        try:
+            ws = self.spreadsheet.worksheet(tab_name)
+            existing = _sheets_api_retry(lambda: ws.row_values(1), ctx=f"{tab_name} (header check)")
+            if not existing:
+                # 탭은 있는데 헤더가 비었음 → 헤더부터 기록.
+                _sheets_api_retry(
+                    lambda: ws.update("A1", [header], value_input_option="RAW"),
+                    ctx=f"{tab_name} (header write)",
+                )
+        except gspread.exceptions.WorksheetNotFound:
+            ws = _sheets_api_retry(
+                lambda: self.spreadsheet.add_worksheet(
+                    title=tab_name, rows=1000, cols=max(len(header), 7)
+                ),
+                ctx=f"{tab_name} (create tab)",
+            )
+            _sheets_api_retry(
+                lambda: ws.update("A1", [header], value_input_option="RAW"),
+                ctx=f"{tab_name} (header write)",
+            )
+        _sheets_api_retry(
+            lambda: ws.append_rows(rows, value_input_option="RAW"),
+            ctx=f"{tab_name} (append {len(rows)} rows)",
+        )
+        return len(rows)
+
 
 @dataclass
 class RowUpdate:

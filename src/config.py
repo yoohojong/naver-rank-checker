@@ -25,6 +25,14 @@ USER_AGENTS = [
 # document-specialist 권장 = chrome146 최신. 4종 회전 = fingerprint 다양성 ↑ + 봇 감지 ↓.
 IMPERSONATE_POOL = ["chrome146", "chrome145", "chrome136", "chrome131"]
 
+# 카페외부 원고 재료(4 대안 / 5 브랜드 단계) — Apify 스마트스토어 리뷰 수집 토큰(유료, 선택).
+# 미설정 시 리뷰 자동수집만 비활성(지식인 수집·순위체커는 영향 없음).
+APIFY_TOKEN = os.environ.get("APIFY_TOKEN", "")
+# Apify 액터 id. 미지정 시 review_collect 문서 예시 액터 default 사용.
+APIFY_ACTOR_ID = os.environ.get(
+    "APIFY_ACTOR_ID", "accurate_dancer~naver-smart-store-monitor"
+)
+
 # T-M25 (2026-05-12): 사장님 운영 카페 slug 화이트리스트.
 # T-M90 (D-027 보강 2026-05-17): repo Public 전환 = CAFE_WHITELIST 환경변수 이전 = 사장님 카페 정보 노출 회피.
 # 환경변수 = CAFE_WHITELIST_SLUGS = "slug1,slug2,slug3" 콤마 구분.

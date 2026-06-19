@@ -1,0 +1,87 @@
+name: cafe-material-collect
+# 카페외부 원고 '재료' 자동 수집 (C3/C4/C9).
+# 사장님 시트의 '카외' 제품 탭 → 단계별 수집(지식인/리뷰) → 수집결과_* 스테이징 탭 적재.
+# rank-check.yml 패턴 재활용. 순위체커(rank-check)와 schedule·concurrency 완전 분리.
+# ⚠️ 키 없을 때 안전: integration_runner 가 네이버/APIFY 키 없으면 해당 채널만 스킵(에러 X).
+
+on:
+  schedule:
+    # 매주 월요일 KST 21:00 = UTC 12:00 (주 1회 — 원고 재료는 매일 필요 없음, 무료 API 호출량 절약).
+    - cron: '0 12 * * 1'
+  workflow_dispatch:  # 사장님 수동 트리거
+
+# 순위체커(naver-rank-check)와 별도 그룹 — 서로 취소/대기 영향 없음.
+concurrency:
+  group: cafe-material-collect
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  collect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout
+        id: checkout
+        uses: actions/checkout@v6.0.2
+        with:
+          token: ${{ secrets.ACTIONS_PAT || github.token }}
+
+      - name: Verify checkout
+        shell: bash
+        run: |
+          test -f requirements.txt
+          test -f src/integration_runner.py
+
+      - name: Setup Python 3.13
+        uses: actions/setup-python@v6.2.0
+        with:
+          python-version: '3.13'
+
+      - name: Setup venv + install deps
+        shell: bash
+        run: |
+          python -m venv .venv
+          ./.venv/bin/python -m pip install --upgrade pip
+          ./.venv/bin/python -m pip install -r requirements.txt
+
+      - name: Run cafe material collection
+        id: collect
+        shell: bash
+        env:
+          SPREADSHEET_ID: ${{ secrets.SPREADSHEET_ID }}
+          SERVICE_ACCOUNT_JSON: ${{ secrets.SERVICE_ACCOUNT_JSON }}
+          # 신규 키 (미설정 시 해당 채널만 자동 스킵 — integration_runner 가드).
+          NAVER_OPENAPI_CLIENT_ID: ${{ secrets.NAVER_OPENAPI_CLIENT_ID }}
+          NAVER_OPENAPI_CLIENT_SECRET: ${{ secrets.NAVER_OPENAPI_CLIENT_SECRET }}
+          APIFY_TOKEN: ${{ secrets.APIFY_TOKEN }}
+          APIFY_ACTOR_ID: ${{ secrets.APIFY_ACTOR_ID }}
+          # C9: 요약 텔레그램 전송용 (integration_runner 가 끝에 send_report 호출).
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          PYTHONIOENCODING: 'utf-8'
+        run: |
+          ./.venv/bin/python -u -m src.integration_runner
+
+      # C9: integration_runner 내부 send_report 가 막혔을 때를 대비한 always() 백업 알림.
+      # run step 의 성공/실패 상태를 사장님 텔레그램으로 통보. 비차단(secret 없으면 [SKIP]).
+      - name: Send Telegram notification (수집 결과 백업 알림)
+        if: always()
+        continue-on-error: true
+        shell: bash
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          RUN_STATUS: ${{ steps.collect.outcome }}
+          PYTHONIOENCODING: 'utf-8'
+        run: |
+          ./.venv/bin/python - <<'PY' || true
+          import os
+          from src.notify import send_report
+          status = os.environ.get("RUN_STATUS", "unknown")
+          mark = "✅ 성공" if status == "success" else f"⚠️ {status}"
+          send_report(f"[카페외부 재료수집] cron 종료 — {mark}")
+          PY
