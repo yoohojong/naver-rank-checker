@@ -33,11 +33,12 @@ def test_evening_words_format():
     assert "샴푸 카외: 3개 작업 → 1개 떴어요" in out
     assert "[지금 상위노출]" in out
     assert "전체 3개 중 2개" in out
-    assert "새로 뜸: 1개" in out
-    assert "검색에서 사라짐: 1개" in out
+    assert "신규 노출: 1개" in out
+    assert "삭제: 1개" in out  # 상노 프로그램 용어 그대로
     assert "[제품별 노출]" in out
     assert "[대표 노출 유형]" in out and "유형 바뀐 키워드: 1개" in out
     assert "지식인에 뜬 키워드: 2개" in out
+    assert "ℹ️ 용어" in out and "누락 =" in out  # 범례(용어 설명)
     # 빼야 할 것
     assert "비듬샴푸" not in out  # 키워드 나열 X
     assert "미작업" not in out  # 작업 안 된 키워드 보고 제외(사장님 요청)
@@ -46,7 +47,7 @@ def test_evening_words_format():
 
 def test_morning_words_format():
     out = rb.build_morning_report([_shampoo()], "6/20", "정상")
-    assert "검색에서 사라진 키워드: 1개" in out
+    assert "누락·삭제(사라짐): 1개" in out
     assert "어제 작업: 3개 → 1개" in out
     assert "[제품별 노출]" in out
     assert "탈모샴푸 추천" not in out

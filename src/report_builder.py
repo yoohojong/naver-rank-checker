@@ -10,6 +10,14 @@ from collections import Counter
 
 from src.snapshot_diff import TabReport
 
+# 상노 프로그램(시트)이 쓰는 용어 그대로 + 설명 (사장님 인지부담↓)
+_LEGEND = (
+    "ℹ️ 용어\n"
+    "   AB·인기글·스마트블록 = 검색에 노출되는 자리(구좌) 종류\n"
+    "   누락 = 노출됐다 사라짐(회복 가능) · 삭제 = 글이 없어짐 · 미노출 = 아직 안 뜸\n"
+    "   유형 = 그 키워드 검색 대표 구좌 · 지식인 = 지식iN 노출"
+)
+
 
 def _delta_word(prev: int, curr: int) -> str:
     d = curr - prev
@@ -77,13 +85,15 @@ def build_evening_report(reports: list[TabReport], kst: str, status_line: str = 
     if has_base:
         L.append("[어제→오늘 변화]")
         if kc.get("신규노출"):
-            L.append(f"   새로 뜸: {kc['신규노출']}개")
+            L.append(f"   신규 노출: {kc['신규노출']}개")
         if kc.get("오름"):
-            L.append(f"   순위 오름: {kc['오름']}개")
+            L.append(f"   순위 상승: {kc['오름']}개")
         if kc.get("내림"):
-            L.append(f"   순위 내림: {kc['내림']}개")
-        if lost:
-            L.append(f"   검색에서 사라짐: {lost}개  ← 점검 필요!")
+            L.append(f"   순위 하락: {kc['내림']}개")
+        if kc.get("누락"):
+            L.append(f"   누락: {kc['누락']}개  ← 점검!")
+        if kc.get("삭제"):
+            L.append(f"   삭제: {kc['삭제']}개  ← 점검!")
         if not (kc.get("신규노출") or kc.get("오름") or kc.get("내림") or lost):
             L.append("   변화 없음")
         L.append("")
@@ -110,6 +120,7 @@ def build_evening_report(reports: list[TabReport], kst: str, status_line: str = 
     if jis_now or _sum(reports, "jisikin_prev"):
         L.append(f"[지식인]  지식인에 뜬 키워드: {jis_now}개")
 
+    L += ["", _LEGEND]
     return "\n".join(L).rstrip()
 
 
@@ -125,7 +136,7 @@ def build_morning_report(reports: list[TabReport], kst: str, status_line: str = 
     lost = kc.get("누락", 0) + kc.get("삭제", 0)
 
     L = [f"☀️ 상노체크 아침 · {kst}", f"프로그램: {status_line}", ""]
-    L.append(f"검색에서 사라진 키워드: {lost}개  ← 점검!" if lost else "검색에서 사라진 키워드: 없음")
+    L.append(f"누락·삭제(사라짐): {lost}개  ← 점검!" if lost else "누락·삭제(사라짐): 없음")
     if worked:
         L.append(f"어제 작업: {worked}개 → {worked_exp}개 떴어요")
     L.append(f"지금 상위노출: 전체 {tot}개 중 {now}개")
@@ -133,4 +144,5 @@ def build_morning_report(reports: list[TabReport], kst: str, status_line: str = 
     L.append("[제품별 노출]")
     for t in reports:
         L.append(f"   {t.tab}: {t.total}개 중 {t.exposed_now}개")
+    L += ["", _LEGEND]
     return "\n".join(L).rstrip()
