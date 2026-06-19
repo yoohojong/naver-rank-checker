@@ -70,5 +70,6 @@ def test_build_report_text_no_baseline():
     with tempfile.TemporaryDirectory() as d:
         c = os.path.join(d, "curr.json.gz")
         _gz(c, _CURR)
-        out = m.build_report_text(None, c, mode="evening", kst="6/20", status_line="✅정상")
-    assert "비교 기준 없음" in out
+        out = m.build_report_text(None, c, mode="evening", kst="6/20", status_line="정상")
+    assert "지금 상위노출" in out
+    assert "어제→오늘 변화" not in out  # baseline 없으면 변화 섹션 생략(v4)

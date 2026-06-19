@@ -1,4 +1,4 @@
-"""report_builder 요약형 단위 테스트 (M10 D-052). 키워드 나열 X 검증 포함."""
+"""report_builder 말 중심 단위 테스트 (M10 D-052c). 기호 대신 한글 라벨 검증."""
 from collections import Counter
 
 from src import report_builder as rb
@@ -26,24 +26,30 @@ def _shampoo() -> TabReport:
     )
 
 
-def test_evening_summary_format():
-    out = rb.build_evening_report([_shampoo()], "6/20", "✅정상")
-    assert "샴푸 카외" in out
-    assert "상위노출" in out
-    assert "어제 작업  3개 → 1개 떴음 (적중 33%)" in out
-    assert "변화" in out and "🟦" in out and "❌" in out
-    assert "지식인 노출" in out
-    assert "🚨 빠진 키워드 1개" in out  # 삭제 1 → 손실 경보
-    assert "비듬샴푸" not in out  # ⬅ 요약형 = 키워드 나열 안 함
-    assert "키워드 3개" in out  # 전체 키워드 수
-    assert "유형(대표구좌)" in out and "변경 1건" in out  # 유형 분포·변경
+def test_evening_words_format():
+    out = rb.build_evening_report([_shampoo()], "6/20", "정상")
+    # 한글 라벨 중심
+    assert "[어제 한 작업]" in out
+    assert "샴푸 카외: 3개 작업 → 1개 떴어요" in out
+    assert "[지금 상위노출]" in out
+    assert "전체 3개 중 2개" in out
+    assert "새로 뜸: 1개" in out
+    assert "검색에서 사라짐: 1개" in out
+    assert "[제품별 노출]" in out
+    assert "[대표 노출 유형]" in out and "유형 바뀐 키워드: 1개" in out
+    assert "지식인에 뜬 키워드: 2개" in out
+    # 빼야 할 것
+    assert "비듬샴푸" not in out  # 키워드 나열 X
+    assert "미작업" not in out  # 작업 안 된 키워드 보고 제외(사장님 요청)
+    assert "🟦" not in out and "🔺" not in out  # 기호 클러스터 제거
 
 
-def test_morning_summary_format():
-    out = rb.build_morning_report([_shampoo()], "6/20", "✅정상")
-    assert "챙길 것" in out
-    assert "상위노출" in out
-    assert "탈모샴푸 추천" not in out  # 키워드 나열 안 함
+def test_morning_words_format():
+    out = rb.build_morning_report([_shampoo()], "6/20", "정상")
+    assert "검색에서 사라진 키워드: 1개" in out
+    assert "어제 작업: 3개 → 1개" in out
+    assert "[제품별 노출]" in out
+    assert "탈모샴푸 추천" not in out
 
 
 def test_no_baseline_graceful():
@@ -53,5 +59,6 @@ def test_no_baseline_graceful():
         prev_distribution=Counter(),
         baseline_available=False,
     )
-    out = rb.build_evening_report([tr], "6/20", "✅정상")
-    assert "비교 기준 없음" in out
+    out = rb.build_evening_report([tr], "6/20", "정상")
+    assert "전체 1개 중 1개" in out
+    assert "어제→오늘 변화" not in out  # baseline 없으면 변화 섹션 생략
