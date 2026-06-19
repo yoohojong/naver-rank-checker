@@ -488,18 +488,30 @@ class TestParseJisikin:
         result = parse_search_result(html, "https://cafe.naver.com/cosmania/38373348")
         assert result.in_jisikin is False
 
-    def test_jisikin_absent_when_no_jisikin_h2_box(self, load_fixture):
-        """smart_block.html 안 kin.naver.com 링크 있지만 h2='지식iN' 박스 없음 (광고/추천 부수 링크) → False.
-        v2 fix 회귀 방지: 사장님 시트 J false positive 69건 케이스 (cafe 박스 안 부수 kin 링크)."""
+    def test_jisikin_present_smart_block_real_sds(self, load_fixture):
+        """D-050: smart_block.html 은 실제로 '네이버 지식iN' 카드 6개 포함.
+        구 h2 detector 는 이를 못 봐서 False(= 정탐 누락 버그)였고, 신 detector(sds-comps)는 True.
+        (부수 kin 링크 오탐 방지는 test_jisikin_false_positive_kin_in_ab_box_v2_regression 가 담당)"""
         html = load_fixture("naver/smart_block.html")
         result = parse_search_result(html, "https://cafe.naver.com/foo/123")
-        assert result.in_jisikin is False
+        assert result.in_jisikin is True
 
-    def test_jisikin_absent_target_kin_no_jisikin_h2_box(self, load_fixture):
-        """target 이 kin URL 이어도 페이지에 진짜 지식iN h2 박스 없으면 False (v2)."""
-        html = load_fixture("naver/smart_block.html")
+    def test_jisikin_absent_target_kin_no_jisikin_box(self, load_fixture):
+        """target 이 kin URL 이어도 페이지에 진짜 지식iN(카드/박스) 없으면 False.
+        popular_cafe.html = 지식iN 0개 (clean absent fixture)."""
+        html = load_fixture("naver/popular_cafe.html")
         result = parse_search_result(html, "https://kin.naver.com/anything/1")
         assert result.in_jisikin is False
+
+    def test_jisikin_present_real_naver_sds(self, load_fixture):
+        """D-050: 네이버 신 디자인(sds-comps) 지식iN 박스 실샘플 → True (DOM drift 회귀 방지).
+
+        2026-06-20 사장님 'O 적음' 제보 → 실제 크롤로 정탐 누락 확인. 라벨이 h2 →
+        sds-comps-profile-info-title('네이버 지식iN')로 이동한 실샘플로 재발 방지.
+        """
+        html = load_fixture("naver/jisikin_real.html")
+        result = parse_search_result(html, "")
+        assert result.in_jisikin is True
 
     def test_jisikin_present_when_h2_jisikin_box_with_kin_link(self):
         """h2='지식iN' 박스 안 kin.naver.com 링크 있으면 True."""

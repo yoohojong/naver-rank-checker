@@ -1007,3 +1007,11 @@
 **근거**: 사장님 요청(2026-06-20) "이메일 끄고 텔레그램으로 다 전환". 텔레그램이 더 풍부(제품별 분포·변화) + 단일 채널 집중.
 **주의/안전망**: GitHub Actions **run 실패 자체 이메일**(job 죽음 시)은 코드가 아니라 사장님 GitHub 계정 알림 설정 → 비상 last-resort 로 **유지 권장**(텔레그램 step 도달 전 job 사망 시 유일 알림). ⚠️ 텔레그램 secret 등록 전까지는 routine 알림 공백 → 봇 secret 우선 등록 필요.
 **대안 안 고른 이유**: 성공만 멘션 제거(실패 메일 유지)도 검토했으나 사장님 "다 전환" 명시 → 전체 제거 + GitHub 자체 실패메일을 net 으로 권장.
+
+### D-050: 지식인(O열) 정탐 누락 수정 — 네이버 sds-comps 신 디자인 DOM drift
+
+**증상**: 사장님 'O 표시된 키워드가 적다' 제보(2026-06-20). 실제 크롤 검증(`크롤러.fetch_search` 2개 키워드): 통검에 지식iN 카드가 분명히 있는데(`'지식iN' in html`=True, kin.naver.com 링크 46·68개) `in_jisikin=False` = **정탐 누락 버그 확정**.
+**원인**: 네이버가 **sds-comps 신 디자인**으로 전환 → 지식iN 출처 라벨이 `<h2>'지식iN'` → **프로필 제목 요소(`sds-comps-profile-info-title`='네이버 지식iN')**로 이동. 구 detector(h2 기반)가 새 구조를 못 봄. (이 프로젝트 반복 패턴: 네이버 DOM drift — `desktop_mode`→`fds-default-mode` 사례와 동류.)
+**수정**: `parser._parse_jisikin` 에 신 탐지 추가 — `[class*="sds-comps-profile-info-title"]` 텍스트에 '지식iN/지식인' 있으면 `in_jisikin=True`. 구 h2 로직은 호환 유지.
+**검증**: 실제 네이버 지식iN 박스 실샘플 저장(`tests/fixtures/naver/jisikin_real.html`) → 회귀 테스트 추가. `smart_block.html` 이 실제로 '네이버 지식iN' 카드 6개 포함 확인(구 테스트가 버그 동작을 박아둠) → 정정. `pytest tests/unit/test_parser.py` = **116 passed**. 오탐 guard(AB 박스 부수 kin) 유지.
+**⚠️ 여파 주의**: 같은 sds-comps 전환이 **AB/인기글 순위 탐지에도 영향**을 줬을 수 있음 → 별도 정확도 점검 권장(HealthMonitor 성공률은 현재 정상으로 보고되나, 사장님이 '상위노출 맞다'고 아는 키워드+링크로 실검증 필요).

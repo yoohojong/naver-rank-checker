@@ -727,6 +727,14 @@ def _parse_jisikin(html: str, target_url: str, result: RankResult) -> None:
     if not html:
         return
     soup = BeautifulSoup(html, "lxml")
+    # D-050 (2026-06-20): 네이버 sds-comps 신 디자인 DOM drift 정탐 복구.
+    # 지식iN 라벨이 <h2> → 출처 프로필 제목(sds-comps-profile-info-title="네이버 지식iN")으로 이동.
+    # 이 출처 라벨만 검출 = 정탐 (클립/카페 등 다른 출처 라벨은 미스매치라 오탐 X).
+    for el in soup.select('[class*="sds-comps-profile-info-title"]'):
+        if any(p in el.get_text(strip=True) for p in _JISIKIN_H2_PATTERNS):
+            result.in_jisikin = True
+            return
+    # 구 구조 호환 (h2='지식iN' 박스 + kin.naver.com 링크, 2026-05-11 v2)
     boxes = soup.select(".desktop_mode.api_subject_bx, .fds-default-mode.api_subject_bx")
     for box in boxes:
         h2 = box.find("h2")
