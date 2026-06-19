@@ -1015,3 +1015,11 @@
 **수정**: `parser._parse_jisikin` 에 신 탐지 추가 — `[class*="sds-comps-profile-info-title"]` 텍스트에 '지식iN/지식인' 있으면 `in_jisikin=True`. 구 h2 로직은 호환 유지.
 **검증**: 실제 네이버 지식iN 박스 실샘플 저장(`tests/fixtures/naver/jisikin_real.html`) → 회귀 테스트 추가. `smart_block.html` 이 실제로 '네이버 지식iN' 카드 6개 포함 확인(구 테스트가 버그 동작을 박아둠) → 정정. `pytest tests/unit/test_parser.py` = **116 passed**. 오탐 guard(AB 박스 부수 kin) 유지.
 **⚠️ 여파 주의**: 같은 sds-comps 전환이 **AB/인기글 순위 탐지에도 영향**을 줬을 수 있음 → 별도 정확도 점검 권장(HealthMonitor 성공률은 현재 정상으로 보고되나, 사장님이 '상위노출 맞다'고 아는 키워드+링크로 실검증 필요).
+
+### D-051: 저녁/아침 텔레그램 보고 인증 수정 — ACTIONS_PAT 만료(401) → github.token
+
+**증상**: 봇 secret 등록 후 telegram-report.yml 첫 수동 실행에서 `gh 실패: HTTP 401 Bad credentials` → 백업 다운로드 실패 → '보고 생략'(실제 발송 안 됨).
+**원인**: `GH_TOKEN: ${{ secrets.ACTIONS_PAT || github.token }}` 에서 ACTIONS_PAT 가 **만료/무효**(빈 값이 아니라 무효라서 fallback 안 탐) → 무효 토큰으로 gh 호출 실패.
+**수정**: telegram-report.yml `GH_TOKEN = ${{ github.token }}` 고정 (permissions actions:read 로 rank-check artifact 접근). commit 0abece1.
+**검증**: 재실행 run 27844336765 = success + 스크립트 무출력(happy path, 401/생략 없음) = 발송됨. 사전 sendMessage 테스트 200 성공. 봇 t.me/sangno_bot, chat_id 등록 완료.
+**참고**: ACTIONS_PAT 만료는 rank-check 의 issue-comment(`ACTIONS_PAT || github.token`)·checkout(public fallback 有)에도 영향 가능. 텔레그램 즉시보고(send_telegram_summary)는 gh 불필요라 무관. 필요 시 ACTIONS_PAT 갱신 또는 rank-check 도 github.token 전환 권장(후속).
