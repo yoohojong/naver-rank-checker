@@ -32,6 +32,20 @@ def _all_kinds(reports: list[TabReport]) -> Counter:
     return c
 
 
+def _all_type_dist(reports: list[TabReport]) -> Counter:
+    c: Counter = Counter()
+    for t in reports:
+        c.update(t.type_dist)
+    return c
+
+
+def _all_type_dirs(reports: list[TabReport]) -> Counter:
+    c: Counter = Counter()
+    for t in reports:
+        c.update(t.type_change_dirs)
+    return c
+
+
 def _sum(reports: list[TabReport], attr: str) -> int:
     return sum(getattr(t, attr) for t in reports)
 
@@ -56,13 +70,27 @@ def build_evening_report(reports: list[TabReport], kst: str, status_line: str = 
         L += [f"🚨 빠진 키워드 {lost}개 (점검!)", ""]
     if worked:
         L.append(f"🔧 어제 작업  {worked}개 → {worked_exp}개 떴음 (적중 {round(worked_exp / worked * 100)}%)")
+    rate = round(now / tot * 100) if tot else 0
+    L.append(f"📈 전체 (키워드 {tot}개)")
     if has_base:
-        L.append(f"📈 상위노출  {now}/{tot}  ({_arrow(prev, now)})")
+        L.append(f"   상위노출  {now}개 ({rate}%) · 어제 {_arrow(prev, now)}")
         tc = sum(kc.values())
         if tc:
-            L.append(f"    변화 {tc}건 · {_change_icons(kc)}")
+            L.append(f"   순위변화 {tc}건 · {_change_icons(kc)}")
     else:
-        L.append(f"📈 상위노출  {now}/{tot}  (어제 비교 기준 없음)")
+        L.append(f"   상위노출  {now}개 ({rate}%) · 어제 비교 기준 없음")
+
+    td = _all_type_dist(reports)
+    if td:
+        seg = " · ".join(f"{k} {td[k]}" for k in ["AB", "스마트블록", "인기글"] if td.get(k))
+        for k in td:
+            if k not in ("AB", "스마트블록", "인기글"):
+                seg += f" · {k} {td[k]}"
+        L.append(f"🔀 유형(대표구좌)  {seg}")
+        tch = _sum(reports, "type_changes")
+        if tch:
+            dirs = " · ".join(f"{d} {n}" for d, n in _all_type_dirs(reports).most_common(4))
+            L.append(f"   변경 {tch}건 · {dirs}")
 
     L += ["", "🧴 제품별 (상위노출 / 변화)"]
     for t in reports:

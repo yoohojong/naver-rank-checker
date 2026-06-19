@@ -117,6 +117,19 @@ def test_jisikin_count():
     assert tr.jisikin_now == 2
 
 
+def test_type_changes():
+    prev = {"tabs": {"샴푸 카외": [_row(2, "a", "AB", "", "l1"), _row(3, "b", "미노출", "", "l2")]}}
+    prev["tabs"]["샴푸 카외"][0]["유형"] = "AB"
+    prev["tabs"]["샴푸 카외"][1]["유형"] = "인기글"
+    curr = {"tabs": {"샴푸 카외": [_row(2, "a", "AB", "", "l1"), _row(3, "b", "인기글", "", "l2")]}}
+    curr["tabs"]["샴푸 카외"][0]["유형"] = "인기글"  # AB→인기글
+    curr["tabs"]["샴푸 카외"][1]["유형"] = "인기글"  # 동일
+    [tr] = diff_backups(prev, curr)
+    assert tr.type_changes == 1
+    assert tr.type_change_dirs["AB→인기글"] == 1
+    assert tr.type_dist["인기글"] == 2
+
+
 def test_work_stats():
     curr = {
         "tabs": {

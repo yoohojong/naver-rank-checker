@@ -28,6 +28,7 @@ _H_M = "노출여부(카페구좌순위)"  # M 카페구좌 순위
 _H_JISIKIN = "지식인탭"  # O
 _H_LINK = "링크"
 _H_WORKDATE = "작업일"  # 마케터 작업일 (M/D 형식, 실측 78% 채워짐)
+_H_TYPE = "유형"  # C — 대표 구좌 타입 (AB/스마트블록/인기글), 실측 99% 채워짐
 
 _DROP_DELETED = "삭제"  # 진짜 글 사라짐
 _DROP_MISSING = "누락"  # 노출됐다 빠짐 (회복 가능)
@@ -61,6 +62,10 @@ class TabReport:
     worked: int = 0  # 작업일=대상일(어제) 인 키워드 수
     worked_exposed: int = 0  # 그중 현재 상위노출 중인 수
     unworked: int = 0  # 작업일 빈 칸 = 아직 작업 안 한 키워드 수
+    type_dist: Counter = field(default_factory=Counter)  # 오늘 유형(C) 분포
+    type_dist_prev: Counter = field(default_factory=Counter)  # 어제 유형(C) 분포
+    type_changes: int = 0  # 유형(C) 바뀐 키워드 수
+    type_change_dirs: Counter = field(default_factory=Counter)  # {'AB→인기글': n}
 
     @property
     def total(self) -> int:
@@ -156,6 +161,16 @@ def classify(prev_k: str, curr_k: str, prev_rank: Optional[int], curr_rank: Opti
     return "변화"
 
 
+def _type_dist(rows: list) -> Counter:
+    """유형(C) 값 분포 (빈칸 제외)."""
+    c: Counter = Counter()
+    for r in rows:
+        t = str(r.get(_H_TYPE, "") or "").strip()
+        if t:
+            c[t] += 1
+    return c
+
+
 def _work_stats(rows: list, work_date: Optional[str]) -> tuple:
     """(worked, worked_exposed, unworked).
     worked = 작업일==work_date 행 수 / worked_exposed = 그중 상위노출 / unworked = 작업일 빈 행 수.
@@ -199,7 +214,8 @@ def diff_backups(prev: Optional[dict], curr: dict, work_date: Optional[str] = No
 
     reports: list[TabReport] = []
     for tab in curr_dist:
-        worked, worked_exposed, unworked = _work_stats((curr.get("tabs") or {}).get(tab, []), work_date)
+        curr_rows = (curr.get("tabs") or {}).get(tab, [])
+        worked, worked_exposed, unworked = _work_stats(curr_rows, work_date)
         tr = TabReport(
             tab=tab,
             distribution=curr_dist.get(tab, Counter()),
@@ -210,12 +226,21 @@ def diff_backups(prev: Optional[dict], curr: dict, work_date: Optional[str] = No
             worked=worked,
             worked_exposed=worked_exposed,
             unworked=unworked,
+            type_dist=_type_dist(curr_rows),
+            type_dist_prev=_type_dist((prev.get("tabs") or {}).get(tab, [])) if prev else Counter(),
         )
         if prev is not None:
-            for row in (curr.get("tabs") or {}).get(tab, []):
+            for row in curr_rows:
                 prev_row = prev_index.get(row_identity(row))
                 if prev_row is None:
                     continue  # 어제 없던 행 = 변화 아님
+                # 유형(C) 변경 (노출 변화와 별개 — K 동일해도 유형 바뀔 수 있음)
+                pt = str(prev_row.get(_H_TYPE, "") or "").strip()
+                ct = str(row.get(_H_TYPE, "") or "").strip()
+                if pt and ct and pt != ct:
+                    tr.type_changes += 1
+                    tr.type_change_dirs[f"{pt}→{ct}"] += 1
+                # 노출/순위 변경
                 pk, ck = k_base_of(prev_row), k_base_of(row)
                 pr, cr = rank_of(prev_row), rank_of(row)
                 if pk == ck and pr == cr:
