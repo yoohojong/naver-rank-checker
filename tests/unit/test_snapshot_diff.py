@@ -115,3 +115,21 @@ def test_jisikin_count():
     [tr] = diff_backups(prev, curr)
     assert tr.jisikin_prev == 1
     assert tr.jisikin_now == 2
+
+
+def test_work_stats():
+    curr = {
+        "tabs": {
+            "샴푸 카외": [
+                _row(2, "a", "AB", "", "l1"),       # 어제 작업 + 노출
+                _row(3, "b", "미노출", "", "l2"),    # 어제 작업 + 미노출
+                _row(4, "c", "인기글", "", "l3"),    # 작업일 빈칸 = 미작업
+            ]
+        }
+    }
+    curr["tabs"]["샴푸 카외"][0]["작업일"] = "6/19"
+    curr["tabs"]["샴푸 카외"][1]["작업일"] = "6/19"
+    [tr] = diff_backups(None, curr, work_date="6/19")
+    assert tr.worked == 2
+    assert tr.worked_exposed == 1  # AB만 노출
+    assert tr.unworked == 1  # c (작업일 빈칸)

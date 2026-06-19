@@ -28,18 +28,26 @@ def _kst_today() -> str:
     return f"{dt.month}/{dt.day}"
 
 
+def _kst_yesterday() -> str:
+    dt = datetime.now(timezone(timedelta(hours=9))) - timedelta(days=1)
+    return f"{dt.month}/{dt.day}"
+
+
 def build_report_text(
     prev_path,
     curr_path: str,
     mode: str = "evening",
     kst=None,
     status_line: str = "정상",
+    work_date=None,
 ) -> str:
-    """백업 경로 2개 → 보고 텍스트 (순수, 테스트 대상). prev_path None 허용(비교 기준 없음)."""
+    """백업 경로 2개 → 보고 텍스트 (순수, 테스트 대상). prev_path None 허용(비교 기준 없음).
+    work_date(M/D) = '어제 작업' 집계 대상일 (기본 = KST 어제)."""
     kst = kst or _kst_today()
+    work_date = work_date or _kst_yesterday()
     curr = load_backup(curr_path)
     prev = load_backup(prev_path) if prev_path else None
-    reports = diff_backups(prev, curr)
+    reports = diff_backups(prev, curr, work_date=work_date)
     if mode == "morning":
         return rb.build_morning_report(reports, kst, status_line)
     return rb.build_evening_report(reports, kst, status_line)
