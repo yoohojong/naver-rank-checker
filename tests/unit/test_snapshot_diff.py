@@ -104,3 +104,14 @@ def test_diff_backups_no_baseline_graceful():
     assert tr.diffs == []
     assert tr.distribution == Counter({"인기글": 1, "AB": 1, "삭제": 1})
     assert tr.prev_distribution == Counter()
+
+
+def test_jisikin_count():
+    prev = {"tabs": {"샴푸 카외": [_row(2, "a", "AB", "", "l1"), _row(3, "b", "미노출", "", "l2")]}}
+    prev["tabs"]["샴푸 카외"][0]["지식인탭"] = "O"
+    curr = {"tabs": {"샴푸 카외": [_row(2, "a", "AB", "", "l1"), _row(3, "b", "인기글", "", "l2")]}}
+    curr["tabs"]["샴푸 카외"][0]["지식인탭"] = "O"
+    curr["tabs"]["샴푸 카외"][1]["지식인탭"] = "O"
+    [tr] = diff_backups(prev, curr)
+    assert tr.jisikin_prev == 1
+    assert tr.jisikin_now == 2

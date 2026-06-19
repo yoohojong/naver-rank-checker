@@ -42,3 +42,15 @@ def test_no_baseline_graceful():
     )
     out = rb.build_evening_report([tr], "6/19", "✅정상")
     assert "비교 기준 없음" in out
+
+
+def test_evening_report_shows_jisikin():
+    tr = TabReport(
+        tab="샴푸 카외",
+        distribution=Counter({"AB": 1}),
+        prev_distribution=Counter({"AB": 1}),
+        jisikin_now=2,
+        jisikin_prev=1,
+    )
+    out = rb.build_evening_report([tr], "6/20", "✅정상")
+    assert "지식인 뜸" in out

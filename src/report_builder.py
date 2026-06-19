@@ -59,6 +59,9 @@ def _format_tab_block(tr: TabReport, *, show_diffs: bool = True) -> str:
     seg = _dist_segment(tr)
     if seg:
         lines.append("  " + seg)
+    if tr.jisikin_now or tr.jisikin_prev:
+        jis = _fmt_delta(tr.jisikin_prev, tr.jisikin_now) if tr.baseline_available else str(tr.jisikin_now)
+        lines.append(f"  지식인 뜸 {jis}")
     if show_diffs and tr.baseline_available:
         for d in tr.diffs:
             lines.append(f"  {_KIND_ICON.get(d.kind, '·')} {d.keyword} {_diff_detail(d)}")

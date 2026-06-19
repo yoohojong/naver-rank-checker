@@ -55,6 +55,8 @@ class TabReport:
     prev_distribution: Counter  # 어제 {K base: count}
     diffs: list[RowDiff] = field(default_factory=list)
     baseline_available: bool = True  # 어제 백업 있었나 (False면 diffs 비움)
+    jisikin_now: int = 0  # 오늘 지식인(O열) 뜬 키워드 수
+    jisikin_prev: int = 0  # 어제 지식인 뜬 키워드 수
 
     @property
     def total(self) -> int:
@@ -158,6 +160,12 @@ def _index_rows(backup: dict) -> dict:
     return idx
 
 
+def _count_jisikin(backup: dict, tab: str) -> int:
+    """탭에서 지식인탭(O열)이 채워진(= 지식iN 박스 뜬) 키워드 수."""
+    rows = (backup.get("tabs") or {}).get(tab, [])
+    return sum(1 for r in rows if str(r.get(_H_JISIKIN, "") or "").strip())
+
+
 def diff_backups(prev: Optional[dict], curr: dict) -> list:
     """어제(prev)·오늘(curr) 백업 → 탭별 TabReport.
 
@@ -175,6 +183,8 @@ def diff_backups(prev: Optional[dict], curr: dict) -> list:
             distribution=curr_dist.get(tab, Counter()),
             prev_distribution=prev_dist.get(tab, Counter()),
             baseline_available=prev is not None,
+            jisikin_now=_count_jisikin(curr, tab),
+            jisikin_prev=_count_jisikin(prev, tab) if prev else 0,
         )
         if prev is not None:
             for row in (curr.get("tabs") or {}).get(tab, []):
