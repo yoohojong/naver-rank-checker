@@ -11,7 +11,9 @@ from datetime import datetime, timezone, timedelta
 
 ISSUE_NUMBER = "1"
 REPO = "yoohojong/naver-rank-checker"
-OWNER_MENTION = "@yoohojong"  # mention = GitHub 가 사장님에게 자동 이메일 (Settings 무관)
+# M10 (D-049, 2026-06-20): 이메일→텔레그램 전환. OWNER_MENTION(@yoohojong) 제거 =
+# 이슈 멘션 기반 자동 이메일 중단. 운영 상태/결과 알림은 텔레그램(send_telegram_summary)으로 일원화.
+# 이슈 #1 댓글은 공개 기록(운영 로그)용으로만 유지(멘션 없음 = 이메일 미발생).
 
 
 def format_kst() -> str:
@@ -32,7 +34,7 @@ def build_failure_comment(reason: str) -> str:
             "\n\n⚠️ **네이버 차단 검출 의심** "
             "(= 다음 cron 자동 회복 시도 / 6시간 cycle 안 최대 4회 재시도 윈도우)"
         )
-    return f"""{OWNER_MENTION} ## ❌ cron 실패 — {format_kst()}
+    return f"""## ❌ cron 실패 — {format_kst()}
 
 **원인**: {reason}{circuit_note}
 
@@ -179,7 +181,7 @@ def build_success_comment(summary: dict) -> str:
     else:
         stale_formula_line = "\n**K/L/M/O stale 공식 모드**: OFF"
 
-    return f"""{OWNER_MENTION} ## ✅ cron 완료 — {format_kst()}
+    return f"""## ✅ cron 완료 — {format_kst()}
 
 **처리 시간**: {minutes}분 {sec_remain}초
 **처리 행**: {rows} 행

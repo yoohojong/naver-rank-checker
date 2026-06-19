@@ -31,7 +31,7 @@ def test_build_comment_failure_when_missing():
             os.environ.pop("RUN_STATUS", None)
     assert "❌ cron 실패" in out
     assert "cycle_summary.json 미생성" in out
-    assert "@yoohojong" in out  # mention 보존 = 실패 이메일 알림 경로
+    assert "@yoohojong" not in out  # D-049: 이메일→텔레그램 전환 = 멘션 제거(이메일 미발생)
 
 
 def test_build_comment_success_when_present():
@@ -53,4 +53,4 @@ def test_build_comment_success_when_present():
             os.chdir(cwd)
     assert "✅ cron 완료" in out
     assert "100" in out  # 시트 갱신 셀수
-    assert "@yoohojong" in out  # mention 보존
+    assert "@yoohojong" not in out  # D-049: 멘션 제거(이메일 미발생)
