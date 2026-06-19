@@ -1,0 +1,40 @@
+name: telegram-qa
+
+# M11: 양방향 Q&A 봇 — 5분 cron 으로 getUpdates 폴링 → 사장님 질문에 답장.
+# 공개 repo = Actions 무료. offset 은 텔레그램 서버측 ack(스크립트 내부) = 저장소 불필요(롤백 위험 0).
+# 사장님(TELEGRAM_CHAT_ID)에게만 응답. 실패 비차단.
+
+on:
+  schedule:
+    - cron: '*/5 * * * *'   # 5분 = Actions cron 최소 주기 (실측 지연 5~10분)
+  workflow_dispatch: {}
+
+permissions:
+  actions: read     # rank-check sheet-backup artifact 다운로드
+  contents: read
+
+concurrency:
+  group: telegram-qa
+  cancel-in-progress: false   # 폴링 겹침 직렬화
+
+jobs:
+  qa:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6.0.2
+
+      - name: Setup Python
+        uses: actions/setup-python@v6.2.0
+        with:
+          python-version: '3.13'
+
+      - name: Poll & answer
+        continue-on-error: true
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          PYTHONIOENCODING: 'utf-8'
+        run: python -u scripts/telegram_qa_bot.py || true
