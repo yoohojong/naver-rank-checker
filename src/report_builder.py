@@ -133,10 +133,15 @@ def build_morning_report(reports: list[TabReport], kst: str, status_line: str = 
     worked = _sum(reports, "worked")
     worked_exp = _sum(reports, "worked_exposed")
     kc = _all_kinds(reports)
-    lost = kc.get("누락", 0) + kc.get("삭제", 0)
-
+    miss = kc.get("누락", 0)
+    dele = kc.get("삭제", 0)
     L = [f"☀️ 상노체크 아침 · {kst}", f"프로그램: {status_line}", ""]
-    L.append(f"누락·삭제(사라짐): {lost}개  ← 점검!" if lost else "누락·삭제(사라짐): 없음")
+    if dele:
+        L.append(f"삭제(글 사라짐): {dele}개  ← 점검!")
+    if miss:
+        L.append(f"누락(잠깐 빠짐, 보통 회복): {miss}개")
+    if not (miss or dele):
+        L.append("누락·삭제: 없음")
     if worked:
         L.append(f"어제 작업: {worked}개 → {worked_exp}개 떴어요")
     L.append(f"지금 상위노출: 전체 {tot}개 중 {now}개")

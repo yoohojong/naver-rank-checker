@@ -47,7 +47,7 @@ def test_evening_words_format():
 
 def test_morning_words_format():
     out = rb.build_morning_report([_shampoo()], "6/20", "정상")
-    assert "누락·삭제(사라짐): 1개" in out
+    assert "삭제(글 사라짐): 1개" in out  # 저녁과 동일하게 누락/삭제 분리
     assert "어제 작업: 3개 → 1개" in out
     assert "[제품별 노출]" in out
     assert "탈모샴푸 추천" not in out
