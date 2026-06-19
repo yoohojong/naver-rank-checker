@@ -144,6 +144,20 @@ jobs:
         run: |
           ./.venv/bin/python -u scripts/post_summary_to_issue.py
 
+      # M10 (D-048): 즉시 보고 = 매 cron 성공/실패 + 운영 메타를 사장님 텔레그램으로.
+      # 비차단(continue-on-error + || true). secret 미설정 시 [SKIP]. 메시지 text 는 인자로 안 넘김(로그 노출 차단).
+      - name: Send Telegram notification (즉시 보고)
+        if: always()
+        continue-on-error: true
+        shell: bash
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          RUN_STATUS: ${{ steps.run_cycle.outcome }}
+          PYTHONIOENCODING: 'utf-8'
+        run: |
+          ./.venv/bin/python -u scripts/send_telegram_summary.py || true
+
       # T-M86 (D-027 2026-05-17): 백업 artifact upload = 사장님 사고 시점 = 다운로드 + restore_backup.py 즉시 복원.
       # T-M90 (D-027 보강 2026-05-17) architect Opus m1 fix: retention 30 → 14일 + .gz 호환.
       # 근거: ~2.5MB × 4회/일 × 30일 = ~300MB → free tier 500MB 근접 위험. gzip 압축 + retention ↓ = 부담 ↓.

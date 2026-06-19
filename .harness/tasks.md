@@ -1,7 +1,7 @@
 # tasks: naver-rank-checker
 
-**Last updated**: 2026-06-12
-**Overall progress**: 99% ━━━━━━━━━━━━ (운영 안정화 완료, Codex 이식 점검 중)
+**Last updated**: 2026-06-20
+**Overall progress**: 99% ━━━━━━━━━━━━ (운영 안정화 완료 / M10 텔레그램 보고 코드 완료 — 25/25 테스트, Codex 리뷰·push·봇 secret 대기)
 **Protocol**: 멀티 Claude 안전 협업. claim 메커니즘 적용 (`.harness/PROTOCOL.md` 참고).
 
 ## 마일스톤 가중치
@@ -534,3 +534,19 @@ deps = 의존성 (선행 task), parallel = 동시 작업 안전한 다른 task
 | T-M9.2 | 복사 잔해 자동 소독 — (a) 입력키 빈칸인데 raw/검사시각 존재("migration" 제외), (b) raw_노출영역 = `재검사필요` 글자 행 = 잔해 판정 → 숨김 칸 초기화 후 정상 재검사 (Codex 태클 반영: 수동 K 보존) | 대 | T-M9.1 | **done** (2026-06-12, 운영 검증 대기) |
 | T-M9.3 | 재배치 가시성 — relocation miss/conflict/fanout + ghost_sanitized 카운트 = summary/issue 연결 (재배치 도입으로 "skip 후 재시도"는 불필요해짐 — miss = 입력이 진짜 바뀐 행 = 재시도 무의미, 다음 cron 이 정답) | 대 | T-M9.1 | **done** (2026-06-12, T-M9.1 에 포함 구현) |
 | T-M9.4 | 시트 범위 보호 가이드 — K~W열 편집 경고 설정 + 마케터 입력 규칙 (검사 시간대 회피 / 신규 행은 빈 행에 A~J만) 1장 문서 | 소 | — | **done** (2026-06-12, docs/사장님-가이드/시트-편집-규칙.md) |
+
+### M10 운영 보고 — 텔레그램 (2026-06-19 신설 — D-048)
+| ID | Title | 분류 | deps | 상태 |
+|----|-------|------|------|------|
+| T-M10.1 | `src/snapshot_diff.py` — 백업 2개 비교 → 제품(탭)별 노출영역 분포 + 전날 변화(신규노출/누락/삭제/오름/내림) + 작업일(상태 시작일) | 데이터계층 (TDD) | — | **done** (2026-06-19, 단위 테스트 7 passed — venv+시스템 python) |
+| T-M10.2 | `src/notify.py` — 텔레그램 sendMessage 발송 (secret skip, 4096 분할, timeout=10, 비차단) | 발송계층 | — | **done** (2026-06-20, test_notify 6 passed, 4096·초당1건 gate2 확인) |
+| T-M10.3 | `scripts/post_summary_to_issue.py` — `build_comment_from_cycle()` 헬퍼 추출 (issue·텔레그램 본문 공유, 동작 불변) | 리팩토링 | — | **done** (2026-06-20, test_post_summary_refactor 2 passed, success/failure/미존재 3분기) |
+| T-M10.4 | `src/report_builder.py` — 저녁/아침 보고 텍스트 생성 (제품별 분포, 공개노출 가드) | 포맷 | M10.1, M10.3 | **done** (2026-06-20, test_report_builder 3 passed) |
+| T-M10.5 | `scripts/send_telegram_summary.py` — cron 직후 즉시 보고 엔트리 (인자 0 = 로그 노출 차단) | 발송 | M10.2, M10.3 | **done** (2026-06-20, py_compile OK) |
+| T-M10.6 | `scripts/fetch_yesterday_backup.py` — 직전 성공 백업 입수 + ~24h 선택 (gh run download, 임시경로 격리) | 데이터 | — | **done** (2026-06-20, test_fetch 5 passed) |
+| T-M10.7 | `scripts/send_telegram_report.py` 저녁/아침 wiring + `.github/workflows/telegram-report.yml` (schedule 2 + dispatch, permissions actions:read) | 통합 | M10.1,4,6 | **done** (2026-06-20, test_telegram_report_flow 2 passed, YAML 검증 OK) |
+| T-M10.8 | `rank-check.yml` 즉시 발송 step (always, continue-on-error) + GitHub 실패메일 안전망 유지 | 통합 | M10.5 | **done** (2026-06-20, YAML 검증 OK, post_summary mention 경로 보존) |
+| T-M10.9 | Codex 사후 리뷰 + push + 운영 실측(secret 등록 후 baseline) | 검증 | all | pending (코드/로컬테스트 완료, 리뷰·push 대기) |
+| T-M10.x | 👤 사장님: 텔레그램 봇 생성 + `TELEGRAM_BOT_TOKEN`/`TELEGRAM_CHAT_ID` secret 등록 (docs/telegram_bot_setup.md) | 사장님 액션 | — | pending (사장님) |
+
+- 2026-06-20: **M10 코드 완료** — 25/25 로컬 테스트 passed(snapshot_diff 7 + notify 6 + report_builder 3 + post_summary_refactor 2 + fetch 5 + telegram_report_flow 2), `py_compile` 전 모듈 OK, 두 워크플로우 YAML 검증 OK. 신규: `src/{snapshot_diff,notify,report_builder}.py`, `scripts/{send_telegram_summary,send_telegram_report,fetch_yesterday_backup}.py`, `.github/workflows/telegram-report.yml`, `docs/telegram_bot_setup.md`. 편집: `scripts/post_summary_to_issue.py`(헬퍼 추출), `.github/workflows/rank-check.yml`(즉시 발송 step). **남은 것**: Codex 사후 리뷰 → git commit/push(사장님 승인) → 사장님 봇 secret 등록 → 운영 실측.

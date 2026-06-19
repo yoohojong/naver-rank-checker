@@ -1,0 +1,55 @@
+name: telegram-report
+
+# M10 (D-048): 저녁/아침 요약 텔레그램 보고. rank-check cron 과 별개 시각.
+# 데이터는 rank-check 의 sheet-backup artifact 단독으로 산출(시트 read·서비스계정 키 불필요).
+# 비즈니스 데이터(키워드/제품/분포) 포함 = 텔레그램 전용. 메시지 text 는 스크립트 내부 발송(로그 노출 X).
+
+on:
+  schedule:
+    - cron: '0 22 * * *'   # 07:00 KST 아침 요약 (UTC+9)
+    - cron: '0 10 * * *'   # 19:00 KST 저녁 최종본 (UTC+9)
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: 'evening(저녁 최종본) 또는 morning(아침 요약)'
+        default: 'evening'
+
+permissions:
+  actions: read     # rank-check 의 sheet-backup artifact 다운로드용
+  contents: read
+
+concurrency:
+  group: telegram-report
+  cancel-in-progress: false
+
+jobs:
+  report:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6.0.2
+
+      - name: Setup Python
+        uses: actions/setup-python@v6.2.0
+        with:
+          python-version: '3.13'
+
+      - name: Send Telegram report (저녁/아침 요약)
+        continue-on-error: true
+        shell: bash
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          GH_TOKEN: ${{ secrets.ACTIONS_PAT || github.token }}
+          GH_REPO: ${{ github.repository }}
+          # ⚠️ 셸 인젝션 차단(code-review CRITICAL): 사용자 입력/이벤트 값은 env 경유로만 참조.
+          INPUT_MODE: ${{ github.event.inputs.mode }}
+          EVENT_SCHEDULE: ${{ github.event.schedule }}
+          PYTHONIOENCODING: 'utf-8'
+        run: |
+          # 발동 cron → 모드 결정 (수동 실행은 입력값 우선). 값은 env 변수로만 참조(인젝션 방지).
+          MODE="evening"
+          if [ "$EVENT_SCHEDULE" = "0 22 * * *" ]; then MODE="morning"; fi
+          if [ -n "$INPUT_MODE" ]; then MODE="$INPUT_MODE"; fi
+          # 의존성 없음(stdlib + transitions). gh 는 ubuntu-latest 기본 제공. secret 없으면 [SKIP].
+          python -u scripts/send_telegram_report.py "$MODE" || true

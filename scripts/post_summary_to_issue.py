@@ -195,21 +195,30 @@ def build_success_comment(summary: dict) -> str:
 """
 
 
-def main() -> int:
+def build_comment_from_cycle() -> str:
+    """cycle_summary.json → issue/telegram 공유 본문 (success/failure).
+
+    M10 (2026-06-19): 기존 main() 본문 생성부를 그대로 이관 — 동작 불변(회귀 test).
+    ⚠️ 이 함수는 **메타 전용**(시간/행수/셀수/성공률/상태). 키워드·탭명·K분포 등
+    비즈니스 데이터는 절대 추가 X (공개 issue 공유분 = 텔레그램 즉시보고 공유). D-048 가드.
+    """
     run_status = os.environ.get("RUN_STATUS", "unknown")  # workflow 에서 전달
 
     if os.path.exists("cycle_summary.json"):
         try:
             with open("cycle_summary.json", encoding="utf-8") as f:
                 summary = json.load(f)
-            comment = build_success_comment(summary)
+            return build_success_comment(summary)
         except Exception as e:
-            comment = build_failure_comment(f"cycle_summary.json 읽기 실패: {e}")
-    else:
-        # main.py 가 summary 작성 전 죽음 (env 누락, json BOM, 인증 실패 등)
-        comment = build_failure_comment(
-            f"cycle_summary.json 미생성. run_status={run_status}. main.py 가 사이클 시작 전 실패한 듯."
-        )
+            return build_failure_comment(f"cycle_summary.json 읽기 실패: {e}")
+    # main.py 가 summary 작성 전 죽음 (env 누락, json BOM, 인증 실패 등)
+    return build_failure_comment(
+        f"cycle_summary.json 미생성. run_status={run_status}. main.py 가 사이클 시작 전 실패한 듯."
+    )
+
+
+def main() -> int:
+    comment = build_comment_from_cycle()
 
     # gh issue comment via stdin (CLAUDE.md prohibited_actions 영역 X — 본인 repo own issue comment)
     proc = subprocess.run(
