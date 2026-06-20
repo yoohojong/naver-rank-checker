@@ -32,6 +32,15 @@ APIFY_TOKEN = os.environ.get("APIFY_TOKEN", "")
 APIFY_ACTOR_ID = os.environ.get(
     "APIFY_ACTOR_ID", "accurate_dancer~naver-smart-store-monitor"
 )
+# 액터별 input 형식 (2026-06-20 공식페이지 검증). 추천 액터(accurate_dancer)는
+#   brandUrls(브랜드 슬러그) 입력 + includeReviews=true **필수**(기본 false면 리뷰 미수집) + maxReviewPages.
+# 상품 URL 입력 액터(예: styleindexamerica~kr-naver-stores-scraper)면 APIFY_INPUT_FIELD=productUrls.
+# ⚠️ brandUrls 사용 시 시트엔 '브랜드 슬러그'(brand.naver.com/<슬러그>의 <슬러그>)가 들어가야 함(데이터 출처는 사장님 결정).
+APIFY_INPUT_FIELD = os.environ.get("APIFY_INPUT_FIELD", "brandUrls")
+APIFY_INCLUDE_REVIEWS = (
+    os.environ.get("APIFY_INCLUDE_REVIEWS", "true").strip().lower() != "false"
+)
+APIFY_MAX_REVIEW_PAGES = int(os.environ.get("APIFY_MAX_REVIEW_PAGES", "3"))
 
 # T-M25 (2026-05-12): 사장님 운영 카페 slug 화이트리스트.
 # T-M90 (D-027 보강 2026-05-17): repo Public 전환 = CAFE_WHITELIST 환경변수 이전 = 사장님 카페 정보 노출 회피.

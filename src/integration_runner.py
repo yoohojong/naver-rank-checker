@@ -80,6 +80,8 @@ def run_collection(
     naver_client_secret: str,
     apify_token: str,
     apify_actor_id: str,
+    apify_input_field: str = "startUrls",
+    apify_extra_input: dict | None = None,
     today: str | None = None,
     tab_filter=None,
 ) -> dict:
@@ -172,6 +174,8 @@ def run_collection(
                         urls,
                         apify_token=apify_token,
                         actor_id=apify_actor_id,
+                        input_field=apify_input_field,
+                        extra_input=apify_extra_input,
                     )
                     new_rows = [
                         [
@@ -230,6 +234,9 @@ def main() -> int:
     """
     from src.config import (
         APIFY_ACTOR_ID,
+        APIFY_INCLUDE_REVIEWS,
+        APIFY_INPUT_FIELD,
+        APIFY_MAX_REVIEW_PAGES,
         APIFY_TOKEN,
         NAVER_OPENAPI_CLIENT_ID,
         NAVER_OPENAPI_CLIENT_SECRET,
@@ -257,6 +264,10 @@ def main() -> int:
     )
 
     print("=== 카페외부 재료수집 사이클 시작 ===")
+    apify_extra = {
+        "includeReviews": APIFY_INCLUDE_REVIEWS,
+        "maxReviewPages": APIFY_MAX_REVIEW_PAGES,
+    }
     summary = run_collection(
         client,
         fetch_jisikin=fetch_jisikin,
@@ -265,6 +276,8 @@ def main() -> int:
         naver_client_secret=NAVER_OPENAPI_CLIENT_SECRET,
         apify_token=APIFY_TOKEN,
         apify_actor_id=APIFY_ACTOR_ID,
+        apify_input_field=APIFY_INPUT_FIELD,
+        apify_extra_input=apify_extra,
     )
 
     line = format_summary(summary)

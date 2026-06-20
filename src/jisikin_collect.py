@@ -67,7 +67,12 @@ def fetch_jisikin(
 
     r = requests.get(KIN_API_URL, headers=headers, params=params, timeout=timeout)
     if r.status_code != 200:
-        raise RuntimeError(f"지식iN Open API 오류 {r.status_code}: {r.text[:200]}")
+        # 응답 본문에 혹시라도 키 값이 섞여 로그로 새지 않도록 실제 키 값을 가린다(방어).
+        body = (r.text or "")[:200]
+        for _secret in (client_secret, client_id):
+            if _secret:
+                body = body.replace(_secret, "[가림]")
+        raise RuntimeError(f"지식iN Open API 오류 {r.status_code}: {body}")
 
     items = (r.json() or {}).get("items", []) or []
     results: list[dict] = []

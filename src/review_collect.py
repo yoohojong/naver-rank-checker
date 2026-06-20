@@ -18,10 +18,13 @@ from curl_cffi import requests
 APIFY_BASE = "https://api.apify.com/v2"
 
 _TAG_RE = re.compile(r"<[^>]+>")
+# 에러 메시지에 토큰이 새지 않도록 가리는 패턴(벤더가 요청 헤더를 응답에 에코하는 비정상 케이스 방어).
+_SECRET_RE = re.compile(r"(Bearer\s+|sk-|apify_api_)\S+", re.IGNORECASE)
 # 액터마다 키 이름이 달라 흔한 후보들을 순서대로 탐색(스키마 변동에 견고).
+# createDate = accurate_dancer~naver-smart-store-monitor 액터의 실제 날짜 필드(2026-06-20 공식페이지 검증).
 _STAR_KEYS = ("score", "rating", "star", "stars", "reviewScore", "grade", "별점")
 _TEXT_KEYS = ("content", "review", "reviewContent", "text", "body", "comment", "내용")
-_DATE_KEYS = ("date", "createdAt", "reviewDate", "writeDate", "작성일")
+_DATE_KEYS = ("date", "createDate", "createdAt", "reviewDate", "writeDate", "작성일")
 
 
 def _clean(text: str) -> str:
@@ -92,7 +95,8 @@ def fetch_low_star_reviews(
 
     r = requests.post(api, headers=headers, json=payload, timeout=timeout)
     if r.status_code not in (200, 201):
-        raise RuntimeError(f"Apify 오류 {r.status_code}: {r.text[:200]}")
+        safe = _SECRET_RE.sub("[가림]", (r.text or ""))[:200]
+        raise RuntimeError(f"Apify 오류 {r.status_code}: {safe}")
 
     items = r.json() or []
     out: list[dict] = []
