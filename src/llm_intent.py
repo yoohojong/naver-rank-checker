@@ -18,6 +18,8 @@ from __future__ import annotations
 
 import json
 import os
+import time
+import urllib.error
 import urllib.request
 
 # Groq OpenAI 호환 엔드포인트 (console.groq.com, 2026-06 확인)
@@ -138,38 +140,52 @@ def parse_response(content, tab_names=None):
     return (intent, None)               # 그 외 의도는 arg 무시
 
 
-def classify(text, tab_names=None, *, timeout=8):
-    """자유 질문 → (intent, arg) | None. 키 없음/호출 실패 시 None(키워드 결과로 폴백)."""
+def groq_chat(messages, *, max_tokens=60, temperature=0, timeout=8):
+    """Groq chat completion → content 문자열 | None. 분류(classify)·답작성(llm_answer) 공유.
+
+    키 없음/네트워크 실패/응답형식 불일치 시 None(비차단). 키/URL 은 예외에 노출 안 함.
+    """
     key = _api_key()
     if not key:
         return None
     body = {
         "model": os.environ.get("GROQ_MODEL", _DEFAULT_MODEL),
-        "messages": build_messages(text),
-        "temperature": 0,
-        "max_tokens": 60,
+        "messages": messages,
+        "temperature": temperature,
+        "max_tokens": max_tokens,
     }
     url = os.environ.get("GROQ_BASE_URL", _DEFAULT_BASE_URL)
     data = json.dumps(body).encode("utf-8")
-    req = urllib.request.Request(
-        url,
-        data=data,
-        headers={
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {key}",
-            "User-Agent": _USER_AGENT,   # Cloudflare 1010 차단 회피(필수)
-            "Accept": "application/json",
-        },
-        method="POST",
-    )
-    try:
-        with urllib.request.urlopen(req, timeout=timeout) as r:
-            payload = json.loads(r.read())
-        content = payload["choices"][0]["message"]["content"]
-    except (KeyError, IndexError, TypeError):
-        print("[QA][LLM] 응답 형식 불일치 (Groq API 변경 가능)")
-        return None
-    except Exception as e:  # noqa: BLE001 — 키/URL 노출 금지, 봇 비차단
-        print(f"[QA][LLM] 분류 실패: {type(e).__name__}")
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {key}",
+        "User-Agent": _USER_AGENT,   # Cloudflare 1010 차단 회피(필수)
+        "Accept": "application/json",
+    }
+    for attempt in range(2):  # 429/5xx(버스트·일시) 1회 재시도 → 폴백(템플릿) 전에 한 번 더
+        req = urllib.request.Request(url, data=data, headers=headers, method="POST")  # 재시도마다 새 Request
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as r:
+                payload = json.loads(r.read())
+            return payload["choices"][0]["message"]["content"]
+        except urllib.error.HTTPError as e:
+            if e.code in (429, 500, 502, 503) and attempt == 0:
+                time.sleep(2)  # TPM/순간한도 회복 대기 후 재시도
+                continue
+            print(f"[QA][LLM] 호출 실패: HTTP {e.code}")
+            return None
+        except (KeyError, IndexError, TypeError):
+            print("[QA][LLM] 응답 형식 불일치 (Groq API 변경 가능)")
+            return None
+        except Exception as e:  # noqa: BLE001 — 키/URL 노출 금지, 봇 비차단
+            print(f"[QA][LLM] 호출 실패: {type(e).__name__}")
+            return None
+    return None
+
+
+def classify(text, tab_names=None, *, timeout=8):
+    """자유 질문 → (intent, arg) | None. 키 없음/호출 실패 시 None(키워드 결과로 폴백)."""
+    content = groq_chat(build_messages(text), max_tokens=60, timeout=timeout)
+    if content is None:
         return None
     return parse_response(content, tab_names)
