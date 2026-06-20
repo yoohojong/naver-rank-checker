@@ -23,39 +23,51 @@ _HELP = (
 )
 
 
-def classify_intent(text, tab_names=None):
-    """질문 텍스트 → (intent, arg). 결정적 키워드 매칭(자연어 후순위)."""
+def classify_with_confidence(text, tab_names=None):
+    """질문 텍스트 → (intent, arg, confident). 결정적 키워드 매칭.
+
+    confident=True 면 키워드/명령/탭명 등 명시 매칭이라 그대로 신뢰.
+    confident=False 는 '아무 문장이나 키워드로 간주'한 최후 폴백(또는 unknown) —
+    호출부가 이때만 LLM(llm_intent) 자연어 분류로 넘긴다(무료한도 절약 + 비차단).
+    """
     t = (text or "").strip().lower()
     if not t:
-        return ("unknown", None)
+        return ("unknown", None, False)
     if t in ("?", "/start", "/help") or any(k in t for k in ("도움", "help", "명령", "물어")):
-        return ("help", None)
+        return ("help", None, True)
     if "누락" in t:
-        return ("missing", None)
+        return ("missing", None, True)
     if "삭제" in t or "사라" in t:
-        return ("deleted", None)
+        return ("deleted", None, True)
     if "지식인" in t or "지식in" in t:
-        return ("jisikin", None)
+        return ("jisikin", None, True)
     if "유형" in t or "구좌" in t:
-        return ("type", None)
+        return ("type", None, True)
     if any(k in t for k in ("순위", "랭킹", "몇위", "몇 위", "통합", "카페구좌")):
-        return ("rank", None)
+        return ("rank", None, True)
     if any(k in t for k in ("요약", "전체", "오늘", "상태", "현황")):
-        return ("summary", None)
+        return ("summary", None, True)
     # 명시 "키워드 X" → 키워드 조회 (제품명 부분일치보다 우선)
     q = text.strip()
     if q.lower().startswith("키워드"):
         kw = q[3:].strip()
-        return ("keyword", kw) if kw else ("help", None)
+        return ("keyword", kw, True) if kw else ("help", None, True)
     # 탭명 토큰 일치 → 제품 (부분일치 금지: '비듬샴푸'가 '샴푸'로 새지 않게)
     toks = t.split()
     for tab in tab_names or []:
         base = tab.replace("카외", "").strip().lower()
         if base and (t == base or base in toks):
-            return ("product", tab)
+            return ("product", tab, True)
     if any(k in t for k in ("제품", "탭", "분포")):
-        return ("product", None)
-    return ("keyword", q) if q else ("unknown", None)
+        return ("product", None, True)
+    # 최후 폴백: 문장 전체를 키워드로 간주(확신 X) → 호출부에서 LLM 분류 기회
+    return ("keyword", q, False) if q else ("unknown", None, False)
+
+
+def classify_intent(text, tab_names=None):
+    """질문 텍스트 → (intent, arg). 결정적 키워드 매칭(자연어 후순위). 하위호환 래퍼."""
+    intent, arg, _ = classify_with_confidence(text, tab_names)
+    return (intent, arg)
 
 
 def fmt_help():

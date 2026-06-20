@@ -77,3 +77,41 @@ def test_safe_extract_poison():
     assert b.safe_extract({"update_id": 5}) == (5, None, "")  # message 없음
     assert b.safe_extract({"update_id": 7, "message": {"from": {"id": 123}, "text": "hi"}}) == (7, "123", "hi")
     assert b.safe_extract({"update_id": 8, "message": {"text": "x"}}) == (8, None, "x")  # from 없음
+
+
+def _curr_one():
+    return {"tabs": {"샴푸 카외": [
+        {"키워드": "비듬샴푸", "노출영역": "인기글", "유형": "인기글",
+         "지식인탭": "", "작업일": "6/19", "_tab": "샴푸 카외", "_row": 2},
+    ]}}
+
+
+def test_answer_freetext_uses_llm(monkeypatch):
+    """키워드로 확신 못한 자유 질문 → LLM 분류 결과 사용."""
+    b = _load_bot()
+    monkeypatch.setattr(b, "load_data_once", lambda: ([_tab()], _curr_one(), "6/20 12:00", True))
+    monkeypatch.setattr(b.llm_intent, "classify", lambda text, tabs: ("missing", None))
+    out = b.answer("요새 빠진 거 있으려나")
+    assert "누락" in out and "없음" in out  # fmt_missing 경로 = LLM 의도 적용됨
+
+
+def test_answer_llm_none_falls_back_to_keyword(monkeypatch):
+    """LLM 실패(None) → 기존 키워드 결과 유지(비차단)."""
+    b = _load_bot()
+    monkeypatch.setattr(b, "load_data_once", lambda: ([_tab()], _curr_one(), "6/20 12:00", True))
+    monkeypatch.setattr(b.llm_intent, "classify", lambda text, tabs: None)
+    out = b.answer("존재하지않는키워드xyz")
+    assert "못 찾" in out  # keyword 폴백 검색 → graceful
+
+
+def test_answer_explicit_command_skips_llm(monkeypatch):
+    """확신 매칭(명령)은 LLM 호출 안 함 = 무료한도 절약."""
+    b = _load_bot()
+    monkeypatch.setattr(b, "load_data_once", lambda: ([_tab()], _curr_one(), "6/20 12:00", True))
+
+    def _boom(*a, **k):
+        raise AssertionError("확신 매칭에서 LLM 호출되면 안 됨")
+
+    monkeypatch.setattr(b.llm_intent, "classify", _boom)
+    out = b.answer("누락")
+    assert "누락" in out

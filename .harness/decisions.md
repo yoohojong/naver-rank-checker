@@ -1023,3 +1023,15 @@
 **수정**: telegram-report.yml `GH_TOKEN = ${{ github.token }}` 고정 (permissions actions:read 로 rank-check artifact 접근). commit 0abece1.
 **검증**: 재실행 run 27844336765 = success + 스크립트 무출력(happy path, 401/생략 없음) = 발송됨. 사전 sendMessage 테스트 200 성공. 봇 t.me/sangno_bot, chat_id 등록 완료.
 **참고**: ACTIONS_PAT 만료는 rank-check 의 issue-comment(`ACTIONS_PAT || github.token`)·checkout(public fallback 有)에도 영향 가능. 텔레그램 즉시보고(send_telegram_summary)는 gh 불필요라 무관. 필요 시 ACTIONS_PAT 갱신 또는 rank-check 도 github.token 전환 권장(후속).
+
+### D-055: Q&A 봇 자연어 이해 — Groq 무료 LLM 연결 (사장님 "비용 없이 자연어" 결정)
+
+**배경/결정 경로**: 사장님 결정 1번(즉시 webhook + 자연어 LLM) 재논의(2026-06-20). 사장님 답 = "비용 없이 자연어도 이해할 수 있나?" → 외부 조사(document-specialist ×2 병렬, 무료 LLM 한도 교차검증). 결론 = **가능**. 사장님 최종 선택 = **Groq로 진행**. ('즉시 1초'는 보류 — 답 속도는 5~10분 폴링 유지. 알림 빈도도 '지금처럼 매번' 유지.)
+**왜 Groq**(비개발자+하루 수십 건+한국어+$0 기준): ① 신용카드 안 받음 → 구조적 과금 위험 0(한도 초과 시 429만, 자동 청구 없음), ② 무료 RPD 1,000(우리 하루 수십 건 → 한참 남음), ③ 진짜 LLM(Llama 3.3 70B) 한국어 양호. 대안 비교: Gemini = 질문이 구글 학습에 명시적 사용 + 무경고 한도 삭감 전례 → 탈락. OpenRouter :free = 하루 50건 경계 + 모델 임의 중단 → 탈락. Cloudflare = 한도 빠듯 + 셋업 난이도 높음 → 탈락.
+**설계(프라이버시 우선)**: 정확한 명령(누락/삭제/순위/유형/지식인/요약/제품/키워드 = `qa_formatter.classify_with_confidence` confident=True)은 LLM 호출 0 → 무료한도 절약. 키워드로 확신 못한 **자유 질문만** `src/llm_intent.classify` 로 Groq 호출. **LLM 에 보내는 것은 사장님 질문 글뿐** — 의도목록은 system prompt 고정, 제품 탭 이름조차 미전송(product arg 는 LLM 이 질문에서 뽑은 단어, 실제 탭 매핑은 로컬 `_match_tab`). 실제 순위/시트 데이터 외부 전송 0건.
+**비차단 불변식**: `GROQ_API_KEY` 미설정·네트워크 실패·응답형식 불일치·JSON 파싱 실패 → 전부 `None` 반환 → 호출부가 기존 키워드 결과 유지. 봇은 절대 죽지 않음. 키 없으면 예전(정해진 단어)대로 동작.
+**보안**: 봇은 owner(TELEGRAM_CHAT_ID)에게만 응답(기존). LLM 출력은 `_VALID_INTENTS` 화이트리스트만 허용 + arg sanitize → 프롬프트 인젝션 무효(owner 전용이라 위협도 낮음). 키/URL 로그·예외 미노출(`type(e).__name__`만). 모델/엔드포인트는 secret(`GROQ_MODEL`/`GROQ_BASE_URL`)로 교체 가능(deprecate 대비).
+**이중 리뷰**: Claude code-reviewer = APPROVE(Critical/High 0, Medium 2=견고 JSON 파싱+응답형식 예외 분리 → 적용). Codex = MAJOR 1건(탭명 시트 데이터 LLM 유출) → 즉시 수정(질문 글만 전송, 탭 매핑 로컬화). 재검 후 잔여 blocking 0.
+**검증**: 신규 16 + 통합 3 = 19 테스트, 전체 `pytest -q` = **576 passed**(기존 557 + 19), `py_compile` OK, telegram-qa.yml YAML OK.
+**남은 것(사장님 액션)**: Groq 무료 키 발급(`docs/사장님-가이드/Groq-키-발급.md`, ~3분, 카드 없음) → `GROQ_API_KEY` secret 등록 → 다음 폴링부터 자동 활성. 미등록 시 무해(키워드 모드 유지).
+**참고(문서 갭)**: D-052~054(이전 세션 M11 Q&A 봇·말중심 보고·즉시알림 간소화)는 코드/tasks.md 에는 있으나 decisions.md 본문 미기재 — 후속 정리 대상(번호 충돌 회피 위해 본 결정은 D-055 사용).

@@ -13,6 +13,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from fetch_yesterday_backup import download_backup, list_success_runs, pick_run_near_hours  # noqa: E402
+from src import llm_intent  # noqa: E402
 from src import qa_formatter as qa  # noqa: E402
 from src.notify import send_report  # noqa: E402
 from src.snapshot_diff import diff_backups, load_backup  # noqa: E402
@@ -102,7 +103,12 @@ def answer(text):
     if not curr:
         return "데이터를 아직 못 불러왔어요(백업 없음). 잠시 후 다시 물어봐 주세요."
     tab_names = list((curr.get("tabs") or {}).keys())
-    intent, arg = qa.classify_intent(text, tab_names)
+    intent, arg, confident = qa.classify_with_confidence(text, tab_names)
+    if not confident:
+        # 키워드로 확신 못한 자유 질문만 Groq 자연어 분류(질문 글만 전송). 실패 시 키워드 결과 유지.
+        llm = llm_intent.classify(text, tab_names)
+        if llm:
+            intent, arg = llm
     header = qa.fmt_header(curr_ts, has_base)
     builders = {
         "missing": lambda: qa.fmt_missing(reports),

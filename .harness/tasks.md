@@ -555,3 +555,15 @@ deps = 의존성 (선행 task), parallel = 동시 작업 안전한 다른 task
 - 2026-06-20: **D-049 이메일→텔레그램 전환** — `post_summary_to_issue` 멘션(@yoohojong) 제거(이슈 댓글은 기록용 유지). 성공/실패 알림 텔레그램 일원화. ⚠️ 봇 secret 등록 전 알림 공백 / GitHub run-실패 메일은 비상망으로 유지 권장.
 - 2026-06-20: **D-050 지식인(O열) 정탐 누락 수정** — 사장님 'O 적음' 제보 → 실제 크롤 검증으로 버그 확정. 네이버 sds-comps 신 디자인으로 지식iN 라벨이 h2→프로필제목 이동, 구 detector 못 봄. `parser._parse_jisikin` 신 탐지 추가 + 실샘플 픽스처 회귀 테스트. parser 116 passed. ⚠️ 같은 drift가 AB/인기글 순위에도 영향 가능 → 별도 정확도 점검 권장.
 - 2026-06-20: **텔레그램 연결 완료** — 봇 t.me/sangno_bot 생성(사장님), chat_id+토큰 GitHub secret 등록(gh), 테스트 sendMessage 200. **D-051**: 첫 저녁보고 실행이 ACTIONS_PAT 401로 실패 → GH_TOKEN을 github.token으로 수정(commit 0abece1) → 재실행 성공(run 27844336765, 무출력=발송). 즉시(6h)/저녁(19시)/아침(07시) 자동 발송 체계 가동. 사장님 실수신 눈 확인 후 M10 종료 예정 → second-brain.
+
+### M12 Q&A 봇 자연어 이해 — Groq 무료 LLM (2026-06-20 신설 — D-055)
+| ID | Title | 분류 | deps | 상태 |
+|----|-------|------|------|------|
+| T-M12.1 | `src/llm_intent.py` 신규 — 자유 질문→intent(Groq OpenAI호환). 질문 글만 전송, 키없음/실패=None 폴백, 화이트리스트 검증 | 데이터/발송 (TDD) | — | **done** (2026-06-20) |
+| T-M12.2 | `qa_formatter.classify_with_confidence` 추가 — confident 노출, `classify_intent`은 하위호환 래퍼 | 리팩토링 | — | **done** (2026-06-20, 기존 테스트 회귀 0) |
+| T-M12.3 | `telegram_qa_bot.answer()` 통합 — confident=False(자유질문)만 LLM, 실패 시 키워드 결과 유지 | 통합 | M12.1,2 | **done** (2026-06-20) |
+| T-M12.4 | `telegram-qa.yml` `GROQ_API_KEY` env 추가 (미설정 시 키워드 폴백) | 통합 | M12.1 | **done** (2026-06-20, YAML OK) |
+| T-M12.5 | 이중 리뷰(code-reviewer APPROVE + Codex MAJOR 탭명유출 수정) + push | 검증 | all | **done(리뷰)** (2026-06-20) |
+| T-M12.x | 👤 사장님: Groq 무료 키 발급 + `GROQ_API_KEY` secret 등록 (`docs/사장님-가이드/Groq-키-발급.md`) | 사장님 액션 | — | pending (사장님) |
+
+- 2026-06-20: **M12 코드 완료** — Groq 무료 LLM 으로 Q&A 봇 자연어 이해 추가. 사장님 결정("비용 없이 자연어") → 무료 LLM 조사(병렬 2 document-specialist) → Groq 확정. 정확 명령은 LLM 호출 0(무료한도 절약), 자유 질문만 Groq(질문 글만 전송·시트데이터 0건·비차단 폴백). 신규 `src/llm_intent.py` + `qa_formatter.classify_with_confidence` + `telegram_qa_bot.answer()` 통합 + telegram-qa.yml GROQ_API_KEY + 테스트 19개(`test_llm_intent.py` 16 + 통합 3) + `docs/사장님-가이드/Groq-키-발급.md`. **전체 pytest 576 passed**(557→576), py_compile/YAML OK. 이중 리뷰: code-reviewer APPROVE(Medium 2 적용), Codex MAJOR 1(탭명 유출) 수정. **남은 것**: 사장님 키 발급 → secret 등록 → 운영 실측 → second-brain Deep.
