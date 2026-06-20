@@ -1,12 +1,14 @@
 """integration_runner 단위 테스트 (SheetsClient·fetch_* 전부 mock — 키/네트워크 없이 행동 검증).
 
-C3: 카외 제품 탭 → 단계별 수집(지식인/리뷰) → 스테이징 탭 적재.
+C3: 카외 제품 탭 → 단계별 수집(지식인/리뷰) → 스테이징 탭 적재 + '자료조사' 칸 증분 표시.
 검증 포인트:
   ① 단계 라우팅(3 증상→지식인, 4 대안/5 브랜드→리뷰)
-  ② 중복방지(같은 키워드+오늘 수집일 이미 있으면 스킵)
+  ② 증분(표시기반): '자료조사' 칸이 채워진 행은 스킵, 빈 행만 수집 → 수집 후 그 칸에 write-back
   ③ 키워드별 try/except 격리(한 건 실패해도 전체 계속)
   ④ summary 카운트(수집/실패/스킵)
   ⑤ 키 없음/단계 미지정 행 건너뜀
+  ⑥ 재개: 적재 실패 시 표시 안 함(다음 실행이 빈 칸부터 이어감)
+  ⑦ 일괄(대량 행): 청크마다 적재→표시 flush
 """
 from unittest.mock import MagicMock
 
@@ -19,21 +21,32 @@ from src.integration_runner import (
     STAGING_TAB_REVIEW,
     run_collection,
 )
+from src.sheets import HEADER_COLLECT_STATUS
 
 
 def _client_with(tabs, existing=None):
-    """SheetsClient mock — load_all_data_tabs / read_tab_records / append_staging_rows.
+    """SheetsClient mock — load_all_data_tabs / append_staging_rows / write_collect_status.
 
     tabs: {탭이름: [row dict, ...]}  (카외 제품 탭)
-    existing: {스테이징탭: [기존 record dict, ...]}  (중복방지 검증용)
+    existing: (deprecated) 과거 스테이징 기반 중복방지 인자 — 새 로직에선 미사용(시그니처 호환만 유지).
     """
-    existing = existing or {}
     client = MagicMock()
     client.load_all_data_tabs.return_value = tabs
-    client.read_tab_records.side_effect = lambda tab: existing.get(tab, [])
     # append_staging_rows 는 append 한 행 수 반환(실제 코어 시그니처와 동일).
     client.append_staging_rows.side_effect = lambda tab, header, rows: len(rows)
+    # write_collect_status 는 write 한 셀 수 반환(실제 코어 시그니처와 동일).
+    client.write_collect_status.side_effect = lambda tab, updates: len(updates)
     return client
+
+
+def _status_writes(client):
+    """write_collect_status 로 기록된 모든 (row, status) 페어를 평탄화해 반환."""
+    pairs = []
+    for call in client.write_collect_status.call_args_list:
+        tab, updates = call.args[0], call.args[1]
+        for upd in updates:
+            pairs.append((tab, upd.row, upd.columns[HEADER_COLLECT_STATUS]))
+    return pairs
 
 
 def test_routes_symptom_keyword_to_jisikin():
@@ -78,6 +91,9 @@ def test_routes_symptom_keyword_to_jisikin():
     assert summary["collected"] == 1
     assert summary["failed"] == 0
     assert summary["skipped"] == 0
+    # 증분 표시: 수집 직후 그 행(_row=2)의 '자료조사' 칸에 write-back.
+    writes = _status_writes(client)
+    assert writes == [("두피.카외", 2, "✅ 2026-06-20 수집(1건)")]
 
 
 @pytest.mark.parametrize("stage", ["4 대안", "5 브랜드"])
@@ -114,14 +130,15 @@ def test_routes_alternative_and_brand_to_reviews(stage):
     assert row[3] == "최악"
     assert row[5] == "u1"
     assert summary["collected"] == 1
+    # 증분 표시: 리뷰 행도 수집 후 '자료조사' 칸에 write-back.
+    assert _status_writes(client) == [("x.카외", 2, "✅ 2026-06-20 수집(1건)")]
 
 
-def test_skips_duplicate_keyword_same_day():
+def test_skips_row_already_collected_status_filled():
+    """'자료조사' 칸이 이미 채워진 행은 스킵(증분) — API 호출도 표시 write-back 도 안 함."""
     client = _client_with(
-        {"x.카외": [{"키워드": "두피 가려움", "키워드 분류(단계)": "3 증상", "_row": 2}]},
-        existing={STAGING_TAB_JISIKIN: [
-            {"키워드": "두피 가려움", "수집일": "2026-06-20", "_row": 2}
-        ]},
+        {"x.카외": [{"키워드": "두피 가려움", "키워드 분류(단계)": "3 증상",
+                     HEADER_COLLECT_STATUS: "✅ 2026-06-19 수집(12건)", "_row": 2}]},
     )
     fetch_j = MagicMock(return_value=[{"title": "t", "description": "d", "link": "L"}])
 
@@ -131,19 +148,23 @@ def test_skips_duplicate_keyword_same_day():
         apify_token="t", apify_actor_id="a~b", today="2026-06-20",
     )
 
-    fetch_j.assert_not_called()                 # 이미 오늘 수집됨 → API 호출 X
+    fetch_j.assert_not_called()                 # 이미 수집됨 → API 호출 X
     client.append_staging_rows.assert_not_called()
+    assert _status_writes(client) == []         # 표시 write-back 도 안 함
     assert summary["skipped"] == 1
     assert summary["collected"] == 0
 
 
-def test_does_not_skip_same_keyword_different_day():
-    """어제 수집은 오늘 수집을 막지 않는다(수집일 키가 다름)."""
+def test_collects_again_regardless_of_date_when_status_empty():
+    """날짜가 바뀌어도 '자료조사' 칸이 비어 있으면 수집한다(과거 날짜기반 약점 해소).
+
+    예전 로직: 같은 키워드를 어제 수집했으면 오늘 또 수집(날짜 키가 달라). 약점 = 날짜만 바뀌면
+    이미 받은 키워드를 무한 재수집. 새 로직: 표시 칸이 비었는지로만 판단 → 표시되면 다시는 안 함.
+    여기선 '비어 있는' 행이므로 날짜와 무관하게 수집되고 표시가 새로 찍힌다.
+    """
     client = _client_with(
-        {"x.카외": [{"키워드": "두피 가려움", "키워드 분류(단계)": "3 증상", "_row": 2}]},
-        existing={STAGING_TAB_JISIKIN: [
-            {"키워드": "두피 가려움", "수집일": "2026-06-19", "_row": 2}
-        ]},
+        {"x.카외": [{"키워드": "두피 가려움", "키워드 분류(단계)": "3 증상",
+                     HEADER_COLLECT_STATUS: "", "_row": 2}]},
     )
     fetch_j = MagicMock(return_value=[
         {"title": "두피 가려움 원인과 해결책", "description": "두피 가려움 증상 설명입니다", "link": "L"}
@@ -158,6 +179,7 @@ def test_does_not_skip_same_keyword_different_day():
     assert fetch_j.call_count == 2  # sim + date 2회 호출
     assert summary["collected"] == 1
     assert summary["skipped"] == 0
+    assert _status_writes(client) == [("x.카외", 2, "✅ 2026-06-20 수집(1건)")]
 
 
 def test_failure_in_one_keyword_isolated():
@@ -419,3 +441,155 @@ def test_format_summary_basic_no_filter_wording():
     text = ir.format_summary({"collected": 5, "failed": 0, "skipped": 2, "tabs": 1})
     assert "수집 5건" in text
     assert "쓰레기" not in text
+
+
+# ── 신규: 증분-by-표시 / 재개 / 일괄(대량 행) ───────────────────────────────
+
+
+def test_failure_keyword_gets_no_status_writeback():
+    """fetch 실패한 키워드는 '자료조사' 표시를 받지 않는다(다음 실행이 빈 칸부터 재개)."""
+    client = _client_with(
+        {"x.카외": [
+            {"키워드": "터지는키워드", "키워드 분류(단계)": "3 증상", "_row": 2},
+            {"키워드": "정상키워드", "키워드 분류(단계)": "3 증상", "_row": 3},
+        ]}
+    )
+
+    def _fetch(keyword, **kwargs):
+        if keyword == "터지는키워드":
+            raise RuntimeError("지식iN Open API 오류 500")
+        return [{"title": "정상키워드 질문 제목", "description": "정상키워드 설명 내용입니다", "link": "L"}]
+
+    fetch_j = MagicMock(side_effect=_fetch)
+
+    summary = run_collection(
+        client, fetch_jisikin=fetch_j, fetch_reviews=MagicMock(),
+        naver_client_id="id", naver_client_secret="sec",
+        apify_token="t", apify_actor_id="a~b", today="2026-06-20",
+    )
+
+    # 정상키워드(_row=3)만 표시됨, 실패한 _row=2 는 표시 X → 재실행 시 _row=2 만 이어감.
+    writes = _status_writes(client)
+    assert writes == [("x.카외", 3, "✅ 2026-06-20 수집(1건)")]
+    assert summary["failed"] == 1
+    assert summary["collected"] == 1
+
+
+def test_empty_result_still_marks_status_to_avoid_reretry():
+    """결과 0건이어도 '자료조사' 칸에 '(0건)' 표시 → 무한 재시도 방지(시도했음을 기록)."""
+    client = _client_with(
+        {"x.카외": [{"키워드": "희귀키워드", "키워드 분류(단계)": "3 증상", "_row": 2}]}
+    )
+    fetch_j = MagicMock(return_value=[])
+
+    summary = run_collection(
+        client, fetch_jisikin=fetch_j, fetch_reviews=MagicMock(),
+        naver_client_id="id", naver_client_secret="sec",
+        apify_token="t", apify_actor_id="a~b", today="2026-06-20",
+    )
+
+    client.append_staging_rows.assert_not_called()   # 적재할 행 없음
+    assert _status_writes(client) == [("x.카외", 2, "✅ 2026-06-20 수집(0건)")]
+    assert summary["collected"] == 0
+    assert summary["failed"] == 0
+
+
+def test_staging_append_failure_skips_status_for_resume():
+    """청크 스테이징 append 실패 시 그 청크는 '자료조사' 표시 안 함(재개 불변식).
+
+    표시가 찍힌 행 ⟹ 적재 완료. append 가 터지면 표시를 안 찍어 다음 실행이 다시 수집한다.
+    """
+    client = _client_with(
+        {"x.카외": [{"키워드": "두피", "키워드 분류(단계)": "3 증상", "_row": 2}]}
+    )
+    client.append_staging_rows.side_effect = RuntimeError("Sheets append 503")
+    fetch_j = MagicMock(return_value=[
+        {"title": "두피 가려움 질문 제목", "description": "두피 증상 설명 내용입니다", "link": "L"}
+    ])
+
+    summary = run_collection(
+        client, fetch_jisikin=fetch_j, fetch_reviews=MagicMock(),
+        naver_client_id="id", naver_client_secret="sec",
+        apify_token="t", apify_actor_id="a~b", today="2026-06-20",
+    )
+
+    # 적재 실패 → 표시 write-back 안 함 → 다음 실행 재개.
+    client.write_collect_status.assert_not_called()
+    assert summary["failed"] == 1          # 적재 실패분 failed 환산
+    assert summary["collected"] == 0       # 적재 실패분 collected 차감
+
+
+def test_status_writeback_uses_dedicated_method_not_write_results():
+    """'자료조사' 표시는 write_collect_status 전용 경로로만 — write_results(K/L/M/O 가드) 안 씀."""
+    client = _client_with(
+        {"x.카외": [{"키워드": "두피", "키워드 분류(단계)": "3 증상", "_row": 2}]}
+    )
+    fetch_j = MagicMock(return_value=[
+        {"title": "두피 질문 제목입니다", "description": "두피 증상 설명입니다", "link": "L"}
+    ])
+
+    run_collection(
+        client, fetch_jisikin=fetch_j, fetch_reviews=MagicMock(),
+        naver_client_id="id", naver_client_secret="sec",
+        apify_token="t", apify_actor_id="a~b", today="2026-06-20",
+    )
+
+    client.write_collect_status.assert_called()
+    client.write_results.assert_not_called()
+
+
+def test_bulk_chunked_flush_marks_each_row(monkeypatch):
+    """일괄(대량 행): 청크 크기마다 적재→표시 flush. 모든 빈 행이 표시되고 합계가 맞는다."""
+    # 청크 경계를 강제로 작게(3) 만들어 여러 번 flush 되게 한다.
+    monkeypatch.setattr(ir, "COLLECT_STATUS_FLUSH_EVERY", 3)
+
+    n = 10  # 청크 3 → 4번 flush(3+3+3+1)
+    rows = [
+        {"키워드": f"kw{i}", "키워드 분류(단계)": "3 증상", "_row": i + 2}
+        for i in range(n)
+    ]
+    client = _client_with({"대량.카외": rows})
+    fetch_j = MagicMock(return_value=[
+        {"title": "질문 제목 예시입니다", "description": "본문 설명 내용입니다", "link": "L"}
+    ])
+
+    summary = run_collection(
+        client, fetch_jisikin=fetch_j, fetch_reviews=MagicMock(),
+        naver_client_id="id", naver_client_secret="sec",
+        apify_token="t", apify_actor_id="a~b", today="2026-06-20",
+    )
+
+    writes = _status_writes(client)
+    # 10개 행 모두 표시(중복 없이 _row 2..11), 각각 1건 수집.
+    written_rows = sorted(r for _tab, r, _s in writes)
+    assert written_rows == list(range(2, 12))
+    assert all(s == "✅ 2026-06-20 수집(1건)" for _tab, _r, s in writes)
+    # 여러 번 청크 flush 됐는지(1회가 아님).
+    assert client.write_collect_status.call_count >= 2
+    assert summary["collected"] == n
+    assert summary["skipped"] == 0
+
+
+def test_mixed_filled_and_empty_only_empty_collected():
+    """일괄 중 일부 행만 미수집(빈 칸): 채워진 행은 스킵, 빈 행만 수집·표시(증분 정확)."""
+    rows = [
+        {"키워드": "이미함", "키워드 분류(단계)": "3 증상",
+         HEADER_COLLECT_STATUS: "✅ 2026-06-10 수집(5건)", "_row": 2},
+        {"키워드": "새거", "키워드 분류(단계)": "3 증상", HEADER_COLLECT_STATUS: "", "_row": 3},
+        {"키워드": "또새거", "키워드 분류(단계)": "3 증상", "_row": 4},  # 칸 자체 없음 = 빈 것 취급
+    ]
+    client = _client_with({"x.카외": rows})
+    fetch_j = MagicMock(return_value=[
+        {"title": "질문 제목 예시입니다", "description": "본문 설명 내용입니다", "link": "L"}
+    ])
+
+    summary = run_collection(
+        client, fetch_jisikin=fetch_j, fetch_reviews=MagicMock(),
+        naver_client_id="id", naver_client_secret="sec",
+        apify_token="t", apify_actor_id="a~b", today="2026-06-20",
+    )
+
+    written_rows = sorted(r for _tab, r, _s in _status_writes(client))
+    assert written_rows == [3, 4]          # 빈 행 2개만 표시
+    assert summary["skipped"] == 1         # 이미함 1개 스킵
+    assert summary["collected"] == 2

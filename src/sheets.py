@@ -57,6 +57,10 @@ HEADER_L = "노출여부(통합탭 순위)"  # L — integrated_rank
 HEADER_M = "노출여부(카페구좌순위)"  # M — cafe_slot_rank
 HEADER_JISIKIN = "지식인탭"  # O — 'O' or 빈칸
 HEADER_LINK = "링크"  # 사장님 입력 컬럼 (D-023 2026-05-14: 자동 갱신 절대 X — reference 용)
+# 카페외부 자료수집 '수집완료' 표시 컬럼 (bogwanham addCollectStatusColumn 이 만드는 이름).
+# 값이 채워진 행 = 이미 수집됨 → integration_runner 가 스킵(증분). 빈 행만 수집 후 write-back.
+# 형식: '✅ YYYY-MM-DD 수집(N건)'. 사장님 가시화 + 재개 마커를 한 칸으로 겸함.
+HEADER_COLLECT_STATUS = "자료조사"
 HEADER_CURRENT_INPUT_KEY = "현재입력키"
 HEADER_LAST_CHECKED_INPUT_KEY = "마지막검사입력키"
 HEADER_RAW_AREA = "raw_노출영역"
@@ -786,6 +790,48 @@ class SheetsClient:
             _sheets_api_retry(
                 lambda: ws.batch_update(cells, value_input_option="RAW"),
                 ctx=f"{tab_name} (type write)",
+            )
+        return len(cells)
+
+    def write_collect_status(self, tab_name: str, updates: list["RowUpdate"]) -> int:
+        """카페외부 자료수집 '수집완료' 표시(자료조사 컬럼)만 write-back.
+
+        C3 증분: integration_runner 가 키워드 1건(또는 청크) 수집 직후 그 행의 '자료조사'
+        칸에 '✅ YYYY-MM-DD 수집(N건)' 을 서비스계정으로 기록한다. 다음 실행에서 이 칸이
+        채워진 행은 스킵 → (a)증분 (b)재개(끊겨도 빈 칸부터) (c)사장님 가시화 동시 달성.
+
+        write_type_results 와 동일한 최소-가드 패턴: HEADER_COLLECT_STATUS 외 컬럼은 거부.
+        write_results 의 D-023 가드를 완화하지 않는다(이 전용 경로로만 자료조사 칸 기록).
+        탭에 '자료조사' 헤더가 아직 없으면(사장님이 칸을 안 만듦) skip + log — 수집 자체는 진행.
+        """
+        if not updates:
+            return 0
+        ws = self.spreadsheet.worksheet(tab_name)
+        headers = ws.row_values(1)
+        mapping = map_headers_to_columns(headers)
+        if HEADER_COLLECT_STATUS not in mapping:
+            print(
+                f"  [COLLECT-STATUS] {tab_name}: '{HEADER_COLLECT_STATUS}' 칸 없음 — "
+                f"표시 skip(메뉴 '자료조사 칸 추가' 필요). 수집은 정상 진행됨."
+            )
+            return 0
+
+        status_col = mapping[HEADER_COLLECT_STATUS] + 1
+        cells = []
+        for upd in updates:
+            for col_name, new_val in upd.columns.items():
+                if col_name != HEADER_COLLECT_STATUS:
+                    print(f"  [COLLECT-STATUS-GUARD] '{col_name}' write 거부 (row {upd.row})")
+                    continue
+                cells.append({
+                    "range": gspread.utils.rowcol_to_a1(upd.row, status_col),
+                    "values": [[new_val]],
+                })
+
+        if cells:
+            _sheets_api_retry(
+                lambda: ws.batch_update(cells, value_input_option="RAW"),
+                ctx=f"{tab_name} (collect status write)",
             )
         return len(cells)
 

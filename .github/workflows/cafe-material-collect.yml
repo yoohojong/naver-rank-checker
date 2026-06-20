@@ -5,10 +5,12 @@ name: cafe-material-collect
 # ⚠️ 키 없을 때 안전: integration_runner 가 네이버/APIFY 키 없으면 해당 채널만 스킵(에러 X).
 
 on:
-  schedule:
-    # 매주 월요일 KST 21:00 = UTC 12:00 (주 1회 — 원고 재료는 매일 필요 없음, 무료 API 호출량 절약).
-    - cron: '0 12 * * 1'
-  workflow_dispatch:  # 사장님 수동 트리거
+  # ⚠️ 야간/주기 자동 수집은 사장님 go 전까지 비활성(no-auto-activation 규칙).
+  #     활성화하려면 아래 schedule 블록 2줄(매주 월 KST21=UTC12)의 주석(#)만 풀면 됩니다.
+  # schedule:
+  #   # 매주 월요일 KST 21:00 = UTC 12:00 (주 1회 — 원고 재료는 매일 필요 없음, 무료 API 호출량 절약).
+  #   - cron: '0 12 * * 1'
+  workflow_dispatch:  # 사장님 수동 트리거(시트 메뉴 '🔍 자료조사 시작' / GitHub Actions 버튼)
 
 # 순위체커(naver-rank-check)와 별도 그룹 — 서로 취소/대기 영향 없음.
 concurrency:

@@ -12,12 +12,17 @@
   - 리뷰  : 제목=별점,      본문=리뷰 내용
 
 설계 원칙(비개발 사장님 운영 → 안전 우선):
-  ① 중복방지   — 같은 키워드 + 같은 수집일이 스테이징 탭에 이미 있으면 그 키워드는 스킵.
+  ① 증분(표시기반) — 메인 시트 각 카외 행의 '자료조사' 칸이 채워진(이미 수집된) 행은 스킵,
+                    빈 행만 수집. 수집 직후 그 행의 '자료조사' 칸에 '✅ YYYY-MM-DD 수집(N건)'
+                    을 서비스계정으로 write-back. 날짜가 바뀌어도 재수집 안 함(과거 날짜기반의 약점 해소).
+                    재개: 중간에 끊겨도 미표시(빈) 칸부터 자연 이어감. 사장님 가시화도 겸함.
   ② 격리       — 키워드 한 건이 실패해도 try/except 로 격리, 전체는 계속 진행.
   ③ 요약 반환  — 수집/실패/스킵 카운트를 담은 summary dict 반환(C9 모니터링·텔레그램용).
   ④ 안전 스킵  — 키워드/단계 미지정 행, 라우팅 대상 외 단계는 조용히 건너뜀(실패 아님).
   ⑤ 키 없으면 비활성 — 네이버 키 없으면 지식인 채널, APIFY 토큰 없으면 리뷰 채널 통째 스킵.
   ⑥ 주입식     — SheetsClient·fetch_* 전부 인자로 받아 테스트에서 mock 가능(실 API 호출 0).
+  ⑦ 일괄 안전(500~1000개) — 표시 write-back 을 소규모 청크마다 flush 하여 중간 실패 시
+                    재실행이 미표시분부터 이어가게. 스테이징 append 는 기존처럼 버퍼링 후 일괄.
 """
 from __future__ import annotations
 
@@ -43,6 +48,12 @@ COL_STAGE = "키워드 분류"
 # 헤더 변형(괄호/별칭)에도 견고하도록 후보 순차 탐색 + '분류' 포함 키 폴백.
 _STAGE_HEADER_CANDIDATES = ("키워드 분류", "키워드 분류(단계)", "단계")
 COL_LINK = "링크"  # 리뷰 단계용 상품 URL(있으면). 없으면 리뷰 스킵.
+# 증분 표시 칸 = 메인 시트 '자료조사' 컬럼(bogwanham addCollectStatusColumn 이 만듦).
+# 값이 채워진 행 = 이미 수집됨 → 스킵. 수집 직후 이 칸에 결과를 서비스계정으로 write-back.
+COL_COLLECT_STATUS = "자료조사"
+
+# 표시 write-back 청크 크기 — 이 키워드 수마다 '자료조사' 칸 flush(재개 안전 ↔ API burst 균형).
+COLLECT_STATUS_FLUSH_EVERY = 20
 
 
 def _stage_value(row: dict) -> str:
@@ -74,19 +85,58 @@ def _today_kst() -> str:
     return datetime.now(kst).strftime("%Y-%m-%d")
 
 
-def _existing_keys(client, tab_name: str) -> set:
-    """스테이징 탭의 (키워드, 수집일) 집합 — 중복방지용. 읽기 실패는 빈 집합."""
+def _already_collected(row: dict) -> bool:
+    """메인 시트 행의 '자료조사' 칸이 채워졌으면(이미 수집됨) True.
+
+    증분/재개의 핵심 판정 — 칸이 비어 있는 행만 수집 대상.
+    """
+    return bool((row.get(COL_COLLECT_STATUS) or "").strip())
+
+
+def _format_collect_status(day: str, n: int) -> str:
+    """'자료조사' 칸에 기록할 사장님 가시화 문구 — '✅ YYYY-MM-DD 수집(N건)'."""
+    return f"✅ {day} 수집({n}건)"
+
+
+def _flush_status(client, tab_name: str, pending: list) -> None:
+    """버퍼된 (행, 표시문구)들을 '자료조사' 칸에 write-back.
+
+    pending: [(row_int, status_str), ...]. write 실패는 로그만 — 수집/적재는 이미 끝났고
+    미표시 행은 다음 실행에서 자연 재시도(재개)되므로 전체를 멈추지 않는다.
+    """
+    if not pending:
+        return
+    from src.sheets import HEADER_COLLECT_STATUS, RowUpdate
+    updates = [RowUpdate(row=r, columns={HEADER_COLLECT_STATUS: s}) for r, s in pending]
     try:
-        records = client.read_tab_records(tab_name)
-    except Exception:  # noqa: BLE001 — 읽기 실패해도 수집은 계속(최악: 중복 1회).
-        return set()
-    keys = set()
-    for rec in records or []:
-        kw = (rec.get("키워드") or "").strip()
-        day = (rec.get("수집일") or "").strip()
-        if kw:
-            keys.add((kw, day))
-    return keys
+        client.write_collect_status(tab_name, updates)
+    except Exception as e:  # noqa: BLE001 — 표시 실패해도 수집은 유효(다음 실행이 재개).
+        print(f"[표시실패] 탭 '{tab_name}' '자료조사' write-back 중 오류: "
+              f"{type(e).__name__}: {e} — 다음 실행에서 재개됨")
+
+
+def _flush_chunk(client, tab_name: str, chunk_jisikin: list, chunk_review: list,
+                 pending_status: list, summary: dict) -> None:
+    """한 청크의 스테이징 행을 append 한 뒤 '자료조사' 칸 write-back(이 순서 = 원자성).
+
+    - 적재 성공 ⟹ 그 청크 pending_status 표시(표시 찍힘 ⟹ 적재 완료 불변식, 재개 안전).
+    - 적재 실패 ⟹ 표시 안 함(다음 실행이 빈 칸부터 재개) + 그 청크 수집분 failed 환산.
+    호출 측이 버퍼(리스트) 객체를 매 청크마다 새로 만들어 넘기므로 여기서는 비우지 않는다
+    (MagicMock 이 append 인자를 참조로 보관 → 호출 후 clear 시 검증값이 사라지는 함정 회피).
+    """
+    try:
+        if chunk_jisikin:
+            client.append_staging_rows(STAGING_TAB_JISIKIN, STAGING_HEADER, chunk_jisikin)
+        if chunk_review:
+            client.append_staging_rows(STAGING_TAB_REVIEW, STAGING_HEADER, chunk_review)
+    except Exception as e:  # noqa: BLE001 — append 실패 = 이 청크 수집분 failed 환산 + 표시 안 함.
+        n = len(chunk_jisikin) + len(chunk_review)
+        summary["failed"] += n
+        summary["collected"] = max(0, summary["collected"] - n)
+        print(f"[적재실패] 탭 '{tab_name}' 스테이징 append 오류: {type(e).__name__}: {e}")
+        return
+    # 적재 성공분만 '자료조사' 칸에 write-back.
+    _flush_status(client, tab_name, pending_status)
 
 
 def run_collection(
@@ -106,7 +156,7 @@ def run_collection(
     """카외 탭 전수 수집 → 스테이징 적재. summary dict 반환.
 
     Args:
-        client: SheetsClient (load_all_data_tabs / read_tab_records / append_staging_rows).
+        client: SheetsClient (load_all_data_tabs / append_staging_rows / write_collect_status).
         fetch_jisikin: fetch_jisikin(keyword, *, client_id, client_secret) → [{title,link,description}].
         fetch_reviews: fetch_low_star_reviews(urls, *, apify_token, actor_id) → [{star,content,source,date}].
         naver_*: 네이버 Open API 키(없으면 지식인 채널 스킵).
@@ -118,7 +168,13 @@ def run_collection(
         {"collected": int, "failed": int, "skipped": int, "tabs": int}
         - collected: 스테이징에 적재한 행 수.
         - failed:    fetch/append 예외로 처리 못 한 키워드 행 수.
-        - skipped:   키/단계 미지정·라우팅 외·중복·키 미설정·URL 없음으로 건너뛴 행 수.
+        - skipped:   이미수집(자료조사 채워짐)·키/단계 미지정·라우팅 외·키 미설정·URL 없음으로 건너뛴 행 수.
+
+    증분/재개(①):
+        탭별로 처리하되, 한 탭 안에서 COLLECT_STATUS_FLUSH_EVERY 키워드마다 (a)그때까지의
+        스테이징 행을 append 하고 (b)그 행들의 '자료조사' 칸을 write-back 한다. 순서 보장 =
+        '자료조사' 표시가 찍힌 행 ⟹ 그 행 스테이징 적재 완료. 중간에 끊겨도 미표시 행만 다음
+        실행에서 자연 재개된다. 표시 칸이 이미 채워진 행은 애초에 스킵(날짜 무관).
     """
     day = today or _today_kst()
     if tab_filter is None:
@@ -132,19 +188,25 @@ def run_collection(
     data = client.load_all_data_tabs(tab_filter=tab_filter)
     summary["tabs"] = len(data)
 
-    # 중복방지 키 — 스테이징 탭별 1회만 읽음(행마다 재조회 회피).
-    seen_jisikin = _existing_keys(client, STAGING_TAB_JISIKIN)
-    seen_review = _existing_keys(client, STAGING_TAB_REVIEW)
-
-    # 적재 버퍼 — 채널별로 모았다가 마지막에 한 번에 append(시트 호출 최소화).
-    buf_jisikin: list[list] = []
-    buf_review: list[list] = []
-
     for tab_name, rows in data.items():
+        # 탭별 청크 버퍼 — 채널별 스테이징 행 + 그 청크에서 표시할 (행, 문구).
+        # 청크 경계에서 staging append 먼저 → status write-back 순으로 flush(원자성 보장).
+        # flush 시 버퍼를 비우지 않고 '새 리스트로 교체'한다(append 인자 참조 보존).
+        chunk_jisikin: list[list] = []
+        chunk_review: list[list] = []
+        pending_status: list[tuple[int, str]] = []
+        processed_in_chunk = 0
+
         for row in rows or []:
             keyword = (row.get(COL_KEYWORD) or "").strip()
             stage_raw = _stage_value(row)
             digit = _stage_digit(stage_raw)
+            row_num = row.get("_row")
+
+            # ① 이미 수집된 행('자료조사' 칸 채워짐) → 스킵(증분/재개 핵심).
+            if _already_collected(row):
+                summary["skipped"] += 1
+                continue
 
             # ④ 키워드 없음 / 단계 미지정 / 라우팅 대상 외 단계 → 조용히 스킵.
             if not keyword or not digit:
@@ -154,9 +216,6 @@ def run_collection(
             try:
                 if digit in STAGE_JISIKIN:
                     if not naver_on:
-                        summary["skipped"] += 1
-                        continue
-                    if (keyword, day) in seen_jisikin:
                         summary["skipped"] += 1
                         continue
                     # 정확도순 100건 + 최신순 100건 수집 후 link 기준 중복제거(sim 우선).
@@ -195,9 +254,11 @@ def run_collection(
                         ]
                         for it in merged
                     ]
-                    buf_jisikin.extend(new_rows)
-                    seen_jisikin.add((keyword, day))  # 같은 run 내 중복도 차단
+                    chunk_jisikin.extend(new_rows)
                     summary["collected"] += len(new_rows)
+                    if row_num:
+                        pending_status.append((row_num, _format_collect_status(day, len(new_rows))))
+                    processed_in_chunk += 1
 
                 elif digit in STAGE_REVIEW:
                     if not apify_on:
@@ -206,9 +267,6 @@ def run_collection(
                     urls = [u for u in [(row.get(COL_LINK) or "").strip()] if u]
                     if not urls:
                         # ⑤ 상품 URL 없으면 리뷰 수집 무의미 → 스킵.
-                        summary["skipped"] += 1
-                        continue
-                    if (keyword, day) in seen_review:
                         summary["skipped"] += 1
                         continue
                     reviews = fetch_reviews(
@@ -226,9 +284,11 @@ def run_collection(
                         ]
                         for rv in (reviews or [])
                     ]
-                    buf_review.extend(new_rows)
-                    seen_review.add((keyword, day))
+                    chunk_review.extend(new_rows)
                     summary["collected"] += len(new_rows)
+                    if row_num:
+                        pending_status.append((row_num, _format_collect_status(day, len(new_rows))))
+                    processed_in_chunk += 1
 
                 else:
                     # 1/2 정보 등 라우팅 대상 외 단계 → 스킵.
@@ -239,17 +299,14 @@ def run_collection(
                 print(f"[수집실패] 탭 '{tab_name}' 키워드 '{keyword}' (단계 {stage_raw}): "
                       f"{type(e).__name__}: {e}")
 
-    # 적재 — 버퍼가 비어 있으면 append 호출 안 함(빈 호출 방지).
-    try:
-        if buf_jisikin:
-            client.append_staging_rows(STAGING_TAB_JISIKIN, STAGING_HEADER, buf_jisikin)
-        if buf_review:
-            client.append_staging_rows(STAGING_TAB_REVIEW, STAGING_HEADER, buf_review)
-    except Exception as e:  # noqa: BLE001 — append 실패 시 수집분은 failed 로 환산.
-        n = len(buf_jisikin) + len(buf_review)
-        summary["failed"] += n
-        summary["collected"] = max(0, summary["collected"] - n)
-        print(f"[적재실패] 스테이징 append 중 오류: {type(e).__name__}: {e}")
+            # ⑦ 일괄 안전: 청크 크기 도달 시 즉시 flush(적재→표시) → 중간 실패해도 재개 가능.
+            if processed_in_chunk >= COLLECT_STATUS_FLUSH_EVERY:
+                _flush_chunk(client, tab_name, chunk_jisikin, chunk_review, pending_status, summary)
+                chunk_jisikin, chunk_review, pending_status = [], [], []
+                processed_in_chunk = 0
+
+        # 탭 끝 — 남은 청크 flush.
+        _flush_chunk(client, tab_name, chunk_jisikin, chunk_review, pending_status, summary)
 
     return summary
 

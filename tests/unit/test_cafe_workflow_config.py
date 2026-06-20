@@ -7,19 +7,28 @@ from pathlib import Path
 import yaml
 
 
+_WF_PATH = Path(".github/workflows/cafe-material-collect.yml")
+
+
 def _load():
-    return yaml.load(
-        Path(".github/workflows/cafe-material-collect.yml").read_text(encoding="utf-8"),
-        Loader=yaml.BaseLoader,
-    )
+    return yaml.load(_WF_PATH.read_text(encoding="utf-8"), Loader=yaml.BaseLoader)
 
 
-def test_weekly_schedule_and_dispatch():
+def test_schedule_disabled_dispatch_active():
+    """야간/주기 자동은 사장님 go 전까지 비활성(no-auto-activation). 트리거는 수동만."""
     wf = _load()
     # yaml 의 'on' 키는 BaseLoader 에서 문자열 'on' 으로 유지.
     on = wf["on"]
-    assert on["schedule"][0]["cron"] == "0 12 * * 1"   # 매주 월 UTC12 = KST21
+    # schedule 블록은 주석 처리 → 파싱된 트리거에 없어야 한다(절대 켜지지 않음).
+    assert "schedule" not in on, "cron schedule 은 비활성(주석) 상태여야 함 — 자동 활성화 금지"
     assert "workflow_dispatch" in on
+
+
+def test_schedule_cron_kept_as_comment_for_future_activation():
+    """미래 활성화용 cron 정의가 '주석으로' 남아 있어야 한다(값 보존, 비활성 상태)."""
+    raw = _WF_PATH.read_text(encoding="utf-8")
+    assert "# schedule:" in raw
+    assert "#   - cron: '0 12 * * 1'" in raw  # 매주 월 UTC12=KST21, 주석 보존
 
 
 def test_concurrency_group_separate_from_rank_check():
