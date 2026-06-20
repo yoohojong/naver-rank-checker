@@ -81,3 +81,16 @@ def test_compose_messages_include_question_and_data():
         llm_answer.compose("샴푸 어때", {"제품": [{"제품": "샴푸 카외", "상위노출": 2}]})
     blob = json.dumps(cap["m"], ensure_ascii=False)
     assert "샴푸 어때" in blob and "상위노출" in blob
+
+
+def test_compose_includes_history():
+    cap = {}
+
+    def _fake(messages, **kw):
+        cap["m"] = messages
+        return "ok"
+
+    with mock.patch("src.llm_intent.groq_chat", side_effect=_fake):
+        llm_answer.compose("그럼 샴푸는?", {"제품": []}, history=[("지식인 몇개?", "352개")])
+    blob = json.dumps(cap["m"], ensure_ascii=False)
+    assert "지식인 몇개?" in blob and "352개" in blob and "그럼 샴푸는?" in blob

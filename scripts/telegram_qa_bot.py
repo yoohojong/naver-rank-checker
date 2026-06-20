@@ -96,6 +96,8 @@ def safe_extract(update):
 
 _cache = None
 _cache_ts = 0.0
+_history = []  # 최근 대화 기억 [(질문, 답)], 최신 마지막. '아까 그거' 이해용(D-060).
+_HISTORY_MAX = 6
 
 
 def load_data_once():
@@ -141,9 +143,11 @@ def answer(text):
     if not curr:
         return "데이터를 아직 못 불러왔어요(백업 없음). 잠시 후 다시 물어봐 주세요."
     header = qa.fmt_header(curr_ts, has_base)
-    # 1순위 '똑똑한 답': AI(Groq)가 압축 데이터로 직접 작성 (D-059). 실패/키없음 시 템플릿 폴백.
-    smart = llm_answer.compose(text, qa_context.build_context(reports, curr))
+    # 1순위 '똑똑한 답': AI(Groq)가 압축 데이터 + 도메인 브리핑 + 최근 대화로 직접 작성 (D-059/D-060).
+    smart = llm_answer.compose(text, qa_context.build_context(reports, curr), history=list(_history))
     if smart:
+        _history.append((text, smart))  # 대화 기억(이어지는 질문 이해용)
+        del _history[:-_HISTORY_MAX]
         return header + "\n\n" + smart
     # 폴백: 기존 키워드/의도 → 고정 템플릿 (AI 미사용 시에도 봇 동작 보장)
     tab_names = list((curr.get("tabs") or {}).keys())

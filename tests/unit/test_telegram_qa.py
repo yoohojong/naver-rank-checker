@@ -90,16 +90,34 @@ def test_answer_smart_compose_used_first(monkeypatch):
     """1순위: AI 답작성(compose) 성공 시 그 답을 그대로 사용."""
     b = _load_bot()
     monkeypatch.setattr(b, "load_data_once", lambda: ([_tab()], _curr_one(), "6/20 12:00", True))
-    monkeypatch.setattr(b.llm_answer, "compose", lambda q, ctx: "샴푸 비듬샴푸가 1위예요.")
+    monkeypatch.setattr(b.llm_answer, "compose", lambda q, ctx, history=None: "샴푸 비듬샴푸가 1위예요.")
     out = b.answer("샴푸 1등 키워드 뭐야")
     assert "샴푸 비듬샴푸가 1위예요." in out and "최근 점검" in out  # header + AI 답
+
+
+def test_answer_memory_accumulates(monkeypatch):
+    """대화 기억(D-060): 둘째 질문에 첫 대화가 history 로 전달됨."""
+    b = _load_bot()
+    b._history.clear()
+    monkeypatch.setattr(b, "load_data_once", lambda: ([_tab()], _curr_one(), "6/20 12:00", True))
+    seen = []
+
+    def _compose(q, ctx, history=None):
+        seen.append(list(history or []))
+        return f"답:{q}"
+
+    monkeypatch.setattr(b.llm_answer, "compose", _compose)
+    b.answer("질문1")
+    b.answer("질문2")
+    assert seen[0] == []                              # 첫 질문엔 기억 없음
+    assert seen[1] == [("질문1", "답:질문1")]          # 둘째엔 첫 대화 기억 전달
 
 
 def test_answer_freetext_uses_llm(monkeypatch):
     """compose 실패(폴백) 시 키워드로 확신 못한 자유 질문 → LLM 분류 결과 사용."""
     b = _load_bot()
     monkeypatch.setattr(b, "load_data_once", lambda: ([_tab()], _curr_one(), "6/20 12:00", True))
-    monkeypatch.setattr(b.llm_answer, "compose", lambda q, ctx: None)  # 스마트 실패 → 폴백
+    monkeypatch.setattr(b.llm_answer, "compose", lambda q, ctx, history=None: None)  # 스마트 실패 → 폴백
     monkeypatch.setattr(b.llm_intent, "classify", lambda text, tabs: ("missing", None))
     out = b.answer("요새 빠진 거 있으려나")
     assert "누락" in out and "없음" in out  # fmt_missing 경로 = LLM 의도 적용됨
@@ -109,7 +127,7 @@ def test_answer_llm_none_falls_back_to_keyword(monkeypatch):
     """LLM 실패(None) → 기존 키워드 결과 유지(비차단)."""
     b = _load_bot()
     monkeypatch.setattr(b, "load_data_once", lambda: ([_tab()], _curr_one(), "6/20 12:00", True))
-    monkeypatch.setattr(b.llm_answer, "compose", lambda q, ctx: None)  # 스마트 실패 → 폴백
+    monkeypatch.setattr(b.llm_answer, "compose", lambda q, ctx, history=None: None)  # 스마트 실패 → 폴백
     monkeypatch.setattr(b.llm_intent, "classify", lambda text, tabs: None)
     out = b.answer("존재하지않는키워드xyz")
     assert "못 찾" in out  # keyword 폴백 검색 → graceful
@@ -119,7 +137,7 @@ def test_answer_explicit_command_skips_llm(monkeypatch):
     """확신 매칭(명령)은 LLM 호출 안 함 = 무료한도 절약."""
     b = _load_bot()
     monkeypatch.setattr(b, "load_data_once", lambda: ([_tab()], _curr_one(), "6/20 12:00", True))
-    monkeypatch.setattr(b.llm_answer, "compose", lambda q, ctx: None)  # 스마트 실패 → 폴백
+    monkeypatch.setattr(b.llm_answer, "compose", lambda q, ctx, history=None: None)  # 스마트 실패 → 폴백
 
     def _boom(*a, **k):
         raise AssertionError("확신 매칭에서 LLM 호출되면 안 됨")
