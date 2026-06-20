@@ -790,11 +790,11 @@ class SheetsClient:
         return len(cells)
 
     def write_timestamp(self, tab_name: str, kst_iso: str) -> None:
-        """탭의 1행 16번째 컬럼(P열)에 'cron 갱신: YYYY-MM-DD HH:MM KST' 기록.
+        """⚠️ DEPRECATED·미사용 (D-058): 호출 금지.
 
-        T-M37 (2026-05-12): 사장님 시트 컨벤션 보존 — 헤더 행 직접 침범 X.
-        1행 16번째 컬럼(P열, 헤더 영역 밖)에 기록.
-        실패 시 log warn 후 무시 (시트 protected 등 방어).
+        T-M37 가정("1행 16열 = 헤더 영역 밖")이 사장님 실제 시트에선 틀림 — 16열 = 지식인탭.
+        매 cron 이 지식인 헤더를 'cron 갱신: 날짜'로 덮어써 '지식인 0개' 오답을 유발했음.
+        신선도는 텔레그램 보고 + 마지막검사시각으로 충분 → main.py 호출 제거됨. 재활성화 금지.
         """
         import logging
         try:

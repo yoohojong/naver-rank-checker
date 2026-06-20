@@ -1055,3 +1055,11 @@
 **수정(일이관지)**: `snapshot_diff.field_value(row, visible_header)` 헬퍼 = **raw_* 키 있으면 raw 우선(빈값도 진실), 없으면 보이는 값**(구 백업 호환). `k_base_of`/`rank_of`/`work_date_of`/`_count_jisikin` + `fmt_keyword` 모두 적용 → 지식인뿐 아니라 K/L/M 도 진짜 값(재검사필요 표시 대신 실제 K, 두드러기 누락분 회복).
 **검증**: 신규 6 회귀 테스트(raw 우선/구백업 폴백/지식인·K·rank/diff/ fmt_keyword), 전체 `pytest -q` = **587 passed**. **실제 최신 백업 재실행 → 봇 답 "지식인 352개"**(0→352 확정), 탭별 상위노출 199. py_compile OK.
 **여파**: report_builder(저녁/아침 보고)·fmt_keyword 도 자동 정확화. fix 배포 후 실행 중 구코드 run 취소 + 재dispatch 로 즉시 반영.
+
+### D-058: 지식인 헤더 '날짜로 바뀜' 원인 제거 — T-M37 cron timestamp(1행 16열) 비활성화
+
+**증상**: 사장님 "지식인 구좌 열 이름이 왜 날짜로 바뀜?"(2026-06-20). 시트 지식인 헤더가 'cron 갱신: 2026-06-20 19:14 KST' 로 표시됨. (D-057 '지식인 0개' 와 동일 뿌리.)
+**근본 원인**: `sheets.py write_timestamp` 가 매 cron 마다 `ws.update_cell(1, 16, "cron 갱신: ...")` 로 **1행 16열**에 신선도 timestamp 기록(T-M37, 2026-05-12). "16열=헤더 영역 밖" 가정이 **사장님 실제 시트에선 틀림** — 16열 = 지식인탭(지식인 구좌). 매 cron 이 지식인 헤더를 timestamp 로 덮음 → 헤더 소실 → D-040 formula setup 이 지식인탭 못 찾아 O 공식 미설정 → 보이는 지식인 칸 깨짐(raw_지식인탭 만 정상). = D-057 '0개'의 구조적 원인.
+**수정(코드)**: main.py 의 `write_timestamp` 호출 루프 제거(T-M37 비활성화). 메서드는 DEPRECATED 주석(재활성화 금지). 신선도는 텔레그램 보고 + 마지막검사시각으로 충분.
+**검증**: 전체 `pytest -q` = **587 passed**(write_timestamp 단위테스트는 메서드 존속이라 통과, 호출만 제거). py_compile OK.
+**남은 것(시트 복구, 라이브 키 필요)**: ① 지식인 헤더 'cron 갱신:...' → '지식인탭' 복원(헤더 복원 후 다음 cron 의 formula setup 이 O 공식·값 자동 재생성) ② 보관함 옆 잔여 'cron 갱신:' 열 정리/위치 ③ 보관함 녹색. ⚠️ 서비스계정 키가 GitHub 에만 있어 로컬 직접수정 불가 + 라이브 시트 구조 변경은 사고 이력(D-047 등) 있어 신중 — 사장님 수동 안내 또는 백업 후 Actions 복구 중 택1.

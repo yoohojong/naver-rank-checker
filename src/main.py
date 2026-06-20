@@ -858,8 +858,6 @@ def run_cycle() -> dict:
             total_cells += n
             print(f"  [{tab_name}] {len(updates)} 행 / {n} 셀 갱신")
 
-    # 4.5. T-M37: 매 탭에 cron 갱신 timestamp 기록 (사장님 시점 차이 인지)
-    # (datetime import = 1.5 백업 block 안 이미 함수 scope import. 재사용.)
     type_preview_write_cells = 0
     type_preview_write_rows = 0
     type_preview_write_requested_rows = 0
@@ -881,8 +879,9 @@ def run_cycle() -> dict:
     else:
         print("[TYPE-PREVIEW] C-column write disabled; preview-only")
 
-    for tab_name in sorted(set(tab_updates.keys()) | set(type_tab_updates.keys())):
-        client.write_timestamp(tab_name, kst_iso)
+    # T-M37(cron 갱신 timestamp) 비활성화 (D-058): write_timestamp 가 1행 16열에 기록했으나
+    # 사장님 시트에선 16열 = 지식인탭 → 매 cron 지식인 헤더가 "cron 갱신: 날짜"로 손상됨
+    # ('지식인 0개' 오답의 구조적 뿌리). 신선도는 텔레그램 보고 + 마지막검사시각으로 충분 → 기록 제거.
 
     # 4.6. D-032: post-write audit — 실제 시트 상태에서 불가능 조합 재확인.
     post_write_audit_issues: list[dict] = []
