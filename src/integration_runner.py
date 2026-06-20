@@ -24,8 +24,6 @@ from __future__ import annotations
 import os
 from datetime import datetime, timedelta, timezone
 
-from src.jisikin_filter import is_junk as _is_junk
-
 # 스테이징 탭 이름(수집 전용 — 사장님 입력 탭 '카외' 와 분리).
 STAGING_TAB_JISIKIN = "수집결과_지식인"
 STAGING_TAB_REVIEW = "수집결과_리뷰"
@@ -129,7 +127,7 @@ def run_collection(
     naver_on = bool(naver_client_id and naver_client_secret)
     apify_on = bool(apify_token)
 
-    summary = {"collected": 0, "failed": 0, "skipped": 0, "tabs": 0, "filtered": 0}
+    summary = {"collected": 0, "failed": 0, "skipped": 0, "tabs": 0}
 
     data = client.load_all_data_tabs(tab_filter=tab_filter)
     summary["tabs"] = len(data)
@@ -162,6 +160,8 @@ def run_collection(
                         summary["skipped"] += 1
                         continue
                     # 정확도순 100건 + 최신순 100건 수집 후 link 기준 중복제거(sim 우선).
+                    # ★ 자동 쓰레기/품질 필터 없음 — 사장님 결정(2026-06-21): "광고 댓글 하나 섞였다고
+                    #   글을 통째로 버리면 그 안 가치있는 진짜 내용까지 날아간다. 전부 추출하고 선별은 사람이 한다."
                     items_sim = fetch_jisikin(
                         keyword,
                         client_id=naver_client_id,
@@ -177,28 +177,23 @@ def run_collection(
                         sort="date",
                     )
                     # link 기준 중복제거: sim 순서 유지, date 에서 신규분만 추가.
+                    # (link 가 빈값이면 중복으로 보지 않고 모두 보존 — 빈 link끼리 합쳐지지 않게.)
                     seen_links: set[str] = set()
                     merged: list[dict] = []
                     for it in (items_sim or []) + (items_date or []):
                         lnk = it.get("link", "")
-                        if lnk not in seen_links:
+                        if lnk and lnk in seen_links:
+                            continue
+                        if lnk:
                             seen_links.add(lnk)
-                            merged.append(it)
-                    # 보수적 쓰레기 필터 적용.
-                    clean_items: list[dict] = []
-                    for it in merged:
-                        junk, _reason = _is_junk(it.get("title", ""), it.get("description", ""))
-                        if junk:
-                            summary["filtered"] += 1
-                        else:
-                            clean_items.append(it)
+                        merged.append(it)
                     new_rows = [
                         [
                             keyword, stage_raw,
                             it.get("title", ""), it.get("description", ""),
                             day, it.get("link", ""), "",
                         ]
-                        for it in clean_items
+                        for it in merged
                     ]
                     buf_jisikin.extend(new_rows)
                     seen_jisikin.add((keyword, day))  # 같은 run 내 중복도 차단
@@ -261,14 +256,11 @@ def run_collection(
 
 def format_summary(summary: dict) -> str:
     """사람이 읽는 한 줄 요약(stdout + 텔레그램용). 비개발 사장님용 한글."""
-    filtered = summary.get("filtered", 0)
-    filtered_part = f" / 쓰레기 제외 {filtered}건" if filtered else ""
     return (
         "[카페외부 재료수집] "
         f"수집 {summary.get('collected', 0)}건 / "
         f"실패 {summary.get('failed', 0)}건 / "
-        f"스킵 {summary.get('skipped', 0)}건"
-        f"{filtered_part} "
+        f"스킵 {summary.get('skipped', 0)}건 "
         f"(대상 탭 {summary.get('tabs', 0)}개)"
     )
 
