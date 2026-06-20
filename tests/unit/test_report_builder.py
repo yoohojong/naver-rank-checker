@@ -45,12 +45,20 @@ def test_evening_words_format():
     assert "🟦" not in out and "🔺" not in out  # 기호 클러스터 제거
 
 
-def test_morning_words_format():
-    out = rb.build_morning_report([_shampoo()], "6/20", "정상")
-    assert "삭제(글 사라짐): 1개" in out  # 저녁과 동일하게 누락/삭제 분리
-    assert "어제 작업: 3개 → 1개" in out
-    assert "[제품별 노출]" in out
-    assert "탈모샴푸 추천" not in out
+def test_morning_same_as_evening_except_header():
+    """사장님 요청(2026-06-21): 아침도 저녁과 동일 형식. 헤더(첫 줄)만 다름."""
+    rep = [_shampoo()]
+    morning = rb.build_morning_report(rep, "6/20", "정상")
+    evening = rb.build_evening_report(rep, "6/20", "정상")
+    assert morning.startswith("☀️ 상노체크 아침 · 6/20")
+    # 헤더만 빼면 본문 완전 동일
+    assert morning.split("\n", 1)[1] == evening.split("\n", 1)[1]
+    # 저녁의 상세 섹션이 아침에도 전부 포함
+    assert "[어제 한 작업]" in morning
+    assert "[어제→오늘 변화]" in morning and "신규 노출: 1개" in morning
+    assert "[대표 노출 유형]" in morning
+    assert "지식인에 뜬 키워드: 2개" in morning
+    assert "탈모샴푸 추천" not in morning  # 키워드 나열 X
 
 
 def test_no_baseline_graceful():

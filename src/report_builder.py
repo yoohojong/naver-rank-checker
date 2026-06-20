@@ -48,10 +48,11 @@ def _sum(reports: list[TabReport], attr: str) -> int:
     return sum(getattr(t, attr) for t in reports)
 
 
-def build_evening_report(reports: list[TabReport], kst: str, status_line: str = "정상") -> str:
-    """저녁 마감 — 한글 말 중심, 섹션별."""
-    if not reports:
-        return f"📊 상노체크 · {kst} 저녁\n데이터 없음"
+def _build_full_report(reports: list[TabReport], kst: str, status_line: str, title: str) -> str:
+    """상세 보고 본문 (저녁/아침 공통 — 헤더 title 만 다름).
+
+    사장님 요청(2026-06-21): 아침도 저녁과 동일 형식으로 통일.
+    """
     tot = _sum(reports, "total")
     now = _sum(reports, "exposed_now")
     prev = _sum(reports, "exposed_prev")
@@ -62,7 +63,7 @@ def build_evening_report(reports: list[TabReport], kst: str, status_line: str = 
     kc = _all_kinds(reports)
     lost = kc.get("누락", 0) + kc.get("삭제", 0)
 
-    L = [f"📊 상노체크 · {kst} 저녁", f"프로그램: {status_line}", ""]
+    L = [title, f"프로그램: {status_line}", ""]
 
     # 어제 한 작업 (제품별)
     if worked:
@@ -124,30 +125,15 @@ def build_evening_report(reports: list[TabReport], kst: str, status_line: str = 
     return "\n".join(L).rstrip()
 
 
+def build_evening_report(reports: list[TabReport], kst: str, status_line: str = "정상") -> str:
+    """저녁 마감 — 한글 말 중심, 섹션별."""
+    if not reports:
+        return f"📊 상노체크 · {kst} 저녁\n데이터 없음"
+    return _build_full_report(reports, kst, status_line, f"📊 상노체크 · {kst} 저녁")
+
+
 def build_morning_report(reports: list[TabReport], kst: str, status_line: str = "정상") -> str:
-    """아침 요약 — 한글 말, 짧게."""
+    """아침 보고 — 저녁과 동일 형식(사장님 요청 2026-06-21). 헤더만 ☀️ 아침."""
     if not reports:
         return f"☀️ 상노체크 아침 · {kst}\n데이터 없음"
-    now = _sum(reports, "exposed_now")
-    tot = _sum(reports, "total")
-    worked = _sum(reports, "worked")
-    worked_exp = _sum(reports, "worked_exposed")
-    kc = _all_kinds(reports)
-    miss = kc.get("누락", 0)
-    dele = kc.get("삭제", 0)
-    L = [f"☀️ 상노체크 아침 · {kst}", f"프로그램: {status_line}", ""]
-    if dele:
-        L.append(f"삭제(글 사라짐): {dele}개  ← 점검!")
-    if miss:
-        L.append(f"누락(잠깐 빠짐, 보통 회복): {miss}개")
-    if not (miss or dele):
-        L.append("누락·삭제: 없음")
-    if worked:
-        L.append(f"어제 작업: {worked}개 → {worked_exp}개 떴어요")
-    L.append(f"지금 상위노출: 전체 {tot}개 중 {now}개")
-    L.append("")
-    L.append("[제품별 노출]")
-    for t in reports:
-        L.append(f"   {t.tab}: {t.total}개 중 {t.exposed_now}개")
-    L += ["", _LEGEND]
-    return "\n".join(L).rstrip()
+    return _build_full_report(reports, kst, status_line, f"☀️ 상노체크 아침 · {kst}")
