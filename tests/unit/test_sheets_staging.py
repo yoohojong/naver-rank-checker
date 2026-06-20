@@ -8,7 +8,7 @@ from unittest.mock import MagicMock, patch
 import gspread
 import pytest
 
-from src.sheets import HEADER_COLLECT_STATUS, RowUpdate, SheetsClient
+from src.sheets import HEADER_COLLECT_STATUS, HEADER_REFRESH, RowUpdate, SheetsClient
 
 _FAKE_CREDS = json.dumps({
     "type": "service_account", "project_id": "x", "private_key_id": "x",
@@ -182,3 +182,59 @@ def test_write_collect_status_empty_no_call():
     client = _make_client(ss)
     assert client.write_collect_status("샴푸 카외", []) == 0
     ss.worksheet.assert_not_called()
+
+
+# ── clear_refresh_flags: ③ 갱신 칸 비우기(재수집 완료 후 '갱신' 표시만 clear) ──────
+
+
+def test_clear_refresh_flags_clears_only_refresh_column():
+    """'갱신' 칸이 있으면 지정 행들의 그 칸만 ''로 clear. 다른 칸은 안 건드림."""
+    ws = MagicMock()
+    ws.row_values.return_value = ["키워드", "보관함", HEADER_COLLECT_STATUS, HEADER_REFRESH]
+    ss = MagicMock()
+    ss.worksheet.return_value = ws
+    client = _make_client(ss)
+
+    n = client.clear_refresh_flags("샴푸 카외", [3, 2])  # 정렬되어 2,3 순으로 기록.
+
+    assert n == 2
+    ws.batch_update.assert_called_once()
+    cells = ws.batch_update.call_args.args[0]
+    # 갱신 = 4번째 컬럼(0-idx 3) → D열. 정렬되어 D2, D3.
+    assert cells[0]["range"] == "D2"
+    assert cells[0]["values"] == [[""]]
+    assert cells[1]["range"] == "D3"
+
+
+def test_clear_refresh_flags_missing_column_skips():
+    """탭에 '갱신' 칸이 없으면 skip — batch_update 호출 안 함(재수집은 정상 진행)."""
+    ws = MagicMock()
+    ws.row_values.return_value = ["키워드", HEADER_COLLECT_STATUS]  # 갱신 없음
+    ss = MagicMock()
+    ss.worksheet.return_value = ws
+    client = _make_client(ss)
+
+    n = client.clear_refresh_flags("샴푸 카외", [2])
+    assert n == 0
+    ws.batch_update.assert_not_called()
+
+
+def test_clear_refresh_flags_empty_no_call():
+    ss = MagicMock()
+    client = _make_client(ss)
+    assert client.clear_refresh_flags("샴푸 카외", []) == 0
+    ss.worksheet.assert_not_called()
+
+
+def test_clear_refresh_flags_skips_header_rows():
+    """1행(헤더) 번호는 무시 — 사장님 헤더 보호."""
+    ws = MagicMock()
+    ws.row_values.return_value = ["키워드", HEADER_REFRESH]
+    ss = MagicMock()
+    ss.worksheet.return_value = ws
+    client = _make_client(ss)
+
+    n = client.clear_refresh_flags("샴푸 카외", [1, 2])  # 1행은 제외.
+    assert n == 1
+    cells = ws.batch_update.call_args.args[0]
+    assert cells[0]["range"] == "B2"

@@ -51,6 +51,10 @@ COL_LINK = "링크"  # 리뷰 단계용 상품 URL(있으면). 없으면 리뷰 
 # 증분 표시 칸 = 메인 시트 '자료조사' 컬럼(bogwanham addCollectStatusColumn 이 만듦).
 # 값이 채워진 행 = 이미 수집됨 → 스킵. 수집 직후 이 칸에 결과를 서비스계정으로 write-back.
 COL_COLLECT_STATUS = "자료조사"
+# ③ 갱신 요청 칸 = 메인 시트 '갱신' 컬럼('자료조사' 바로 오른쪽). 사장님이 아무 표시를 하면
+# '자료조사'가 채워져 있어도 그 행을 재수집한다. 재수집 끝나면 이 칸을 비운다(clear_refresh_flags).
+# ⚠️ 갱신은 기존 자료를 덮지 않고 새 자료를 '추가'만 한다(append-only — 동일 link 중복만 제외).
+COL_REFRESH = "갱신"
 
 # 표시 write-back 청크 크기 — 이 키워드 수마다 '자료조사' 칸 flush(재개 안전 ↔ API burst 균형).
 COLLECT_STATUS_FLUSH_EVERY = 20
@@ -93,9 +97,41 @@ def _already_collected(row: dict) -> bool:
     return bool((row.get(COL_COLLECT_STATUS) or "").strip())
 
 
+def _refresh_requested(row: dict) -> bool:
+    """③ 메인 시트 행의 '갱신' 칸에 사장님 표시가 있으면 True.
+
+    '자료조사'가 채워져 있어도 갱신 표시가 있으면 그 행은 재수집 대상.
+    """
+    return bool((row.get(COL_REFRESH) or "").strip())
+
+
+def _should_collect(row: dict) -> bool:
+    """수집 대상 판정: '자료조사' 비어있음 OR '갱신' 칸 채워짐(③).
+
+    - 신규(자료조사 빈칸) → 수집(기존 증분 동작 유지).
+    - 갱신 표시 → '자료조사'가 채워져 있어도 재수집(append-only 추가).
+    """
+    return (not _already_collected(row)) or _refresh_requested(row)
+
+
 def _format_collect_status(day: str, n: int) -> str:
     """'자료조사' 칸에 기록할 사장님 가시화 문구 — '✅ YYYY-MM-DD 수집(N건)'."""
     return f"✅ {day} 수집({n}건)"
+
+
+def _format_refresh_status(day: str, n: int) -> str:
+    """③ 갱신 재수집 후 '자료조사' 칸에 기록할 문구 — '✅ M/D 갱신(+N건)'.
+
+    신규 수집('✅ YYYY-MM-DD 수집(N건)')과 구분해 사장님이 '추가됐다'를 한눈에 알게 한다.
+    'YYYY-MM-DD' → 'M/D'(앞 0 제거). 파싱 실패 시 원본 날짜 그대로 사용(견고).
+    """
+    md = day
+    try:
+        dt = datetime.strptime(day, "%Y-%m-%d")
+        md = f"{dt.month}/{dt.day}"
+    except (ValueError, TypeError):
+        pass
+    return f"✅ {md} 갱신(+{n}건)"
 
 
 def _flush_status(client, tab_name: str, pending: list) -> None:
@@ -115,12 +151,54 @@ def _flush_status(client, tab_name: str, pending: list) -> None:
               f"{type(e).__name__}: {e} — 다음 실행에서 재개됨")
 
 
-def _flush_chunk(client, tab_name: str, chunk_jisikin: list, chunk_review: list,
-                 pending_status: list, summary: dict) -> None:
-    """한 청크의 스테이징 행을 append 한 뒤 '자료조사' 칸 write-back(이 순서 = 원자성).
+def _flush_refresh_clear(client, tab_name: str, pending_refresh_rows: list) -> None:
+    """③ 재수집(갱신)이 끝난 행들의 '갱신' 칸을 비운다.
 
-    - 적재 성공 ⟹ 그 청크 pending_status 표시(표시 찍힘 ⟹ 적재 완료 불변식, 재개 안전).
-    - 적재 실패 ⟹ 표시 안 함(다음 실행이 빈 칸부터 재개) + 그 청크 수집분 failed 환산.
+    '자료조사' 표시를 새로 찍은 뒤(=재수집 완료 확정) 호출 → 그 행 '갱신' 표시만 clear.
+    clear 실패는 로그만 — 다음 실행에서 그 행이 또 재수집될 뿐이라(append-only) 데이터 손실은 없다.
+    """
+    if not pending_refresh_rows:
+        return
+    try:
+        client.clear_refresh_flags(tab_name, pending_refresh_rows)
+    except Exception as e:  # noqa: BLE001 — clear 실패해도 데이터 안전(다음 실행이 또 갱신할 뿐).
+        print(f"[갱신칸정리실패] 탭 '{tab_name}' '갱신' 칸 clear 중 오류: "
+              f"{type(e).__name__}: {e} — 다음 실행에서 재시도됨")
+
+
+def _existing_links_for_keyword(client, staging_tab: str, keyword: str, cache: dict) -> set:
+    """④ 갱신 시 이미 스테이징에 적재된 그 키워드의 link 집합을 읽어 캐시한다(중복 추가 방지).
+
+    - staging_tab 전체를 1회만 read 해 {키워드: {link, ...}} 로 캐시(키워드마다 재read 금지).
+    - 빈 link 는 집합에 넣지 않는다 → 빈 link 끼리는 중복으로 보지 않고 모두 보존(④ 규칙).
+    - read 실패/탭 없음 = 빈 집합(보수적: 중복 못 거르면 다 추가, 데이터 손실보다 중복이 안전).
+    캐시 키 = staging_tab(탭 단위 1회 read). 같은 run 안에서 새 append 분은 캐시에 반영 안 되나,
+    같은 키워드가 한 run 에 갱신 1회뿐이라 문제 없음(키워드는 시트 1행 = 1회 처리).
+    """
+    if staging_tab not in cache:
+        by_keyword: dict[str, set] = {}
+        try:
+            records = client.read_tab_records(staging_tab)
+        except Exception as e:  # noqa: BLE001 — read 실패 = 빈 캐시(중복 못 걸러도 append 는 안전).
+            print(f"[갱신중복확인실패] 탭 '{staging_tab}' 기존 link read 오류: "
+                  f"{type(e).__name__}: {e} — 중복확인 없이 진행")
+            records = []
+        for rec in records or []:
+            kw = str(rec.get("키워드", "") or "").strip()
+            lnk = str(rec.get("source_url", "") or "").strip()
+            if kw and lnk:
+                by_keyword.setdefault(kw, set()).add(lnk)
+        cache[staging_tab] = by_keyword
+    return cache[staging_tab].get(keyword, set())
+
+
+def _flush_chunk(client, tab_name: str, chunk_jisikin: list, chunk_review: list,
+                 pending_status: list, pending_refresh_rows: list, summary: dict) -> None:
+    """한 청크의 스테이징 행을 append 한 뒤 '자료조사' write-back → '갱신' clear(이 순서 = 원자성).
+
+    - 적재 성공 ⟹ 그 청크 pending_status 표시(표시 찍힘 ⟹ 적재 완료 불변식, 재개 안전)
+                  + 그 청크 갱신 행들의 '갱신' 칸 clear(③).
+    - 적재 실패 ⟹ 표시도 갱신칸 clear 도 안 함(다음 실행이 재개) + 그 청크 수집분 failed 환산.
     호출 측이 버퍼(리스트) 객체를 매 청크마다 새로 만들어 넘기므로 여기서는 비우지 않는다
     (MagicMock 이 append 인자를 참조로 보관 → 호출 후 clear 시 검증값이 사라지는 함정 회피).
     """
@@ -135,8 +213,9 @@ def _flush_chunk(client, tab_name: str, chunk_jisikin: list, chunk_review: list,
         summary["collected"] = max(0, summary["collected"] - n)
         print(f"[적재실패] 탭 '{tab_name}' 스테이징 append 오류: {type(e).__name__}: {e}")
         return
-    # 적재 성공분만 '자료조사' 칸에 write-back.
+    # 적재 성공분만 '자료조사' 칸에 write-back → 그 뒤 갱신 행 '갱신' 칸 clear(완료 확정 후).
     _flush_status(client, tab_name, pending_status)
+    _flush_refresh_clear(client, tab_name, pending_refresh_rows)
 
 
 def run_collection(
@@ -185,6 +264,9 @@ def run_collection(
 
     summary = {"collected": 0, "failed": 0, "skipped": 0, "tabs": 0}
 
+    # ④ 갱신 시 기존 스테이징 link 중복 제외용 캐시(스테이징 탭당 1회 read). run 전체에서 공유.
+    existing_link_cache: dict[str, dict] = {}
+
     data = client.load_all_data_tabs(tab_filter=tab_filter)
     summary["tabs"] = len(data)
 
@@ -195,6 +277,7 @@ def run_collection(
         chunk_jisikin: list[list] = []
         chunk_review: list[list] = []
         pending_status: list[tuple[int, str]] = []
+        pending_refresh_rows: list[int] = []  # ③ 이 청크에서 재수집(갱신)한 행들 — flush 후 '갱신' 칸 clear.
         processed_in_chunk = 0
 
         for row in rows or []:
@@ -202,9 +285,12 @@ def run_collection(
             stage_raw = _stage_value(row)
             digit = _stage_digit(stage_raw)
             row_num = row.get("_row")
+            # ③ 갱신 표시가 있으면 '자료조사'가 채워져 있어도 재수집(append-only 추가).
+            is_refresh = _refresh_requested(row)
 
-            # ① 이미 수집된 행('자료조사' 칸 채워짐) → 스킵(증분/재개 핵심).
-            if _already_collected(row):
+            # ① 수집 대상 판정: '자료조사' 비어있음 OR '갱신' 칸 채워짐(③).
+            #    둘 다 아니면(이미수집 + 갱신요청 없음) → 스킵(증분/재개 핵심).
+            if not _should_collect(row):
                 summary["skipped"] += 1
                 continue
 
@@ -238,6 +324,11 @@ def run_collection(
                     # link 기준 중복제거: sim 순서 유지, date 에서 신규분만 추가.
                     # (link 가 빈값이면 중복으로 보지 않고 모두 보존 — 빈 link끼리 합쳐지지 않게.)
                     seen_links: set[str] = set()
+                    # ④ 갱신 행이면 이미 스테이징에 적재된 그 키워드 link 를 시작 집합으로(중복 추가 방지).
+                    #    빈 link 는 제외 집합에 없으므로 빈 link끼리는 모두 보존(④ 빈 link 규칙).
+                    if is_refresh:
+                        seen_links |= _existing_links_for_keyword(
+                            client, STAGING_TAB_JISIKIN, keyword, existing_link_cache)
                     merged: list[dict] = []
                     for it in (items_sim or []) + (items_date or []):
                         lnk = it.get("link", "")
@@ -257,7 +348,11 @@ def run_collection(
                     chunk_jisikin.extend(new_rows)
                     summary["collected"] += len(new_rows)
                     if row_num:
-                        pending_status.append((row_num, _format_collect_status(day, len(new_rows))))
+                        status = (_format_refresh_status(day, len(new_rows)) if is_refresh
+                                  else _format_collect_status(day, len(new_rows)))
+                        pending_status.append((row_num, status))
+                        if is_refresh:
+                            pending_refresh_rows.append(row_num)
                     processed_in_chunk += 1
 
                 elif digit in STAGE_REVIEW:
@@ -276,18 +371,34 @@ def run_collection(
                         input_field=apify_input_field,
                         extra_input=apify_extra_input,
                     )
+                    review_list = list(reviews or [])
+                    # ④ 갱신 행이면 이미 적재된 그 키워드 source_url 과 중복인 리뷰는 제외(신규분만 추가).
+                    #    빈 source 는 중복으로 보지 않고 모두 보존(④ 빈 link 규칙).
+                    if is_refresh:
+                        existing = _existing_links_for_keyword(
+                            client, STAGING_TAB_REVIEW, keyword, existing_link_cache)
+                        if existing:
+                            review_list = [
+                                rv for rv in review_list
+                                if not (str(rv.get("source", "") or "").strip() in existing
+                                        and str(rv.get("source", "") or "").strip())
+                            ]
                     new_rows = [
                         [
                             keyword, stage_raw,
                             str(rv.get("star", "")), rv.get("content", ""),
                             day, rv.get("source", ""), "",
                         ]
-                        for rv in (reviews or [])
+                        for rv in review_list
                     ]
                     chunk_review.extend(new_rows)
                     summary["collected"] += len(new_rows)
                     if row_num:
-                        pending_status.append((row_num, _format_collect_status(day, len(new_rows))))
+                        status = (_format_refresh_status(day, len(new_rows)) if is_refresh
+                                  else _format_collect_status(day, len(new_rows)))
+                        pending_status.append((row_num, status))
+                        if is_refresh:
+                            pending_refresh_rows.append(row_num)
                     processed_in_chunk += 1
 
                 else:
@@ -299,14 +410,16 @@ def run_collection(
                 print(f"[수집실패] 탭 '{tab_name}' 키워드 '{keyword}' (단계 {stage_raw}): "
                       f"{type(e).__name__}: {e}")
 
-            # ⑦ 일괄 안전: 청크 크기 도달 시 즉시 flush(적재→표시) → 중간 실패해도 재개 가능.
+            # ⑦ 일괄 안전: 청크 크기 도달 시 즉시 flush(적재→표시→갱신칸정리) → 중간 실패해도 재개 가능.
             if processed_in_chunk >= COLLECT_STATUS_FLUSH_EVERY:
-                _flush_chunk(client, tab_name, chunk_jisikin, chunk_review, pending_status, summary)
-                chunk_jisikin, chunk_review, pending_status = [], [], []
+                _flush_chunk(client, tab_name, chunk_jisikin, chunk_review,
+                             pending_status, pending_refresh_rows, summary)
+                chunk_jisikin, chunk_review, pending_status, pending_refresh_rows = [], [], [], []
                 processed_in_chunk = 0
 
         # 탭 끝 — 남은 청크 flush.
-        _flush_chunk(client, tab_name, chunk_jisikin, chunk_review, pending_status, summary)
+        _flush_chunk(client, tab_name, chunk_jisikin, chunk_review,
+                     pending_status, pending_refresh_rows, summary)
 
     return summary
 

@@ -21,14 +21,16 @@ from src.integration_runner import (
     STAGING_TAB_REVIEW,
     run_collection,
 )
-from src.sheets import HEADER_COLLECT_STATUS
+from src.sheets import HEADER_COLLECT_STATUS, HEADER_REFRESH
 
 
-def _client_with(tabs, existing=None):
-    """SheetsClient mock — load_all_data_tabs / append_staging_rows / write_collect_status.
+def _client_with(tabs, existing=None, staging_records=None):
+    """SheetsClient mock — load_all_data_tabs / append_staging_rows / write_collect_status / 갱신.
 
     tabs: {탭이름: [row dict, ...]}  (카외 제품 탭)
     existing: (deprecated) 과거 스테이징 기반 중복방지 인자 — 새 로직에선 미사용(시그니처 호환만 유지).
+    staging_records: {스테이징탭이름: [rec dict, ...]} — ④ 갱신 중복확인용 기존 스테이징 행
+                     (read_tab_records 가 반환). 미지정 시 빈 list.
     """
     client = MagicMock()
     client.load_all_data_tabs.return_value = tabs
@@ -36,6 +38,11 @@ def _client_with(tabs, existing=None):
     client.append_staging_rows.side_effect = lambda tab, header, rows: len(rows)
     # write_collect_status 는 write 한 셀 수 반환(실제 코어 시그니처와 동일).
     client.write_collect_status.side_effect = lambda tab, updates: len(updates)
+    # ③ clear_refresh_flags 는 비운 셀 수 반환.
+    client.clear_refresh_flags.side_effect = lambda tab, rows: len(rows)
+    # ④ read_tab_records 는 기존 스테이징 행 반환(갱신 중복확인용).
+    _records = staging_records or {}
+    client.read_tab_records.side_effect = lambda tab: list(_records.get(tab, []))
     return client
 
 
@@ -46,6 +53,16 @@ def _status_writes(client):
         tab, updates = call.args[0], call.args[1]
         for upd in updates:
             pairs.append((tab, upd.row, upd.columns[HEADER_COLLECT_STATUS]))
+    return pairs
+
+
+def _refresh_clears(client):
+    """clear_refresh_flags 로 비워진 모든 (tab, row) 페어를 평탄화해 반환."""
+    pairs = []
+    for call in client.clear_refresh_flags.call_args_list:
+        tab, rows = call.args[0], call.args[1]
+        for r in rows:
+            pairs.append((tab, r))
     return pairs
 
 
@@ -593,3 +610,201 @@ def test_mixed_filled_and_empty_only_empty_collected():
     assert written_rows == [3, 4]          # 빈 행 2개만 표시
     assert summary["skipped"] == 1         # 이미함 1개 스킵
     assert summary["collected"] == 2
+
+
+# ── ③④ 갱신 흐름: 갱신칸 표시 → 재수집(추가) → '갱신' 칸 clear / 기존 자료 보존 ────
+
+
+def test_refresh_flag_recollects_even_when_status_filled():
+    """③ '자료조사'가 채워져 있어도 '갱신' 칸에 표시가 있으면 재수집한다(OR 조건)."""
+    client = _client_with(
+        {"x.카외": [{"키워드": "두피 가려움", "키워드 분류(단계)": "3 증상",
+                     HEADER_COLLECT_STATUS: "✅ 2026-06-10 수집(5건)",
+                     HEADER_REFRESH: "O", "_row": 2}]},
+    )
+    fetch_j = MagicMock(return_value=[
+        {"title": "두피 가려움 새 글", "description": "새로 올라온 글입니다", "link": "NEW1"}
+    ])
+
+    summary = run_collection(
+        client, fetch_jisikin=fetch_j, fetch_reviews=MagicMock(),
+        naver_client_id="id", naver_client_secret="sec",
+        apify_token="t", apify_actor_id="a~b", today="2026-06-25",
+    )
+
+    assert fetch_j.call_count == 2          # 재수집됨(sim+date)
+    assert summary["collected"] == 1
+    assert summary["skipped"] == 0
+    # '자료조사' 칸은 갱신 문구로 표시.
+    assert _status_writes(client) == [("x.카외", 2, "✅ 6/25 갱신(+1건)")]
+    # '갱신' 칸은 비워짐.
+    assert _refresh_clears(client) == [("x.카외", 2)]
+
+
+def test_refresh_flag_cleared_after_recollect():
+    """③ 재수집이 끝나면 그 행의 '갱신' 칸이 clear 된다(다음 실행에서 또 재수집 안 함)."""
+    client = _client_with(
+        {"x.카외": [{"키워드": "탈모", "키워드 분류(단계)": "3 증상",
+                     HEADER_COLLECT_STATUS: "✅ 2026-06-10 수집(3건)",
+                     HEADER_REFRESH: "갱신", "_row": 5}]},
+    )
+    fetch_j = MagicMock(return_value=[
+        {"title": "탈모 새 질문", "description": "탈모 관련 새 내용", "link": "L"}
+    ])
+
+    run_collection(
+        client, fetch_jisikin=fetch_j, fetch_reviews=MagicMock(),
+        naver_client_id="id", naver_client_secret="sec",
+        apify_token="t", apify_actor_id="a~b", today="2026-06-25",
+    )
+
+    client.clear_refresh_flags.assert_called()
+    assert _refresh_clears(client) == [("x.카외", 5)]
+
+
+def test_refresh_skips_links_already_in_staging():
+    """④ 갱신 시 이미 스테이징에 적재된 그 키워드 link 는 중복 제외(신규분만 추가)."""
+    client = _client_with(
+        {"x.카외": [{"키워드": "두피", "키워드 분류(단계)": "3 증상",
+                     HEADER_COLLECT_STATUS: "✅ 2026-06-10 수집(2건)",
+                     HEADER_REFRESH: "O", "_row": 2}]},
+        staging_records={
+            "수집결과_지식인": [
+                {"키워드": "두피", "source_url": "OLD1", "_row": 2},
+                {"키워드": "두피", "source_url": "OLD2", "_row": 3},
+            ]
+        },
+    )
+    # OLD1 중복 + NEW1 신규.
+    fetch_j = MagicMock(return_value=[
+        {"title": "기존 글", "description": "이미 받은 글", "link": "OLD1"},
+        {"title": "새 글", "description": "새로 올라온 글", "link": "NEW1"},
+    ])
+
+    summary = run_collection(
+        client, fetch_jisikin=fetch_j, fetch_reviews=MagicMock(),
+        naver_client_id="id", naver_client_secret="sec",
+        apify_token="t", apify_actor_id="a~b", today="2026-06-25",
+    )
+
+    rows = client.append_staging_rows.call_args.args[2]
+    links = [r[5] for r in rows]
+    assert links == ["NEW1"]               # OLD1 중복 제외, 신규만 추가
+    assert summary["collected"] == 1
+    assert _status_writes(client) == [("x.카외", 2, "✅ 6/25 갱신(+1건)")]
+
+
+def test_refresh_preserves_blank_links():
+    """④ 갱신 시 빈 link 는 중복으로 보지 않고 모두 보존(빈 link끼리 합쳐지지 않음).
+
+    fetch_jisikin 은 sim·date 2회 호출 → 빈 link 항목은 dedup 에서 제외되므로 각 호출분이
+    그대로 누적된다(2항목 × 2회 = 4건). 기존 스테이징의 빈 source_url 도 제외 집합에 안 들어감.
+    """
+    client = _client_with(
+        {"x.카외": [{"키워드": "두피", "키워드 분류(단계)": "3 증상",
+                     HEADER_COLLECT_STATUS: "✅ 2026-06-10 수집(1건)",
+                     HEADER_REFRESH: "O", "_row": 2}]},
+        staging_records={"수집결과_지식인": [{"키워드": "두피", "source_url": "", "_row": 2}]},
+    )
+    fetch_j = MagicMock(return_value=[
+        {"title": "글1", "description": "내용1", "link": ""},
+        {"title": "글2", "description": "내용2", "link": ""},
+    ])
+
+    summary = run_collection(
+        client, fetch_jisikin=fetch_j, fetch_reviews=MagicMock(),
+        naver_client_id="id", naver_client_secret="sec",
+        apify_token="t", apify_actor_id="a~b", today="2026-06-25",
+    )
+
+    rows = client.append_staging_rows.call_args.args[2]
+    # 빈 link 는 절대 합쳐지지 않음 → sim 2건 + date 2건 = 4건 전부 보존.
+    assert len(rows) == 4
+    assert all(r[5] == "" for r in rows)
+    assert summary["collected"] == 4
+
+
+def test_non_refresh_row_does_not_clear_refresh():
+    """갱신이 아닌 일반 신규 행은 '갱신' 칸 clear 를 호출하지 않는다."""
+    client = _client_with(
+        {"x.카외": [{"키워드": "신규", "키워드 분류(단계)": "3 증상",
+                     HEADER_COLLECT_STATUS: "", "_row": 2}]},
+    )
+    fetch_j = MagicMock(return_value=[
+        {"title": "신규 질문 제목", "description": "신규 본문 내용입니다", "link": "L"}
+    ])
+
+    run_collection(
+        client, fetch_jisikin=fetch_j, fetch_reviews=MagicMock(),
+        naver_client_id="id", naver_client_secret="sec",
+        apify_token="t", apify_actor_id="a~b", today="2026-06-25",
+    )
+
+    client.clear_refresh_flags.assert_not_called()
+    # 신규는 '수집' 문구(갱신 아님).
+    assert _status_writes(client) == [("x.카외", 2, "✅ 2026-06-25 수집(1건)")]
+
+
+def test_refresh_review_skips_existing_source_urls():
+    """④ 리뷰 갱신도 이미 적재된 source_url 중복은 제외(신규 리뷰만 추가)."""
+    client = _client_with(
+        {"x.카외": [{"키워드": "경쟁상품", "키워드 분류(단계)": "4 대안",
+                     "링크": "https://smartstore.naver.com/x/products/1",
+                     HEADER_COLLECT_STATUS: "✅ 2026-06-10 수집(1건)",
+                     HEADER_REFRESH: "O", "_row": 2}]},
+        staging_records={"수집결과_리뷰": [{"키워드": "경쟁상품", "source_url": "u_old", "_row": 2}]},
+    )
+    fetch_r = MagicMock(return_value=[
+        {"star": 1, "content": "기존 리뷰", "source": "u_old", "date": "d"},   # 중복
+        {"star": 2, "content": "새 리뷰", "source": "u_new", "date": "d"},     # 신규
+    ])
+
+    summary = run_collection(
+        client, fetch_jisikin=MagicMock(), fetch_reviews=fetch_r,
+        naver_client_id="id", naver_client_secret="sec",
+        apify_token="t", apify_actor_id="a~b", today="2026-06-25",
+    )
+
+    rows = client.append_staging_rows.call_args.args[2]
+    assert [r[5] for r in rows] == ["u_new"]   # u_old 중복 제외
+    assert summary["collected"] == 1
+    assert _refresh_clears(client) == [("x.카외", 2)]
+
+
+def test_refresh_empty_result_still_clears_flag():
+    """③ 갱신했는데 신규 0건이어도 '갱신' 칸은 비우고 '자료조사'에 갱신(+0건) 표시(무한 재시도 방지)."""
+    client = _client_with(
+        {"x.카외": [{"키워드": "희귀", "키워드 분류(단계)": "3 증상",
+                     HEADER_COLLECT_STATUS: "✅ 2026-06-10 수집(5건)",
+                     HEADER_REFRESH: "O", "_row": 2}]},
+        staging_records={"수집결과_지식인": [{"키워드": "희귀", "source_url": "OLD", "_row": 2}]},
+    )
+    # 받은 게 전부 기존 link = 신규 0건.
+    fetch_j = MagicMock(return_value=[{"title": "기존", "description": "기존글", "link": "OLD"}])
+
+    summary = run_collection(
+        client, fetch_jisikin=fetch_j, fetch_reviews=MagicMock(),
+        naver_client_id="id", naver_client_secret="sec",
+        apify_token="t", apify_actor_id="a~b", today="2026-06-25",
+    )
+
+    client.append_staging_rows.assert_not_called()   # 신규 행 없음
+    assert _status_writes(client) == [("x.카외", 2, "✅ 6/25 갱신(+0건)")]
+    assert _refresh_clears(client) == [("x.카외", 2)]  # 그래도 갱신칸은 비움
+    assert summary["collected"] == 0
+
+
+def test_format_refresh_status_month_day_no_leading_zero():
+    """③ 갱신 문구 = '✅ M/D 갱신(+N건)' — 앞 0 제거, 파싱 실패 시 원본 날짜."""
+    assert ir._format_refresh_status("2026-06-25", 12) == "✅ 6/25 갱신(+12건)"
+    assert ir._format_refresh_status("2026-01-05", 0) == "✅ 1/5 갱신(+0건)"
+    # 파싱 불가 입력은 원본 그대로(견고).
+    assert ir._format_refresh_status("nodate", 3) == "✅ nodate 갱신(+3건)"
+
+
+def test_should_collect_or_condition():
+    """수집 대상 판정 = '자료조사' 비어있음 OR '갱신' 채워짐."""
+    assert ir._should_collect({}) is True                                    # 둘 다 빈칸 → 수집
+    assert ir._should_collect({HEADER_COLLECT_STATUS: "✅ ..."}) is False     # 이미수집+갱신X → 스킵
+    assert ir._should_collect({HEADER_COLLECT_STATUS: "✅ ...", HEADER_REFRESH: "O"}) is True  # 갱신 → 수집
+    assert ir._should_collect({HEADER_REFRESH: "O"}) is True                  # 빈칸+갱신 → 수집
