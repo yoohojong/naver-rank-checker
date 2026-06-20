@@ -40,7 +40,10 @@ def test_routes_symptom_keyword_to_jisikin():
     client = _client_with(
         {"두피.카외": [{"키워드": "두피 가려움", "키워드 분류(단계)": "3 증상", "_row": 2}]}
     )
-    fetch_j = MagicMock(return_value=[{"title": "원인", "description": "본문", "link": "L"}])
+    # title·description 합산 15자 이상이어야 is_junk 필터를 통과한다.
+    fetch_j = MagicMock(return_value=[
+        {"title": "두피 가려움의 원인", "description": "두피 가려움 증상 본문 내용입니다", "link": "L"}
+    ])
     fetch_r = MagicMock()
 
     summary = run_collection(
@@ -54,8 +57,11 @@ def test_routes_symptom_keyword_to_jisikin():
         today="2026-06-20",
     )
 
-    fetch_j.assert_called_once()
-    assert fetch_j.call_args.args[0] == "두피 가려움"
+    # 2회 호출(sim + date)
+    assert fetch_j.call_count == 2
+    assert fetch_j.call_args_list[0].args[0] == "두피 가려움"
+    assert fetch_j.call_args_list[0].kwargs["sort"] == "sim"
+    assert fetch_j.call_args_list[1].kwargs["sort"] == "date"
     fetch_r.assert_not_called()
     # 지식인 스테이징 탭에 append 됐는지
     call = client.append_staging_rows.call_args
@@ -65,8 +71,8 @@ def test_routes_symptom_keyword_to_jisikin():
     # 스키마: [키워드 | 단계 | 제목 | 본문 | 수집일 | source_url | 적재완료]
     assert row[0] == "두피 가려움"
     assert row[1] == "3 증상"
-    assert row[2] == "원인"
-    assert row[3] == "본문"
+    assert row[2] == "두피 가려움의 원인"
+    assert row[3] == "두피 가려움 증상 본문 내용입니다"
     assert row[4] == "2026-06-20"
     assert row[5] == "L"
     assert summary["collected"] == 1
@@ -139,7 +145,9 @@ def test_does_not_skip_same_keyword_different_day():
             {"키워드": "두피 가려움", "수집일": "2026-06-19", "_row": 2}
         ]},
     )
-    fetch_j = MagicMock(return_value=[{"title": "t", "description": "d", "link": "L"}])
+    fetch_j = MagicMock(return_value=[
+        {"title": "두피 가려움 원인과 해결책", "description": "두피 가려움 증상 설명입니다", "link": "L"}
+    ])
 
     summary = run_collection(
         client, fetch_jisikin=fetch_j, fetch_reviews=MagicMock(),
@@ -147,7 +155,7 @@ def test_does_not_skip_same_keyword_different_day():
         apify_token="t", apify_actor_id="a~b", today="2026-06-20",
     )
 
-    fetch_j.assert_called_once()
+    assert fetch_j.call_count == 2  # sim + date 2회 호출
     assert summary["collected"] == 1
     assert summary["skipped"] == 0
 
@@ -164,7 +172,7 @@ def test_failure_in_one_keyword_isolated():
     def _fetch(keyword, **kwargs):
         if keyword == "터지는키워드":
             raise RuntimeError("지식iN Open API 오류 500")
-        return [{"title": "t", "description": "d", "link": "L"}]
+        return [{"title": "정상키워드 관련 질문 제목", "description": "정상키워드 관련 설명 내용입니다", "link": "L"}]
 
     fetch_j = MagicMock(side_effect=_fetch)
 
@@ -174,7 +182,9 @@ def test_failure_in_one_keyword_isolated():
         apify_token="t", apify_actor_id="a~b", today="2026-06-20",
     )
 
-    assert fetch_j.call_count == 2
+    # 터지는키워드: sim 호출 1회(예외) → date 호출 안 함(try/except 전체 감쌈)
+    # 정상키워드: sim 1회 + date 1회 = 2회 → 총 3회
+    assert fetch_j.call_count == 3
     assert summary["failed"] == 1
     assert summary["collected"] == 1
 
@@ -209,8 +219,9 @@ def test_stage_header_variants_resolve():
         client = _client_with(
             {"x.카외": [{"키워드": "두피 가려움", header: "3 증상", "_row": 2}]}
         )
+        # is_junk 필터 통과를 위해 title+description 합산 15자 이상.
         fetch_j = MagicMock(
-            return_value=[{"title": "t", "link": "l", "description": "d"}]
+            return_value=[{"title": "두피 가려움 관련 질문", "link": "l", "description": "두피 가려움 증상 설명"}]
         )
         summary = run_collection(
             client, fetch_jisikin=fetch_j, fetch_reviews=MagicMock(),
@@ -288,7 +299,7 @@ def test_empty_fetch_result_counts_as_zero_collected_not_failed():
         apify_token="t", apify_actor_id="a~b", today="2026-06-20",
     )
 
-    fetch_j.assert_called_once()
+    assert fetch_j.call_count == 2  # sim + date 2회 호출
     client.append_staging_rows.assert_not_called()
     assert summary["collected"] == 0
     assert summary["failed"] == 0
@@ -305,9 +316,10 @@ def test_multiple_jisikin_items_become_multiple_rows():
     client = _client_with(
         {"x.카외": [{"키워드": "두피", "키워드 분류(단계)": "3 증상", "_row": 2}]}
     )
+    # is_junk 필터 통과를 위해 title+description 합산 15자 이상.
     fetch_j = MagicMock(return_value=[
-        {"title": "t1", "description": "d1", "link": "L1"},
-        {"title": "t2", "description": "d2", "link": "L2"},
+        {"title": "두피 가려움 원인 질문", "description": "두피가 간지럽고 각질이 납니다", "link": "L1"},
+        {"title": "두피 트러블 해결 방법", "description": "두피에 뭔가 생겼는데 어떻게 하죠", "link": "L2"},
     ])
 
     summary = run_collection(
@@ -320,3 +332,97 @@ def test_multiple_jisikin_items_become_multiple_rows():
     assert len(rows) == 2
     # collected = 적재된 키워드 단위(1) 가 아니라 행 수(2) 로 카운트
     assert summary["collected"] == 2
+
+
+# ── 신규: 2회 호출 / link 중복제거 / filtered 카운트 ──────────────────────
+
+
+def test_jisikin_fetched_twice_sim_and_date():
+    """단계3 키워드마다 fetch_jisikin을 sim·date 각 1회씩 총 2회 호출한다."""
+    client = _client_with(
+        {"x.카외": [{"키워드": "두피 탈모", "키워드 분류(단계)": "3 증상", "_row": 2}]}
+    )
+    fetch_j = MagicMock(return_value=[])
+
+    run_collection(
+        client, fetch_jisikin=fetch_j, fetch_reviews=MagicMock(),
+        naver_client_id="id", naver_client_secret="sec",
+        apify_token="t", apify_actor_id="a~b", today="2026-06-20",
+    )
+
+    assert fetch_j.call_count == 2
+    calls = fetch_j.call_args_list
+    assert calls[0].kwargs["sort"] == "sim"
+    assert calls[0].kwargs["display"] == 100
+    assert calls[1].kwargs["sort"] == "date"
+    assert calls[1].kwargs["display"] == 100
+
+
+def test_jisikin_link_dedup_sim_priority():
+    """sim·date 결과에 같은 link가 있으면 sim 순서 유지, date 중복은 제거한다."""
+    client = _client_with(
+        {"x.카외": [{"키워드": "두피 탈모", "키워드 분류(단계)": "3 증상", "_row": 2}]}
+    )
+    # sim: L1, L2 / date: L2(중복), L3(신규)
+    sim_items = [
+        {"title": "sim 결과 첫 번째 질문 제목", "description": "sim 결과 첫 번째 내용입니다", "link": "L1"},
+        {"title": "sim 결과 두 번째 질문 제목", "description": "sim 결과 두 번째 내용입니다", "link": "L2"},
+    ]
+    date_items = [
+        {"title": "date 중복 질문 제목입니다", "description": "date 중복 내용 설명입니다", "link": "L2"},  # 중복
+        {"title": "date 신규 질문 제목입니다", "description": "date 신규 내용 설명입니다", "link": "L3"},  # 신규
+    ]
+
+    def _fetch(keyword, *, sort, **kwargs):
+        return sim_items if sort == "sim" else date_items
+
+    fetch_j = MagicMock(side_effect=_fetch)
+
+    summary = run_collection(
+        client, fetch_jisikin=fetch_j, fetch_reviews=MagicMock(),
+        naver_client_id="id", naver_client_secret="sec",
+        apify_token="t", apify_actor_id="a~b", today="2026-06-20",
+    )
+
+    rows = client.append_staging_rows.call_args.args[2]
+    links = [r[5] for r in rows]
+    # L1, L2, L3 — L2 중복 1건 제거됨
+    assert links == ["L1", "L2", "L3"]
+    assert summary["collected"] == 3
+
+
+def test_jisikin_junk_filtered_and_counted():
+    """is_junk=True 항목은 제거되고 summary['filtered']에 카운트된다."""
+    client = _client_with(
+        {"x.카외": [{"키워드": "두피 탈모", "키워드 분류(단계)": "3 증상", "_row": 2}]}
+    )
+    # 정상 1건 + 쓰레기 1건(전화+URL 동시 포함)
+    good_item = {"title": "두피 탈모 원인이 뭔가요", "description": "머리가 자꾸 빠져서 걱정됩니다", "link": "L1"}
+    junk_item = {"title": "탈모 치료", "description": "010-1234-5678 상담 https://clinic.com", "link": "L2"}
+
+    fetch_j = MagicMock(return_value=[good_item, junk_item])
+
+    summary = run_collection(
+        client, fetch_jisikin=fetch_j, fetch_reviews=MagicMock(),
+        naver_client_id="id", naver_client_secret="sec",
+        apify_token="t", apify_actor_id="a~b", today="2026-06-20",
+    )
+
+    rows = client.append_staging_rows.call_args.args[2]
+    assert len(rows) == 1          # 정상 1건만 적재
+    assert rows[0][5] == "L1"
+    assert summary["collected"] == 1
+    assert summary["filtered"] == 1   # 쓰레기 1건 카운트
+
+
+def test_format_summary_includes_filtered_when_nonzero():
+    """filtered > 0 이면 요약에 '쓰레기 제외 N건' 문구가 포함된다."""
+    text = ir.format_summary({"collected": 5, "failed": 0, "skipped": 0, "tabs": 1, "filtered": 3})
+    assert "쓰레기 제외" in text
+    assert "3" in text
+
+
+def test_format_summary_omits_filtered_when_zero():
+    """filtered == 0 이면 요약에 '쓰레기 제외' 문구가 없다(깔끔한 기본 출력)."""
+    text = ir.format_summary({"collected": 5, "failed": 0, "skipped": 0, "tabs": 1, "filtered": 0})
+    assert "쓰레기" not in text
