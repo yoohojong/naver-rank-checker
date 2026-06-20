@@ -1,0 +1,63 @@
+name: cafe-jisikin-smoketest
+# 지식인 수집 '키 작동' 확인용 (수동 전용). 고정/입력 키워드로 fetch_jisikin 을 직접 1회 호출해
+# 네이버 Open API 키가 실제로 작동하는지 + 실제 지식인 Q&A 제목이 들어오는지 즉시 확인.
+# (cafe-material-collect 는 시트에 '3 증상' 태깅된 키워드가 있어야 수집 → 이건 그것과 무관하게 키만 검증.)
+on:
+  workflow_dispatch:
+    inputs:
+      keyword:
+        description: '테스트할 증상 키워드'
+        required: false
+        default: '두피 가려움'
+
+concurrency:
+  group: cafe-jisikin-smoketest
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6.0.2
+        with:
+          token: ${{ secrets.ACTIONS_PAT || github.token }}
+
+      - name: Setup Python 3.13
+        uses: actions/setup-python@v6.2.0
+        with:
+          python-version: '3.13'
+
+      - name: Setup venv + install deps
+        shell: bash
+        run: |
+          python -m venv .venv
+          ./.venv/bin/python -m pip install --upgrade pip
+          ./.venv/bin/python -m pip install -r requirements.txt
+
+      - name: 지식인 키 작동 확인
+        shell: bash
+        env:
+          NAVER_OPENAPI_CLIENT_ID: ${{ secrets.NAVER_OPENAPI_CLIENT_ID }}
+          NAVER_OPENAPI_CLIENT_SECRET: ${{ secrets.NAVER_OPENAPI_CLIENT_SECRET }}
+          KW: ${{ inputs.keyword }}
+          PYTHONIOENCODING: 'utf-8'
+        run: |
+          ./.venv/bin/python - <<'PY'
+          import os
+          from src.jisikin_collect import fetch_jisikin
+          kw = os.environ.get("KW") or "두피 가려움"
+          cid = os.environ.get("NAVER_OPENAPI_CLIENT_ID", "")
+          csec = os.environ.get("NAVER_OPENAPI_CLIENT_SECRET", "")
+          if not (cid and csec):
+              print("❌ NAVER 키 미설정 — GitHub Secrets(NAVER_OPENAPI_CLIENT_ID/SECRET) 확인 필요")
+              raise SystemExit(1)
+          r = fetch_jisikin(kw, client_id=cid, client_secret=csec)
+          print(f"✅ 키워드 '{kw}' → 지식인 {len(r)}건 수집 성공 (= 네이버 키 작동 확인)")
+          for i, x in enumerate(r[:8], 1):
+              print(f"  {i}. {x['title']}")
+          PY
