@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from collections import Counter
 
-from src.snapshot_diff import _norm_kw, k_base_of, rank_of
+from src.snapshot_diff import _norm_kw, field_value, k_base_of, rank_of
 
 _HELP = (
     "🤖 상노 봇 — 이렇게 물어보세요:\n"
@@ -177,10 +177,10 @@ def fmt_keyword(curr_backup, query):
     r = hits[0]
     return (
         f"[{r.get('키워드', '')}]\n"
-        f"  노출영역: {r.get('노출영역', '') or '미노출'}\n"
+        f"  노출영역: {field_value(r, '노출영역') or '미노출'}\n"
         f"  통합순위: {rank_of(r) if rank_of(r) else '-'}\n"
         f"  유형: {r.get('유형', '') or '-'}\n"
-        f"  지식인: {'O' if str(r.get('지식인탭', '') or '').strip() else '-'}\n"
+        f"  지식인: {'O' if field_value(r, '지식인탭').strip() else '-'}\n"
         f"  작업일: {r.get('작업일', '') or '-'}\n"
         f"  (노출영역 = {k_base_of(r)})"
     )

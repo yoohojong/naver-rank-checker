@@ -1046,3 +1046,12 @@
 **안전**: 무한루프 없음(time.monotonic 예산, budget=0→0회). offset 으로 서버 ack(at-least-once, 재시작 시 마지막 배치 1회 중복 가능=허용). get_updates 에러=None 반환 → 지수 backoff(정상 빈결과 []=즉시 재폴, 지연 0). 소켓 타임아웃=long-poll+15(65s)로 조기 abort 방지. owner 전용 응답 유지.
 **리뷰 반영(HIGH)**: 장수 프로세스 staleness — `load_data_once` 가 4h 동안 첫 데이터만 캐시 → 새 점검(6h 주기) 반영 못 함. fix=TTL 캐시(QA_DATA_TTL 기본 30분). MEDIUM=에러 backoff(적용)+상수명 MAX_ANSWERS_PER_BATCH(명확화). Codex=NO BLOCKING ISSUES.
 **검증**: 신규 5 테스트(_handle_batch·flood cap·budget 0 무한루프 방지·메시지 처리+ack·TTL 새로고침), 전체 `pytest -q` = **581 passed**, py_compile/YAML OK. 키 등록(GROQ_API_KEY)+ 자연어(D-055) 동시 가동.
+
+### D-057: Q&A 봇 '지식인 0개' 오답 수정 — 공식 모드 raw_* 컬럼 우선 집계 (일이관지)
+
+**증상**: 사장님 "지식인 구좌 총 몇개?" → 봇이 "지식인 뜬 키워드 0개" 반복(2026-06-20). 사장님 'LLM 지능 낮다' 의심.
+**진단(추측 금지, 실증)**: "지식인" 단어 = 키워드 매칭이 곧장 jisikin 의도 → LLM 미경유 = 이해 문제 아님. 실제 최신 백업(run 27869679393) 검사: 보이는 `지식인탭`(O) 키 **부재**, `raw_지식인탭` 에 값 'O' **352개**(탭별 110/64/178). K(노출영역)은 보이는·raw 동일, 일부 탭은 보이는 K도 raw보다 적음(두드러기 238 vs 245).
+**근본 원인**: **D-040 공식 모드**가 보이는 K/L/M/O 를 '공식'으로 바꾸고 진짜 값을 `raw_*` 숨김칸으로 옮겼는데, `snapshot_diff`(집계)·`qa_formatter.fmt_keyword` 가 **보이는 칸**(공식=빈칸/부재/재검사필요)을 읽어 0 집계. report_builder·fmt_jisikin 등 모든 소비자 동일 영향.
+**수정(일이관지)**: `snapshot_diff.field_value(row, visible_header)` 헬퍼 = **raw_* 키 있으면 raw 우선(빈값도 진실), 없으면 보이는 값**(구 백업 호환). `k_base_of`/`rank_of`/`work_date_of`/`_count_jisikin` + `fmt_keyword` 모두 적용 → 지식인뿐 아니라 K/L/M 도 진짜 값(재검사필요 표시 대신 실제 K, 두드러기 누락분 회복).
+**검증**: 신규 6 회귀 테스트(raw 우선/구백업 폴백/지식인·K·rank/diff/ fmt_keyword), 전체 `pytest -q` = **587 passed**. **실제 최신 백업 재실행 → 봇 답 "지식인 352개"**(0→352 확정), 탭별 상위노출 199. py_compile OK.
+**여파**: report_builder(저녁/아침 보고)·fmt_keyword 도 자동 정확화. fix 배포 후 실행 중 구코드 run 취소 + 재dispatch 로 즉시 반영.

@@ -30,8 +30,25 @@ _H_LINK = "링크"
 _H_WORKDATE = "작업일"  # 마케터 작업일 (M/D 형식, 실측 78% 채워짐)
 _H_TYPE = "유형"  # C — 대표 구좌 타입 (AB/스마트블록/인기글), 실측 99% 채워짐
 
+# D-040 공식 모드: 보이는 K/L/M/O 는 '공식'(input 키 불일치 시 빈칸/재검사필요 표시)이고
+# 진짜 값은 raw_* 숨김칸에 있다(sheets.py 와 동일). 집계는 raw_* 우선, 없으면(구 백업/비공식) 보이는 값.
+# (D-056 디버그: 봇 '지식인 0개' 원인 = 보이는 지식인탭 칸 부재/빈칸인데 raw_지식인탭 에 값 존재.)
+_H_RAW_AREA = "raw_노출영역"
+_H_RAW_L = "raw_통합순위"
+_H_RAW_M = "raw_카페순위"
+_H_RAW_JISIKIN = "raw_지식인탭"
+_RAW_OF = {_H_AREA: _H_RAW_AREA, _H_L: _H_RAW_L, _H_M: _H_RAW_M, _H_JISIKIN: _H_RAW_JISIKIN}
+
 _DROP_DELETED = "삭제"  # 진짜 글 사라짐
 _DROP_MISSING = "누락"  # 노출됐다 빠짐 (회복 가능)
+
+
+def field_value(row: dict, visible_header: str) -> str:
+    """공식 모드 대응 값 읽기: raw_* 키가 있으면 그 값(빈값이어도 진실), 없으면 보이는 값."""
+    raw = _RAW_OF.get(visible_header)
+    if raw is not None and raw in row:
+        return str(row.get(raw, "") or "")
+    return str(row.get(visible_header, "") or "")
 
 
 @dataclass
@@ -88,14 +105,14 @@ def load_backup(path: str) -> dict:
 
 
 def k_base_of(row: dict) -> str:
-    """행의 노출영역(K)에서 시점 제거한 base. 빈값 → '미노출'."""
-    base, _ = parse_K_with_stamp(str(row.get(_H_AREA, "") or ""))
+    """행의 노출영역(K)에서 시점 제거한 base. 빈값 → '미노출'. (raw 우선)"""
+    base, _ = parse_K_with_stamp(field_value(row, _H_AREA))
     return base or "미노출"
 
 
 def rank_of(row: dict, header: str = _H_L) -> Optional[int]:
-    """순위 컬럼에서 정수 추출 (없거나 숫자 아니면 None)."""
-    m = re.search(r"\d+", str(row.get(header, "") or ""))
+    """순위 컬럼에서 정수 추출 (없거나 숫자 아니면 None). (raw 우선)"""
+    m = re.search(r"\d+", field_value(row, header))
     return int(m.group()) if m else None
 
 
@@ -104,7 +121,7 @@ def work_date_of(row: dict) -> str:
 
     ⚠️ 메모리 정합: 시점 = 상태 시작일(설계의도), 마지막 측정일 아님.
     """
-    _, stamp = parse_K_with_stamp(str(row.get(_H_AREA, "") or ""))
+    _, stamp = parse_K_with_stamp(field_value(row, _H_AREA))
     return stamp.split()[0] if stamp else ""
 
 
@@ -196,9 +213,9 @@ def _index_rows(backup: dict) -> dict:
 
 
 def _count_jisikin(backup: dict, tab: str) -> int:
-    """탭에서 지식인탭(O열)이 채워진(= 지식iN 박스 뜬) 키워드 수."""
+    """탭에서 지식인탭(O열)이 채워진(= 지식iN 박스 뜬) 키워드 수. (raw_지식인탭 우선)"""
     rows = (backup.get("tabs") or {}).get(tab, [])
-    return sum(1 for r in rows if str(r.get(_H_JISIKIN, "") or "").strip())
+    return sum(1 for r in rows if field_value(r, _H_JISIKIN).strip())
 
 
 def diff_backups(prev: Optional[dict], curr: dict, work_date: Optional[str] = None) -> list:
