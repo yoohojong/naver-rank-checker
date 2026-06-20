@@ -115,3 +115,96 @@ def test_answer_explicit_command_skips_llm(monkeypatch):
     monkeypatch.setattr(b.llm_intent, "classify", _boom)
     out = b.answer("누락")
     assert "누락" in out
+
+
+# ── long-poll 루프 (M12 즉시 응답) ───────────────────────────────
+def _msg(uid, sender, text):
+    return {"update_id": uid, "message": {"from": {"id": sender}, "text": text}}
+
+
+def test_handle_batch_owner_others_poison(monkeypatch):
+    b = _load_bot()
+    sent = []
+    monkeypatch.setattr(b, "answer", lambda t: f"답:{t}")
+    monkeypatch.setattr(b, "send_report", lambda m: sent.append(m))
+    updates = [_msg(10, 999, "샴푸 어때"), _msg(11, 123, "남의것"), {"update_id": 12}]
+    answered, max_uid = b._handle_batch(updates, "999")
+    assert answered == 1 and max_uid == 12  # owner만 답, 비owner·poison은 ack만
+    assert sent == ["답:샴푸 어때"]
+
+
+def test_handle_batch_flood_cap(monkeypatch):
+    b = _load_bot()
+    sent = []
+    monkeypatch.setattr(b, "answer", lambda t: "x")
+    monkeypatch.setattr(b, "send_report", lambda m: sent.append(m))
+    updates = [_msg(i, 999, "q") for i in range(10)]
+    answered, max_uid = b._handle_batch(updates, "999")
+    assert answered == b.MAX_ANSWERS_PER_BATCH and max_uid == 9
+
+
+def test_load_data_ttl_refresh(monkeypatch):
+    """4h 루프 중 데이터 캐시가 TTL 후 새로고침되는지(staleness 회귀 방지)."""
+    b = _load_bot()
+    calls = {"n": 0}
+
+    def _runs():
+        calls["n"] += 1
+        return []  # curr=None 경로(가벼움), 캐시는 그래도 잡힘
+
+    monkeypatch.setattr(b, "list_success_runs", _runs)
+    monkeypatch.setenv("QA_DATA_TTL", "100")
+    ticks = iter([0, 50, 200])  # load@0, hit@50(<100), reload@200(>100)
+    monkeypatch.setattr(b.time, "monotonic", lambda: next(ticks))
+    b.load_data_once()
+    assert calls["n"] == 1
+    b.load_data_once()
+    assert calls["n"] == 1  # TTL 내 = 캐시 재사용
+    b.load_data_once()
+    assert calls["n"] == 2  # TTL 만료 = 재로드
+
+
+def test_main_loop_no_hang_on_zero_budget(monkeypatch):
+    b = _load_bot()
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "t")
+    monkeypatch.setenv("TELEGRAM_CHAT_ID", "999")
+    monkeypatch.setenv("QA_LOOP_SECONDS", "0")
+    monkeypatch.setattr(b, "_tg", lambda *a, **k: {})
+    calls = {"n": 0}
+
+    def _gu(**k):
+        calls["n"] += 1
+        return []
+
+    monkeypatch.setattr(b, "get_updates", _gu)
+    assert b.main() == 0
+    assert calls["n"] == 0  # budget 0 → 루프 진입 0회(무한루프 아님)
+
+
+def test_main_loop_processes_message_then_exits(monkeypatch):
+    b = _load_bot()
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "t")
+    monkeypatch.setenv("TELEGRAM_CHAT_ID", "999")
+    monkeypatch.setenv("QA_LOOP_SECONDS", "100")
+    monkeypatch.setenv("QA_POLL_TIMEOUT", "0")
+    monkeypatch.setattr(b, "_tg", lambda *a, **k: {})
+    monkeypatch.setattr(b.time, "sleep", lambda s: None)
+    ticks = iter([0, 1, 200, 200, 200])           # start=0, cond1=1(<100 진입), cond2=200(종료)
+    monkeypatch.setattr(b.time, "monotonic", lambda: next(ticks))
+    batches = iter([[_msg(5, 999, "샴푸")]])
+    seen = []
+
+    def _gu(offset=None, timeout=0):
+        seen.append(offset)
+        try:
+            return next(batches)
+        except StopIteration:
+            return []
+
+    monkeypatch.setattr(b, "get_updates", _gu)
+    monkeypatch.setattr(b, "answer", lambda t: f"답:{t}")
+    sent = []
+    monkeypatch.setattr(b, "send_report", lambda m: sent.append(m))
+    assert b.main() == 0
+    assert sent == ["답:샴푸"]      # 즉시 답
+    assert 6 in seen               # offset=uid+1 로 서버측 ack(재수신 방지)

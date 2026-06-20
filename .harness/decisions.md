@@ -1036,3 +1036,13 @@
 **운영 이슈 + fix (2026-06-20, 사장님 키 등록 직후)**: 실키 첫 호출 전부 **HTTP 403 / Cloudflare error 1010**(봇 시그니처 차단) — Groq API 앞단 Cloudflare 가 기본 `urllib` 시그니처 차단. **근본원인 = User-Agent 부재**. 실측 2종 모두 200 통과 확인(urllib+브라우저 UA / curl_cffi impersonate) → **가벼운 UA 헤더 추가** 채택(의존성 무변화). `src/llm_intent.py` `_USER_AGENT`(Chrome131) + Accept 헤더 추가, 회귀 가드 테스트(UA 전송 검증) 추가. **실키 종단 검증: 8개 한국어 자유질문 8/8 정확 분류**(product/missing/keyword/rank/jisikin/summary/deleted/help — "비듬샴푸~"는 product 아닌 keyword 로 정확 구분). (이 프로젝트 반복 패턴: 외부 anti-bot — Naver curl_cffi T-M9.1 과 동류, Cloudflare 판.)
 **상태(사장님 액션 완료)**: Groq 무료 키 발급 ✅ + `GROQ_API_KEY` secret 등록 ✅(gh, 2026-06-20). 다음 폴링부터 자동 활성. ⚠️ 키가 채팅 전사에 노출됨 → 무과금 무료키라 위험 낮으나 사장님 원하면 Groq 재발급 권장. 미등록이어도 무해(키워드 모드).
 **참고(문서 갭)**: D-052~054(이전 세션 M11 Q&A 봇·말중심 보고·즉시알림 간소화)는 코드/tasks.md 에는 있으나 decisions.md 본문 미기재 — 후속 정리 대상(번호 충돌 회피 위해 본 결정은 D-055 사용).
+
+### D-056: Q&A 봇 응답 지연 제거 — long-poll 루프(몇 초 응답) 전환
+
+**증상**: 사장님 "답변이 너무 늦게 와"(2026-06-20, 봇 실수신 후). 원인 = 기존 봇이 5분 cron 으로 '한 번 확인 후 종료' → 메시지 놓치면 다음 cron 까지 대기 + GitHub 예약 cron 자체 지연(5~10분, 때론 더). 실측 지연 5~10분.
+**결정**: 봇을 **long-polling 루프**로 전환. 한 run 이 예산(QA_LOOP_SECONDS 기본 4h) 동안 `getUpdates(timeout=50)` 반복 → 텔레그램 서버가 연결 잡고 있다 **메시지 오는 즉시(보통 몇 초) 반환** → 즉답. ('즉시 webhook'은 사장님 클라우드 계정 셋업 필요 → 보류. long-poll 은 무료·무설정으로 사실상 즉답 달성.)
+**왜 이게 최선**(비개발자+무료+무설정): GitHub Actions 공개 repo = 무료·무제한이라 장수 잡 OK. webhook 같은 외부 호스팅/계정 불필요. 텔레그램 long-poll 이 표준 즉답 방식.
+**핸드오프**: cron `*/5` + concurrency cancel-in-progress=false → 실행 중 1 + 대기 1(새 트리거가 이전 대기 교체, pileup 없음). 4h 잡 종료 시 대기 run 이 곧바로 이어받음. timeout-minutes 290(6h 하드한도 안전). 잡 교대 시 ~10~30초 짧은 공백 가능(메시지는 텔레그램이 보관 → 유실 0).
+**안전**: 무한루프 없음(time.monotonic 예산, budget=0→0회). offset 으로 서버 ack(at-least-once, 재시작 시 마지막 배치 1회 중복 가능=허용). get_updates 에러=None 반환 → 지수 backoff(정상 빈결과 []=즉시 재폴, 지연 0). 소켓 타임아웃=long-poll+15(65s)로 조기 abort 방지. owner 전용 응답 유지.
+**리뷰 반영(HIGH)**: 장수 프로세스 staleness — `load_data_once` 가 4h 동안 첫 데이터만 캐시 → 새 점검(6h 주기) 반영 못 함. fix=TTL 캐시(QA_DATA_TTL 기본 30분). MEDIUM=에러 backoff(적용)+상수명 MAX_ANSWERS_PER_BATCH(명확화). Codex=NO BLOCKING ISSUES.
+**검증**: 신규 5 테스트(_handle_batch·flood cap·budget 0 무한루프 방지·메시지 처리+ack·TTL 새로고침), 전체 `pytest -q` = **581 passed**, py_compile/YAML OK. 키 등록(GROQ_API_KEY)+ 자연어(D-055) 동시 가동.

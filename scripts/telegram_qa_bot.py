@@ -1,12 +1,16 @@
-"""telegram_qa_bot: 텔레그램 Q&A 봇 — getUpdates 폴링 → 의도분류 → 답장. M11.
+"""telegram_qa_bot: 텔레그램 Q&A 봇 — long-poll 루프 → 의도분류 → 답장. M11+M12.
 
-GitHub Actions 5분 cron(공개 repo, 무료)에서 실행. offset 영속 불필요 —
-텔레그램 **서버측 ack**(getUpdates offset)로 중복 방지(critic C-2 회피). 사장님(TELEGRAM_CHAT_ID)만 응답.
-critic 보강: 독성 메시지 안전추출(ack-only), raw 로깅 금지, 폭주 방지(run당 최대 N), 신선도 고지.
+GitHub Actions(공개 repo, 무료·무제한)에서 실행. **long-polling 루프**(getUpdates timeout)로
+메시지가 오는 즉시(보통 몇 초) 답한다 — 예전 '5분마다 한 번 확인'의 지연 제거(M12).
+한 run 은 예산(QA_LOOP_SECONDS, 기본 4h) 동안 계속 듣다가 종료 → cron `*/5` 가 큐에 대기시킨
+다음 run 이 곧바로 이어받음(concurrency cancel-in-progress=false 핸드오프). 공개 repo Actions 무료.
+offset 영속 불필요 — 텔레그램 **서버측 ack**(getUpdates offset)로 중복 방지. 사장님(TELEGRAM_CHAT_ID)만 응답.
+critic 보강: 독성 메시지 안전추출(ack-only), raw 로깅 금지, 폭주 방지(배치당 최대 N), 신선도 고지.
 """
 import json
 import os
 import sys
+import time
 import urllib.request
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -19,7 +23,7 @@ from src.notify import send_report  # noqa: E402
 from src.snapshot_diff import diff_backups, load_backup  # noqa: E402
 
 _API = "https://api.telegram.org/bot{token}/{method}"
-MAX_ANSWERS_PER_RUN = 5  # 폭주 방지
+MAX_ANSWERS_PER_BATCH = 5  # 배치당 폭주 방지(long-poll 한 응답에서 최대 N건)
 
 
 def _token():
@@ -28,6 +32,30 @@ def _token():
 
 def _owner():
     return os.environ.get("TELEGRAM_CHAT_ID", "").strip()
+
+
+def _loop_budget():
+    """이 run 이 듣는 시간(초). 기본 4h — Actions 잡 6h 한도 안전 내. cron 이 다음 run 핸드오프."""
+    try:
+        return max(0.0, float(os.environ.get("QA_LOOP_SECONDS", "14400")))
+    except ValueError:
+        return 14400.0
+
+
+def _data_ttl():
+    """백업 데이터 캐시 수명(초). 기본 30분 — 4h 루프 중 새 점검(6h 주기) 반영(staleness 방지)."""
+    try:
+        return max(0.0, float(os.environ.get("QA_DATA_TTL", "1800")))
+    except ValueError:
+        return 1800.0
+
+
+def _poll_timeout():
+    """getUpdates long-poll 대기 초. 서버가 이 시간 동안 잡고 있다가 메시지 오면 즉시 반환."""
+    try:
+        return max(0, int(os.environ.get("QA_POLL_TIMEOUT", "50")))
+    except ValueError:
+        return 50
 
 
 def _tg(method, params=None, timeout=20):
@@ -43,10 +71,11 @@ def get_updates(offset=None, timeout=0):
     if offset is not None:
         params["offset"] = offset
     try:
-        return _tg("getUpdates", params).get("result", [])
+        # 소켓 타임아웃 > 텔레그램 long-poll timeout (서버가 timeout 초간 연결 유지) → +15 여유
+        return _tg("getUpdates", params, timeout=timeout + 15).get("result", [])
     except Exception as e:  # noqa: BLE001 — url/token 노출 금지
         print(f"[QA] getUpdates 실패: {type(e).__name__}")
-        return []
+        return None  # None=호출 에러(루프가 backoff), []=정상 빈 결과 와 구분
 
 
 def safe_extract(update):
@@ -64,12 +93,18 @@ def safe_extract(update):
 
 
 _cache = None
+_cache_ts = 0.0
 
 
 def load_data_once():
-    """최신 백업 vs ~24h 백업 → (reports, curr_backup, curr_ts, baseline_available). run당 1회."""
-    global _cache
-    if _cache is not None:
+    """최신 백업 vs ~24h 백업 → (reports, curr_backup, curr_ts, baseline_available).
+
+    TTL 캐시(기본 30분): long-poll 루프가 4h 도는 동안 새 점검(6h 주기) 결과를 반영한다.
+    (예전 5분 1회 프로세스 땐 매 run 이 신선했음 — 장수 프로세스 staleness 회귀 차단.)
+    """
+    global _cache, _cache_ts
+    now = time.monotonic()
+    if _cache is not None and (now - _cache_ts) < _data_ttl():
         return _cache
     runs = list_success_runs()
     curr = prev = None
@@ -88,6 +123,7 @@ def load_data_once():
                     prev = load_backup(ppath)
     reports = diff_backups(prev, curr) if curr else []
     _cache = (reports, curr, curr_ts, prev is not None)
+    _cache_ts = now
     return _cache
 
 
@@ -126,19 +162,8 @@ def answer(text):
     return header + "\n\n" + b()
 
 
-def main():
-    if not _token() or not _owner():
-        print("[QA][SKIP] secret 미설정")
-        return 0
-    try:
-        _tg("deleteWebhook", {})  # 폴링 충돌 방지(idempotent)
-    except Exception:  # noqa: BLE001
-        pass
-    updates = get_updates(timeout=0)
-    if not updates:
-        print("[QA] 새 메시지 없음")
-        return 0
-    owner = _owner()
+def _handle_batch(updates, owner):
+    """updates 배치 처리 → (answered, max_uid). owner 외 무답(ack만), 파싱실패 ack만, 배치당 폭주 cap."""
     max_uid = None
     answered = 0
     for u in updates:
@@ -148,20 +173,55 @@ def main():
             max_uid = mid
         if ex is None:
             continue  # 파싱 실패 = ack만
-        uid, sender, text = ex
+        _, sender, text = ex
         if sender != owner:
             continue  # 남의 메시지 = ack만(무답, 유출 방지)
-        if answered >= MAX_ANSWERS_PER_RUN:
+        if answered >= MAX_ANSWERS_PER_BATCH:
             continue  # 폭주 방지
         try:
             send_report(answer(text))
             answered += 1
         except Exception as e:  # noqa: BLE001
             print(f"[QA] 답장 실패: {type(e).__name__}")
-    # 서버측 ack (답장 시도 끝난 뒤 = at-least-once)
-    if max_uid is not None:
-        get_updates(offset=max_uid + 1, timeout=0)
-    print(f"[QA] update {len(updates)}건 · 답장 {answered}건")
+    return answered, max_uid
+
+
+def main():
+    if not _token() or not _owner():
+        print("[QA][SKIP] secret 미설정")
+        return 0
+    try:
+        _tg("deleteWebhook", {})  # 폴링 충돌 방지(idempotent)
+    except Exception:  # noqa: BLE001
+        pass
+    owner = _owner()
+    budget = _loop_budget()
+    poll_to = _poll_timeout()
+    start = time.monotonic()
+    offset = None
+    total = 0
+    loops = 0
+    backoff = 1
+    # long-poll 루프: 메시지 오면 즉시(몇 초) 답, 없으면 서버가 poll_to 초 잡고 있다 반환.
+    while time.monotonic() - start < budget:
+        loops += 1
+        updates = get_updates(offset=offset, timeout=poll_to)
+        if updates is None:  # 호출 에러 → 지수 backoff(로그·텔레그램 API 폭주 방지)
+            time.sleep(min(backoff, 60))
+            backoff = min(backoff * 2, 60)
+            continue
+        backoff = 1
+        if not updates:  # 정상 빈 결과(long-poll timeout) → 즉시 재폴(지연 0)
+            if poll_to <= 0:
+                time.sleep(1)  # 단축폴 설정 시에만 tight-loop 방지
+            continue
+        answered, max_uid = _handle_batch(updates, owner)
+        total += answered
+        if max_uid is not None:
+            offset = max_uid + 1  # 다음 getUpdates 에 실어 서버측 ack + 재수신 방지
+    if offset is not None:
+        get_updates(offset=offset, timeout=0)  # 마지막 배치 서버 ack(재시작 시 중복 답 방지)
+    print(f"[QA] long-poll 루프 {loops}회 · 답장 {total}건 · budget 종료")
     return 0
 
 

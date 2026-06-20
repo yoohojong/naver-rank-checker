@@ -1,12 +1,12 @@
 name: telegram-qa
 
-# M11: 양방향 Q&A 봇 — 5분 cron 으로 getUpdates 폴링 → 사장님 질문에 답장.
-# 공개 repo = Actions 무료. offset 은 텔레그램 서버측 ack(스크립트 내부) = 저장소 불필요(롤백 위험 0).
-# 사장님(TELEGRAM_CHAT_ID)에게만 응답. 실패 비차단.
+# M11+M12: 양방향 Q&A 봇 — long-poll 루프로 메시지 즉시(몇 초) 답장.
+# 한 run 이 QA_LOOP_SECONDS(기본 4h) 동안 듣고 종료 → cron `*/5` 가 큐에 대기시킨 다음 run 이 이어받음.
+# 공개 repo = Actions 무료·무제한. offset = 텔레그램 서버측 ack(스크립트 내부). 사장님만 응답. 실패 비차단.
 
 on:
   schedule:
-    - cron: '*/5 * * * *'   # 5분 = Actions cron 최소 주기 (실측 지연 5~10분)
+    - cron: '*/5 * * * *'   # 다음 run 을 큐에 항상 대기시켜 끊김 없는 핸드오프(cancel-in-progress=false)
   workflow_dispatch: {}
 
 permissions:
@@ -15,11 +15,12 @@ permissions:
 
 concurrency:
   group: telegram-qa
-  cancel-in-progress: false   # 폴링 겹침 직렬화
+  cancel-in-progress: false   # 실행 중 run 은 유지, 새 run 은 1개만 대기 → 종료 즉시 이어받기
 
 jobs:
   qa:
     runs-on: ubuntu-latest
+    timeout-minutes: 290   # 루프 예산(4h) 여유 + Actions 6h 하드한도 안전 backstop
     steps:
       - name: Checkout
         uses: actions/checkout@v6.0.2
