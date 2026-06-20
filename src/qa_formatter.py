@@ -147,7 +147,12 @@ def fmt_type(reports):
 
 
 def fmt_jisikin(reports):
-    return f"지식인(지식iN)에 뜬 키워드: {_sum(reports, 'jisikin_now')}개"
+    total = _sum(reports, "jisikin_now")
+    parts = " · ".join(
+        f"{t.tab.replace('카외', '').strip()} {t.jisikin_now}" for t in reports if t.jisikin_now
+    )
+    head = f"지식iN 구좌(지식인 노출 키워드): {total}개"
+    return f"{head}\n  {parts}" if parts else head
 
 
 def fmt_summary(reports):

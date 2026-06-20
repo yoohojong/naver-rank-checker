@@ -568,6 +568,7 @@ deps = 의존성 (선행 task), parallel = 동시 작업 안전한 다른 task
 | T-M12.x | 👤 사장님: Groq 무료 키 발급 + `GROQ_API_KEY` secret 등록 (`docs/사장님-가이드/Groq-키-발급.md`) | 사장님 액션 | — | **done** (2026-06-20, gh 등록 완료) |
 | T-M12.7 | 운영 실측 = 사장님이 봇에 자연어 질문 → 답 수신 확인 → second-brain Deep | 검증 | M12.6 | pending (사장님 실수신) |
 
+- 2026-06-21: **봇 지식인 답 문구 명확화** — 사장님 '키워드 말고 구좌' 지적 반영. fmt_jisikin: "지식iN 구좌(지식인 노출 키워드): 352개 + 제품별 내역(샴푸110·바디워시64·두드러기178)". 실백업 검증, 587 passed.
 - 2026-06-20: **D-058 — 지식인 헤더 '날짜로 바뀜' 원인 제거** — `write_timestamp`(T-M37)가 매 cron 1행 16열에 "cron 갱신:날짜" 기록 → 사장님 시트 16열=지식인탭이라 헤더 손상(D-057 0개의 뿌리). main.py 호출 제거, 587 passed. 남은 것=시트 헤더복원/색/위치(라이브 키 필요, 수동 or Actions).
 - 2026-06-20: **D-057 — Q&A 봇 '지식인 0개' 오답 수정** — 실증 디버그: 공식모드(D-040)가 진짜 값을 raw_* 숨김칸으로 옮겼는데 집계가 보이는 공식칸을 읽어 0. `snapshot_diff.field_value`(raw 우선, 구백업 폴백)로 K/L/M/지식인 일괄 수정. 실제 백업 검증 0→**352개**. 587 passed. (LLM/이해 문제 아님 = 집계 버그)
 - 2026-06-20: **D-056 — Q&A 봇 즉시 응답(long-poll) 전환** — 사장님 "답변이 너무 늦게 와" → 봇을 5분 cron '1회 확인'에서 long-poll 루프(메시지 즉시 몇 초 답)로 전환. cron `*/5`+concurrency 핸드오프, timeout-minutes 290, QA_LOOP_SECONDS(4h)/QA_POLL_TIMEOUT(50)/QA_DATA_TTL(30분, staleness 회귀 방지). 이중 리뷰(code-reviewer HIGH=캐시 TTL 반영 + Codex NO BLOCKING). **581 passed**. + 사장님 키 GROQ_API_KEY 등록 완료(자연어 가동).
