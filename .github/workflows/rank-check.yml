@@ -133,7 +133,21 @@ jobs:
           RECHECK_STALE_ONLY: ${{ github.event_name == 'workflow_dispatch' && inputs.recheck_stale_only == 'true' }}
           PYTHONIOENCODING: 'utf-8'
         run: |
+          # 자가복구(2026-06-21 사장님 요청): 1차 실패 시 90초 후 1회 자동 재시도.
+          # = 일시적 네트워크/네이버 차단/구글 API 장애는 스스로 복구. 둘 다 실패하면 step 실패
+          #   → 텔레그램 '실패' 알림(send_telegram_summary) → 사람(Claude) 검토 후 수정.
+          # ⚠️ 코드 버그 '자동 수정'은 하지 않음(검증 없는 자동 코드변경 = 라이브 시트 손상 위험, 사고 이력).
+          set +e
           ./.venv/bin/python -u -m src.main
+          rc=$?
+          if [ $rc -ne 0 ]; then
+            echo "[SELF-HEAL] 1차 실패(rc=$rc) — 90초 후 1회 자동 재시도"
+            sleep 90
+            ./.venv/bin/python -u -m src.main
+            rc=$?
+            [ $rc -eq 0 ] && echo "[SELF-HEAL] 재시도 성공" || echo "[SELF-HEAL] 재시도도 실패(rc=$rc)"
+          fi
+          exit $rc
 
       - name: Post summary to issue #1
         if: always()
