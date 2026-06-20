@@ -87,6 +87,7 @@ def test_classify_sends_auth_and_no_sheet_data(monkeypatch):
     def fake_urlopen(req, timeout=None):
         cap["url"] = req.full_url
         cap["auth"] = req.get_header("Authorization")
+        cap["ua"] = req.get_header("User-agent")
         cap["body"] = json.loads(req.data.decode("utf-8"))
         return _FakeResp(_chat('{"intent":"summary","arg":null}'))
 
@@ -94,6 +95,7 @@ def test_classify_sends_auth_and_no_sheet_data(monkeypatch):
         llm_intent.classify("전체 어떤지 알려줘", ["샴푸 카외"])
     assert cap["auth"] == "Bearer secret-key"
     assert "api.groq.com" in cap["url"]
+    assert cap["ua"] and "Mozilla" in cap["ua"]   # Cloudflare 1010 회피 UA 필수(회귀 가드)
     body_str = json.dumps(cap["body"], ensure_ascii=False)
     assert "전체 어떤지 알려줘" in body_str   # 질문은 전송
     assert "샴푸 카외" not in body_str          # 시트 파생 탭명은 미전송(Codex MAJOR fix)

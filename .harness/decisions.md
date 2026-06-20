@@ -1033,5 +1033,6 @@
 **보안**: 봇은 owner(TELEGRAM_CHAT_ID)에게만 응답(기존). LLM 출력은 `_VALID_INTENTS` 화이트리스트만 허용 + arg sanitize → 프롬프트 인젝션 무효(owner 전용이라 위협도 낮음). 키/URL 로그·예외 미노출(`type(e).__name__`만). 모델/엔드포인트는 secret(`GROQ_MODEL`/`GROQ_BASE_URL`)로 교체 가능(deprecate 대비).
 **이중 리뷰**: Claude code-reviewer = APPROVE(Critical/High 0, Medium 2=견고 JSON 파싱+응답형식 예외 분리 → 적용). Codex = MAJOR 1건(탭명 시트 데이터 LLM 유출) → 즉시 수정(질문 글만 전송, 탭 매핑 로컬화). 재검 후 잔여 blocking 0.
 **검증**: 신규 16 + 통합 3 = 19 테스트, 전체 `pytest -q` = **576 passed**(기존 557 + 19), `py_compile` OK, telegram-qa.yml YAML OK.
-**남은 것(사장님 액션)**: Groq 무료 키 발급(`docs/사장님-가이드/Groq-키-발급.md`, ~3분, 카드 없음) → `GROQ_API_KEY` secret 등록 → 다음 폴링부터 자동 활성. 미등록 시 무해(키워드 모드 유지).
+**운영 이슈 + fix (2026-06-20, 사장님 키 등록 직후)**: 실키 첫 호출 전부 **HTTP 403 / Cloudflare error 1010**(봇 시그니처 차단) — Groq API 앞단 Cloudflare 가 기본 `urllib` 시그니처 차단. **근본원인 = User-Agent 부재**. 실측 2종 모두 200 통과 확인(urllib+브라우저 UA / curl_cffi impersonate) → **가벼운 UA 헤더 추가** 채택(의존성 무변화). `src/llm_intent.py` `_USER_AGENT`(Chrome131) + Accept 헤더 추가, 회귀 가드 테스트(UA 전송 검증) 추가. **실키 종단 검증: 8개 한국어 자유질문 8/8 정확 분류**(product/missing/keyword/rank/jisikin/summary/deleted/help — "비듬샴푸~"는 product 아닌 keyword 로 정확 구분). (이 프로젝트 반복 패턴: 외부 anti-bot — Naver curl_cffi T-M9.1 과 동류, Cloudflare 판.)
+**상태(사장님 액션 완료)**: Groq 무료 키 발급 ✅ + `GROQ_API_KEY` secret 등록 ✅(gh, 2026-06-20). 다음 폴링부터 자동 활성. ⚠️ 키가 채팅 전사에 노출됨 → 무과금 무료키라 위험 낮으나 사장님 원하면 Groq 재발급 권장. 미등록이어도 무해(키워드 모드).
 **참고(문서 갭)**: D-052~054(이전 세션 M11 Q&A 봇·말중심 보고·즉시알림 간소화)는 코드/tasks.md 에는 있으나 decisions.md 본문 미기재 — 후속 정리 대상(번호 충돌 회피 위해 본 결정은 D-055 사용).

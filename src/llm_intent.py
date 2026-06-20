@@ -24,6 +24,13 @@ import urllib.request
 _DEFAULT_BASE_URL = "https://api.groq.com/openai/v1/chat/completions"
 _DEFAULT_MODEL = "llama-3.3-70b-versatile"
 
+# Groq API 앞단 Cloudflare 가 기본 urllib 시그니처를 403/error 1010 으로 차단 →
+# 브라우저 User-Agent 필수(실측 2026-06-20). 빠지면 모든 호출 403 → None 폴백(자연어 OFF).
+_USER_AGENT = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+)
+
 # qa_formatter 와 동일한 의도 집합 (product/keyword 만 arg 동반)
 _VALID_INTENTS = frozenset(
     {"help", "missing", "deleted", "jisikin", "type", "rank", "summary", "product", "keyword"}
@@ -147,7 +154,12 @@ def classify(text, tab_names=None, *, timeout=8):
     req = urllib.request.Request(
         url,
         data=data,
-        headers={"Content-Type": "application/json", "Authorization": f"Bearer {key}"},
+        headers={
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {key}",
+            "User-Agent": _USER_AGENT,   # Cloudflare 1010 차단 회피(필수)
+            "Accept": "application/json",
+        },
         method="POST",
     )
     try:

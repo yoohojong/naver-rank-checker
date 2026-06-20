@@ -563,7 +563,9 @@ deps = 의존성 (선행 task), parallel = 동시 작업 안전한 다른 task
 | T-M12.2 | `qa_formatter.classify_with_confidence` 추가 — confident 노출, `classify_intent`은 하위호환 래퍼 | 리팩토링 | — | **done** (2026-06-20, 기존 테스트 회귀 0) |
 | T-M12.3 | `telegram_qa_bot.answer()` 통합 — confident=False(자유질문)만 LLM, 실패 시 키워드 결과 유지 | 통합 | M12.1,2 | **done** (2026-06-20) |
 | T-M12.4 | `telegram-qa.yml` `GROQ_API_KEY` env 추가 (미설정 시 키워드 폴백) | 통합 | M12.1 | **done** (2026-06-20, YAML OK) |
-| T-M12.5 | 이중 리뷰(code-reviewer APPROVE + Codex MAJOR 탭명유출 수정) + push | 검증 | all | **done(리뷰)** (2026-06-20) |
-| T-M12.x | 👤 사장님: Groq 무료 키 발급 + `GROQ_API_KEY` secret 등록 (`docs/사장님-가이드/Groq-키-발급.md`) | 사장님 액션 | — | pending (사장님) |
+| T-M12.5 | 이중 리뷰(code-reviewer APPROVE + Codex MAJOR 탭명유출 수정) + push | 검증 | all | **done** (2026-06-20, commit fa49f6e) |
+| T-M12.6 | Cloudflare 1010 fix — `_USER_AGENT` 헤더 추가(실키 첫 호출 403 차단 해소) + 회귀 가드 + 실키 8/8 종단 검증 | 디버그/fix | M12.x | **done** (2026-06-20) |
+| T-M12.x | 👤 사장님: Groq 무료 키 발급 + `GROQ_API_KEY` secret 등록 (`docs/사장님-가이드/Groq-키-발급.md`) | 사장님 액션 | — | **done** (2026-06-20, gh 등록 완료) |
+| T-M12.7 | 운영 실측 = 사장님이 봇에 자연어 질문 → 답 수신 확인 → second-brain Deep | 검증 | M12.6 | pending (사장님 실수신) |
 
 - 2026-06-20: **M12 코드 완료** — Groq 무료 LLM 으로 Q&A 봇 자연어 이해 추가. 사장님 결정("비용 없이 자연어") → 무료 LLM 조사(병렬 2 document-specialist) → Groq 확정. 정확 명령은 LLM 호출 0(무료한도 절약), 자유 질문만 Groq(질문 글만 전송·시트데이터 0건·비차단 폴백). 신규 `src/llm_intent.py` + `qa_formatter.classify_with_confidence` + `telegram_qa_bot.answer()` 통합 + telegram-qa.yml GROQ_API_KEY + 테스트 19개(`test_llm_intent.py` 16 + 통합 3) + `docs/사장님-가이드/Groq-키-발급.md`. **전체 pytest 576 passed**(557→576), py_compile/YAML OK. 이중 리뷰: code-reviewer APPROVE(Medium 2 적용), Codex MAJOR 1(탭명 유출) 수정. **남은 것**: 사장님 키 발급 → secret 등록 → 운영 실측 → second-brain Deep.
