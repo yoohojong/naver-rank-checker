@@ -1,0 +1,67 @@
+name: naver-rank-check-watchdog
+# 워치독: rank-check 워크플로가 실패할 때만 실행.
+# run_attempt == 1 → 1회 자동 재시도 + 텔레그램 알림.
+# run_attempt >= 2 → 재시도 없음 + 사람 확인 요청 알림.
+# ⚠️ 코드 자동 수정 없음 — "gh run rerun"(같은 코드 재실행)만.
+# 참고: rank-check.yml 내부에도 1회 자가복구(90초)가 있어, 총 자동 복구는
+#   [1차→내부재시도] → 워치독 rerun(attempt2) → [1차→내부재시도] ≈ main 4회 실행 후 '사람 확인' 알림.
+
+on:
+  workflow_run:
+    workflows: ["naver-rank-check"]
+    types: [completed]
+
+permissions:
+  actions: write   # gh run rerun 에 필요
+  contents: read
+
+jobs:
+  watchdog:
+    if: ${{ github.event.workflow_run.conclusion == 'failure' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    env:
+      GH_TOKEN: ${{ secrets.ACTIONS_PAT || github.token }}
+      GH_REPO: ${{ github.repository }}
+      RUN_ID: ${{ github.event.workflow_run.id }}
+      RUN_URL: ${{ github.event.workflow_run.html_url }}
+      RUN_ATTEMPT: ${{ github.event.workflow_run.run_attempt }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6.0.2
+
+      - name: Setup Python 3.13
+        uses: actions/setup-python@v6.2.0
+        with:
+          python-version: '3.13'
+
+      - name: Setup venv + install deps
+        shell: bash
+        run: |
+          python -m venv .venv
+          ./.venv/bin/python -m pip install --upgrade pip --quiet
+          ./.venv/bin/python -m pip install -r requirements.txt --quiet
+
+      - name: 자동 재시도 (run_attempt == 1 일 때만)
+        id: rerun_step
+        if: ${{ github.event.workflow_run.run_attempt == 1 }}
+        continue-on-error: true
+        shell: bash
+        run: |
+          echo "[WATCHDOG] run_attempt=1 — 1회 자동 재시도 시작 (run_id=${RUN_ID})"
+          gh run rerun "${RUN_ID}" --repo "${GH_REPO}" --failed
+
+      - name: 텔레그램 알림 발송
+        if: always()
+        continue-on-error: true
+        shell: bash
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          # 재시도가 '실제로' 성공했을 때만 '재시도 중' 알림 — rerun 실패/skip 시 '사람 확인'(code-reviewer CRITICAL fix)
+          RETRYING: ${{ steps.rerun_step.outcome == 'success' && '1' || '0' }}
+          PYTHONIOENCODING: 'utf-8'
+        run: |
+          ./.venv/bin/python -u scripts/notify_run_failure.py || true

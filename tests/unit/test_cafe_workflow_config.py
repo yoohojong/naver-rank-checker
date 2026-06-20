@@ -14,12 +14,12 @@ def _load():
     )
 
 
-def test_weekly_schedule_and_dispatch():
+def test_manual_only_no_cron_d062():
+    # D-062: 카페외부 시스템 '가동 게이트' 열기 전까지 자동(cron) 실행 중지 → 수동 전용.
     wf = _load()
-    # yaml 의 'on' 키는 BaseLoader 에서 문자열 'on' 으로 유지.
     on = wf["on"]
-    assert on["schedule"][0]["cron"] == "0 12 * * 1"   # 매주 월 UTC12 = KST21
-    assert "workflow_dispatch" in on
+    assert not on.get("schedule")          # cron 제거됨(주석 처리) — 자동 실행 X
+    assert "workflow_dispatch" in on       # 사장님 수동 트리거는 유지
 
 
 def test_concurrency_group_separate_from_rank_check():
