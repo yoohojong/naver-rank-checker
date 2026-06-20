@@ -5,10 +5,12 @@ name: cafe-material-collect
 # ⚠️ 키 없을 때 안전: integration_runner 가 네이버/APIFY 키 없으면 해당 채널만 스킵(에러 X).
 
 on:
-  schedule:
-    # 매주 월요일 KST 21:00 = UTC 12:00 (주 1회 — 원고 재료는 매일 필요 없음, 무료 API 호출량 절약).
-    - cron: '0 12 * * 1'
-  workflow_dispatch:  # 사장님 수동 트리거
+  # 2026-06-21 사장님 결정(D-062): 카페외부 시스템 '가동 게이트'(단계 태깅·리뷰 API 키 등) 열기 전까지
+  # 자동(cron) 실행 중지. 이유: 미가동 상태로 cron 이 돌아 '수집 0' 알림이 상노(rank-check) 채널에 섞여
+  # 사장님 혼란("침범") 유발. → 자동 스케줄 제거, 코드·수동실행은 보존. 활성화 시 cron 복구 가능.
+  # schedule:
+  #   - cron: '0 12 * * 1'   # (보존용 주석: 매주 월 KST 21:00) — 활성화 결정 시 주석 해제
+  workflow_dispatch:  # 수동 전용 (cron 비활성 — 사장님 활성화 결정 전까지)
 
 # 순위체커(naver-rank-check)와 별도 그룹 — 서로 취소/대기 영향 없음.
 concurrency:
