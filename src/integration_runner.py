@@ -1,6 +1,6 @@
 """integration_runner: 카페외부 원고 '재료' 자동 수집 오케스트레이터 (C3).
 
-사장님 시트의 제품 탭(이름에 '카외' 포함)을 행별로 읽어 '키워드 분류(단계)'에 따라
+사장님 시트의 제품 탭(이름에 '카외' 포함)을 행별로 읽어 '키워드 분류'(단계)에 따라
 수집 코어를 호출하고, 결과를 **수집 전용 스테이징 탭**에 쌓는다. 직원 수작업 0.
 
 단계 라우팅:
@@ -37,8 +37,26 @@ STAGE_REVIEW = {"4", "5"}    # 대안 / 브랜드
 
 # 카외 제품 탭에서 읽는 컬럼 이름.
 COL_KEYWORD = "키워드"
-COL_STAGE = "키워드 분류(단계)"
+# 단계 칸 = 시트 실제 헤더 '키워드 분류'(bogwanham addClassifyColumn 이 만드는 이름).
+# ⚠️ 과거 '키워드 분류(단계)'로 잘못 잡아 태깅해도 0건 수집되던 버그 수정(2026-06-21).
+COL_STAGE = "키워드 분류"
+# 헤더 변형(괄호/별칭)에도 견고하도록 후보 순차 탐색 + '분류' 포함 키 폴백.
+_STAGE_HEADER_CANDIDATES = ("키워드 분류", "키워드 분류(단계)", "단계")
 COL_LINK = "링크"  # 리뷰 단계용 상품 URL(있으면). 없으면 리뷰 스킵.
+
+
+def _stage_value(row: dict) -> str:
+    """행에서 단계 값을 견고하게 읽는다(헤더 이름 변형 방어)."""
+    for k in _STAGE_HEADER_CANDIDATES:
+        v = (row.get(k) or "").strip()
+        if v:
+            return v
+    for k, v in row.items():
+        if "분류" in str(k):
+            s = str(v or "").strip()
+            if s:
+                return s
+    return ""
 
 
 def _stage_digit(stage: str) -> str:
@@ -125,7 +143,7 @@ def run_collection(
     for tab_name, rows in data.items():
         for row in rows or []:
             keyword = (row.get(COL_KEYWORD) or "").strip()
-            stage_raw = (row.get(COL_STAGE) or "").strip()
+            stage_raw = _stage_value(row)
             digit = _stage_digit(stage_raw)
 
             # ④ 키워드 없음 / 단계 미지정 / 라우팅 대상 외 단계 → 조용히 스킵.
