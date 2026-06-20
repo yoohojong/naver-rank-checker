@@ -203,6 +203,24 @@ def test_skips_rows_without_keyword_or_stage():
     assert summary["failed"] == 0
 
 
+def test_stage_header_variants_resolve():
+    """시트 실제 헤더 '키워드 분류'(괄호 없음)와 변형 모두 단계로 인식 — 헤더 불일치 버그 회귀 방지."""
+    for header in ("키워드 분류", "키워드 분류(단계)", "단계"):
+        client = _client_with(
+            {"x.카외": [{"키워드": "두피 가려움", header: "3 증상", "_row": 2}]}
+        )
+        fetch_j = MagicMock(
+            return_value=[{"title": "t", "link": "l", "description": "d"}]
+        )
+        summary = run_collection(
+            client, fetch_jisikin=fetch_j, fetch_reviews=MagicMock(),
+            naver_client_id="id", naver_client_secret="sec",
+            apify_token="", apify_actor_id="", today="2026-06-20",
+        )
+        assert fetch_j.called, f"헤더 '{header}' 에서 단계 인식 실패"
+        assert summary["collected"] == 1
+
+
 def test_jisikin_skipped_when_naver_key_missing():
     """네이버 키 없으면 지식인 채널 통째로 스킵(에러 아님)."""
     client = _client_with(
