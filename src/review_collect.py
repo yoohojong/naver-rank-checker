@@ -49,17 +49,27 @@ def fetch_low_star_reviews(
     apify_token: str,
     actor_id: str,
     max_star: int = 3,
+    input_field: str = "startUrls",
     extra_input: dict | None = None,
     timeout: int = 300,
 ) -> list[dict]:
-    """제품 URL들의 스마트스토어 리뷰 중 별점 <= max_star 만 [{star, content, date, source}] 반환.
+    """스마트스토어 리뷰 중 별점 <= max_star 만 [{star, content, date, source}] 반환.
+
+    액터마다 '대상 입력 필드'가 다르므로 input_field 로 맞춘다(리뷰 수집 안정성 핵심):
+      - 상품 URL 직접 입력 액터(예: styleindexamerica~kr-naver-stores-scraper):
+          input_field='productUrls'(또는 'startUrls'), product_urls=상품 URL 리스트.
+      - 브랜드 단위 액터(추천: accurate_dancer~naver-smart-store-monitor, 성공률 95%대):
+          input_field='brandUrls', product_urls=브랜드 슬러그 리스트('brand.naver.com/<슬러그>'),
+          extra_input={'includeReviews': True, 'maxReviewPages': 3} 권장.
 
     Args:
-        product_urls: 스마트스토어 상품 URL 리스트.
+        product_urls: 대상 리스트(액터에 따라 상품 URL 또는 브랜드 슬러그).
         apify_token: 유료 Apify 계정 토큰(Authorization 헤더로 전송 — URL/로그 노출 회피).
         actor_id: Apify 액터 id (예: 'accurate_dancer~naver-smart-store-monitor').
         max_star: 이 별점 이하만 수집(기본 3 = 저점 1~3점).
-        extra_input: 액터별 추가 input(예: maxReviews).
+        input_field: 액터 input 의 대상 필드명. startUrls/productUrls=[{url}] 형태,
+            그 외(brandUrls 등)=문자열 리스트. 기본 'startUrls'.
+        extra_input: 액터별 추가 input(예: includeReviews/maxReviewPages/maxReviews).
 
     Raises:
         RuntimeError: 토큰 미설정 또는 Apify 응답 비정상.
@@ -71,7 +81,11 @@ def fetch_low_star_reviews(
         raise RuntimeError("APIFY_TOKEN 미설정 — 유료 Apify 계정 토큰이 필요합니다.")
 
     payload: dict = dict(extra_input or {})
-    payload.setdefault("startUrls", [{"url": u} for u in urls])
+    if input_field not in payload:
+        if input_field in ("startUrls", "productUrls"):
+            payload[input_field] = [{"url": u} for u in urls]
+        else:  # brandUrls 등 = 문자열 슬러그 리스트
+            payload[input_field] = list(urls)
     # 토큰은 ?token= 쿼리 대신 Authorization 헤더로 (URL/로그 노출 회피).
     headers = {"Authorization": f"Bearer {apify_token}"}
     api = f"{APIFY_BASE}/acts/{actor_id}/run-sync-get-dataset-items"
