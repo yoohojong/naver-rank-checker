@@ -391,16 +391,15 @@ def test_jisikin_link_dedup_sim_priority():
     assert summary["collected"] == 3
 
 
-def test_jisikin_junk_filtered_and_counted():
-    """is_junk=True 항목은 제거되고 summary['filtered']에 카운트된다."""
+def test_jisikin_no_auto_filter_keeps_everything():
+    """★ 자동 필터 없음(사장님 결정) — 광고성 글이 섞여 있어도 전부 적재(선별은 사람이)."""
     client = _client_with(
         {"x.카외": [{"키워드": "두피 탈모", "키워드 분류(단계)": "3 증상", "_row": 2}]}
     )
-    # 정상 1건 + 쓰레기 1건(전화+URL 동시 포함)
     good_item = {"title": "두피 탈모 원인이 뭔가요", "description": "머리가 자꾸 빠져서 걱정됩니다", "link": "L1"}
-    junk_item = {"title": "탈모 치료", "description": "010-1234-5678 상담 https://clinic.com", "link": "L2"}
+    ad_item = {"title": "탈모 치료", "description": "010-1234-5678 상담 https://clinic.com", "link": "L2"}
 
-    fetch_j = MagicMock(return_value=[good_item, junk_item])
+    fetch_j = MagicMock(return_value=[good_item, ad_item])
 
     summary = run_collection(
         client, fetch_jisikin=fetch_j, fetch_reviews=MagicMock(),
@@ -409,20 +408,14 @@ def test_jisikin_junk_filtered_and_counted():
     )
 
     rows = client.append_staging_rows.call_args.args[2]
-    assert len(rows) == 1          # 정상 1건만 적재
-    assert rows[0][5] == "L1"
-    assert summary["collected"] == 1
-    assert summary["filtered"] == 1   # 쓰레기 1건 카운트
+    assert len(rows) == 2                       # 둘 다 적재(필터 없음)
+    assert [r[5] for r in rows] == ["L1", "L2"]
+    assert summary["collected"] == 2
+    assert "filtered" not in summary            # filtered 카운트 자체가 없음
 
 
-def test_format_summary_includes_filtered_when_nonzero():
-    """filtered > 0 이면 요약에 '쓰레기 제외 N건' 문구가 포함된다."""
-    text = ir.format_summary({"collected": 5, "failed": 0, "skipped": 0, "tabs": 1, "filtered": 3})
-    assert "쓰레기 제외" in text
-    assert "3" in text
-
-
-def test_format_summary_omits_filtered_when_zero():
-    """filtered == 0 이면 요약에 '쓰레기 제외' 문구가 없다(깔끔한 기본 출력)."""
-    text = ir.format_summary({"collected": 5, "failed": 0, "skipped": 0, "tabs": 1, "filtered": 0})
+def test_format_summary_basic_no_filter_wording():
+    """요약 = 수집/실패/스킵/탭만 — 자동 필터 제거 후 '쓰레기' 문구 없음."""
+    text = ir.format_summary({"collected": 5, "failed": 0, "skipped": 2, "tabs": 1})
+    assert "수집 5건" in text
     assert "쓰레기" not in text
