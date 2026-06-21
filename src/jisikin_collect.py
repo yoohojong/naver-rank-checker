@@ -15,13 +15,147 @@ from curl_cffi import requests
 
 KIN_API_URL = "https://openapi.naver.com/v1/search/kin.json"
 
+# detail 페이지 GET 시 쓰는 브라우저 UA 위장(_proto_kin_material.py 와 동일 — anti-bot 완화).
+_DETAIL_UA = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36"
+)
+
 # 네이버 Open API 응답의 <b>강조</b> 태그 제거용.
 _TAG_RE = re.compile(r"<[^>]+>")
+
+# detail 본문 정제용 — 보일러플레이트(UI/안내/약관 등) 줄 제거(_proto_kin_material.py JUNK 기반).
+_DETAIL_JUNK = (
+    "지식iN 서비스", "답변자 정보", "나도 궁금해요", "활동이 보류", "네이버는 사용자",
+    "인터넷 익스플로러", "브라우저", "Whale", "로그인", "바로가기", "권장",
+    "병원 위치", "진료 예약", "문의 전화", "프로필", "채택", "신고", "목록", "이용약관",
+    "저작권", "고객센터", "애드포스트", "광고", "AI 답변이 도움",
+)
+
+# <script>/<style> 통째 제거(본문 텍스트 추출 전 노이즈 제거).
+_SCRIPT_STYLE_RE = re.compile(r"<(script|style)[^>]*>.*?</\1>", re.S)
+_WS_RE = re.compile(r"\s+")
+_HANGUL_RE = re.compile(r"[가-힣]")
 
 
 def _clean(text: str) -> str:
     """응답 title/description의 <b> 태그 제거 + HTML 엔티티(&amp; 등) 복원."""
     return _html.unescape(_TAG_RE.sub("", text or "")).strip()
+
+
+def _strip_tags(h: str) -> str:
+    """HTML 문자열에서 script/style 제거 후 모든 태그를 공백으로 치환 + 엔티티 복원."""
+    h = _SCRIPT_STYLE_RE.sub(" ", h or "")
+    h = _TAG_RE.sub(" ", h)
+    return _html.unescape(h)
+
+
+def _clean_lines(text: str) -> list[str]:
+    """본문 텍스트를 줄 단위로 정제 — 짧은 줄/보일러플레이트/중복 제거(proto 동일).
+
+    - 한글 8자 미만 줄 제거(메뉴/버튼 등 노이즈 차단).
+    - _DETAIL_JUNK 포함 줄 제거.
+    - 동일 줄 중복 제거(순서 보존).
+    """
+    out: list[str] = []
+    seen: set[str] = set()
+    for line in re.split(r"[\n\r]|\s{2,}", text or ""):
+        line = _WS_RE.sub(" ", line).strip()
+        if len(_HANGUL_RE.findall(line)) < 8:
+            continue
+        if any(j in line for j in _DETAIL_JUNK):
+            continue
+        if line in seen:
+            continue
+        seen.add(line)
+        out.append(line)
+    return out
+
+
+def _extract_se_blocks(page: str) -> list[str]:
+    """se-main-container 블록(질문/답변 본문)들의 정제 텍스트를 순서대로 추출.
+
+    각 se-main-container 시작 위치부터 다음 시작(또는 +9000자)까지 슬라이스해 정제.
+    proto(_proto_kin_material.py)와 동일한 휴리스틱 — 실측 검증됨.
+    """
+    blocks: list[str] = []
+    starts = [m.start() for m in re.finditer(r"se-main-container", page or "")]
+    for i, s in enumerate(starts):
+        end = starts[i + 1] if i + 1 < len(starts) else s + 9000
+        lines = _clean_lines(_strip_tags(page[s:end]))
+        if lines:
+            blocks.append(" ".join(lines))
+    return blocks
+
+
+def fetch_kin_detail(link: str, *, timeout: int = 10) -> dict:
+    """지식인 detail URL을 GET → 질문 본문 + 답변들을 정제해 반환.
+
+    se-main-container 블록을 추출해 첫 블록=질문 본문, 나머지=답변들로 분리한다.
+    보일러플레이트는 _clean_lines 가 제거한다.
+
+    Args:
+        link: 지식인 detail URL(qna/detail.naver?...).
+        timeout: HTTP 타임아웃(초).
+
+    Returns:
+        {"question_body": str, "answers": [str, ...]}.
+        실패/차단/빈 link 시 빈 dict {} 반환 — 예외를 던지지 않는다(한 건 실패가
+        전체 수집을 막으면 안 됨).
+    """
+    url = (link or "").strip()
+    if not url:
+        return {}
+    try:
+        r = requests.get(
+            url,
+            headers={"User-Agent": _DETAIL_UA},
+            timeout=timeout,
+            allow_redirects=True,
+        )
+        if r.status_code != 200:
+            return {}
+        page = r.text or ""
+    except Exception:  # noqa: BLE001 — 네트워크/차단 실패는 빈 dict(수집 전체 비차단).
+        return {}
+
+    blocks = _extract_se_blocks(page)
+    if not blocks:
+        return {}
+    return {"question_body": blocks[0], "answers": blocks[1:]}
+
+
+def enrich_jisikin(items: list[dict], *, timeout: int = 10, max_items=None) -> list[dict]:
+    """fetch_jisikin 결과 각 item 에 detail(질문+답변) 본문을 붙여 'body_full' 을 만든다.
+
+    각 item 의 link 로 fetch_kin_detail 을 순차 호출(서버 부담↓ — 과한 동시성 X)해
+    item["body_full"] = '질문 본문\\n\\n[답변 1] ...\\n\\n[답변 2] ...' 를 채운다.
+    detail 추출 실패/빈 값이면 body_full = item.get("description", "") 로 폴백(회귀 안전).
+
+    Args:
+        items: fetch_jisikin 이 돌려준 [{title, link, description}, ...].
+        timeout: 각 detail GET 타임아웃(초).
+        max_items: detail 을 실제로 긁을 최대 건수(None=전부). 초과분은 폴백만 적용.
+
+    Returns:
+        같은 item 들(in-place 로 body_full 추가)의 리스트.
+    """
+    for idx, item in enumerate(items or []):
+        fallback = item.get("description", "") or ""
+        if max_items is not None and idx >= max_items:
+            item["body_full"] = fallback
+            continue
+        detail = fetch_kin_detail(item.get("link", ""), timeout=timeout)
+        parts: list[str] = []
+        question = (detail.get("question_body") or "").strip()
+        answers = [a.strip() for a in (detail.get("answers") or []) if a and a.strip()]
+        if question:
+            parts.append(question)
+        for ai, ans in enumerate(answers, 1):
+            parts.append(f"[답변 {ai}] {ans}")
+        body_full = "\n\n".join(parts).strip()
+        item["body_full"] = body_full if body_full else fallback
+    return items
 
 
 def fetch_jisikin(

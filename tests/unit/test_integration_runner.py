@@ -867,3 +867,105 @@ def test_should_collect_or_condition():
     assert ir._should_collect({HEADER_COLLECT_STATUS: "✅ ..."}) is False     # 이미수집+갱신X → 스킵
     assert ir._should_collect({HEADER_COLLECT_STATUS: "✅ ...", HEADER_REFRESH: "O"}) is True  # 갱신 → 수집
     assert ir._should_collect({HEADER_REFRESH: "O"}) is True                  # 빈칸+갱신 → 수집
+
+
+# ---------------------------------------------------------------------------
+# 본문 보강(enrich_jisikin) 통합 — 지식인 본문 칸 = body_full(질문+답변), 폴백 안전.
+# ---------------------------------------------------------------------------
+
+def _jisikin_body_rows(client):
+    """지식인 스테이징 탭에 append 된 모든 행의 본문 칸(인덱스 3) 리스트."""
+    bodies = []
+    for call in client.append_staging_rows.call_args_list:
+        if call.args[0] == STAGING_TAB_JISIKIN:
+            for row in call.args[2]:
+                bodies.append(row[3])
+    return bodies
+
+
+def test_jisikin_body_uses_enriched_body_full_when_injected():
+    """enrich_jisikin 주입 시 본문 칸 = body_full(질문 본문 + 답변), description 아님."""
+    client = _client_with(
+        {"두피.카외": [{"키워드": "두피 가려움", "키워드 분류(단계)": "3 증상", "_row": 2}]}
+    )
+    fetch_j = MagicMock(return_value=[
+        {"title": "두피 가려움 원인", "description": "짧은 스니펫 description", "link": "L"}
+    ])
+
+    def fake_enrich(items):
+        # 실제 enrich_jisikin 처럼 각 item 에 body_full(질문+답변) 채움.
+        for it in items:
+            it["body_full"] = "질문 본문 내용입니다\n\n[답변 1] 답변 본문입니다"
+        return items
+
+    summary = run_collection(
+        client,
+        fetch_jisikin=fetch_j,
+        fetch_reviews=MagicMock(),
+        enrich_jisikin=fake_enrich,
+        naver_client_id="id",
+        naver_client_secret="sec",
+        apify_token="",
+        apify_actor_id="a~b",
+        today="2026-06-20",
+    )
+
+    bodies = _jisikin_body_rows(client)
+    assert summary["collected"] == 1
+    assert bodies == ["질문 본문 내용입니다\n\n[답변 1] 답변 본문입니다"]
+
+
+def test_jisikin_body_falls_back_to_description_without_enrich():
+    """enrich_jisikin 미주입(None) 시 본문 칸 = description(기존 동작 — 회귀 안전)."""
+    client = _client_with(
+        {"두피.카외": [{"키워드": "두피 가려움", "키워드 분류(단계)": "3 증상", "_row": 2}]}
+    )
+    fetch_j = MagicMock(return_value=[
+        {"title": "두피 가려움 원인", "description": "두피 가려움 증상 본문 내용입니다", "link": "L"}
+    ])
+
+    summary = run_collection(
+        client,
+        fetch_jisikin=fetch_j,
+        fetch_reviews=MagicMock(),
+        # enrich_jisikin 미주입 → 본문은 description 그대로.
+        naver_client_id="id",
+        naver_client_secret="sec",
+        apify_token="",
+        apify_actor_id="a~b",
+        today="2026-06-20",
+    )
+
+    bodies = _jisikin_body_rows(client)
+    assert summary["collected"] == 1
+    assert bodies == ["두피 가려움 증상 본문 내용입니다"]
+
+
+def test_jisikin_body_falls_back_when_enrich_raises():
+    """enrich 가 예외를 던져도 description 폴백 + 수집 계속(격리)."""
+    client = _client_with(
+        {"두피.카외": [{"키워드": "두피 가려움", "키워드 분류(단계)": "3 증상", "_row": 2}]}
+    )
+    fetch_j = MagicMock(return_value=[
+        {"title": "두피 가려움 원인", "description": "폴백 description 본문", "link": "L"}
+    ])
+
+    def boom_enrich(items):
+        raise RuntimeError("enrich 폭발")
+
+    summary = run_collection(
+        client,
+        fetch_jisikin=fetch_j,
+        fetch_reviews=MagicMock(),
+        enrich_jisikin=boom_enrich,
+        naver_client_id="id",
+        naver_client_secret="sec",
+        apify_token="",
+        apify_actor_id="a~b",
+        today="2026-06-20",
+    )
+
+    bodies = _jisikin_body_rows(client)
+    assert summary["collected"] == 1
+    assert summary["failed"] == 0  # enrich 예외는 격리 — 키워드 실패로 치지 않는다.
+    assert bodies == ["폴백 description 본문"]

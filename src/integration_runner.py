@@ -228,6 +228,7 @@ def run_collection(
     *,
     fetch_jisikin,
     fetch_reviews,
+    enrich_jisikin=None,
     naver_client_id: str,
     naver_client_secret: str,
     apify_token: str,
@@ -346,10 +347,22 @@ def run_collection(
                         if lnk:
                             seen_links.add(lnk)
                         merged.append(it)
+                    # 본문 보강: detail 페이지에서 '질문 본문 + 답변 본문'을 긁어 body_full 채움.
+                    #   description(검색 스니펫)은 짧은 요약이라 실제 질문·답변이 없다 → enrich.
+                    #   주입식(⑥) — enrich_jisikin 미주입(None)이면 보강 생략(본문=description 폴백).
+                    #   detail 실패/빈 값이면 enrich 가 body_full=description 로 폴백(회귀 안전).
+                    #   enrich 자체가 통째로 실패해도(예외) description 폴백으로 격리(전체 비차단).
+                    if enrich_jisikin is not None and merged:
+                        try:
+                            enrich_jisikin(merged)
+                        except Exception as e:  # noqa: BLE001 — enrich 실패 시 description 폴백.
+                            print(f"[본문보강실패] 키워드 '{keyword}': "
+                                  f"{type(e).__name__}: {e} — description 으로 폴백")
                     new_rows = [
                         [
                             keyword, stage_raw,
-                            it.get("title", ""), it.get("description", ""),
+                            it.get("title", ""),
+                            it.get("body_full") or it.get("description", ""),
                             day, it.get("link", ""), "",
                         ]
                         for it in merged
@@ -477,7 +490,7 @@ def main() -> int:
         print("[integration_runner] ⚠️ APIFY_TOKEN 미설정 — 리뷰 수집 비활성.")
 
     # 무거운 의존성(gspread/curl_cffi)은 main 실행 시에만 import(테스트 import 가벼움 유지).
-    from src.jisikin_collect import fetch_jisikin
+    from src.jisikin_collect import enrich_jisikin, fetch_jisikin
     from src.review_collect import fetch_low_star_reviews
     from src.sheets import SheetsClient
 
@@ -495,6 +508,7 @@ def main() -> int:
         client,
         fetch_jisikin=fetch_jisikin,
         fetch_reviews=fetch_low_star_reviews,
+        enrich_jisikin=enrich_jisikin,
         naver_client_id=NAVER_OPENAPI_CLIENT_ID,
         naver_client_secret=NAVER_OPENAPI_CLIENT_SECRET,
         apify_token=APIFY_TOKEN,
