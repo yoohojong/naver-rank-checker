@@ -134,8 +134,8 @@ def _format_refresh_status(day: str, n: int) -> str:
     return f"✅ {md} 갱신(+{n}건)"
 
 
-def _flush_status(client, tab_name: str, pending: list) -> None:
-    """버퍼된 (행, 표시문구)들을 '자료조사' 칸에 write-back.
+def _flush_collect_status(client, tab_name: str, pending: list) -> None:
+    """버퍼된 (행, 표시문구)들을 '자료조사' 칸에 write-back — 첫 수집(신규) 행 전용.
 
     pending: [(row_int, status_str), ...]. write 실패는 로그만 — 수집/적재는 이미 끝났고
     미표시 행은 다음 실행에서 자연 재시도(재개)되므로 전체를 멈추지 않는다.
@@ -148,6 +148,24 @@ def _flush_status(client, tab_name: str, pending: list) -> None:
         client.write_collect_status(tab_name, updates)
     except Exception as e:  # noqa: BLE001 — 표시 실패해도 수집은 유효(다음 실행이 재개).
         print(f"[표시실패] 탭 '{tab_name}' '자료조사' write-back 중 오류: "
+              f"{type(e).__name__}: {e} — 다음 실행에서 재개됨")
+
+
+def _flush_refresh_status(client, tab_name: str, pending: list) -> None:
+    """버퍼된 (행, 표시문구)들을 '갱신 상태' 칸에 write-back — 갱신(재수집) 행 전용.
+
+    ③ '자료조사'(첫 수집 기록)는 갱신해도 절대 건드리지 않고, 갱신 결과는 이 칸에만 쌓는다.
+    pending: [(row_int, status_str), ...]. write 실패는 로그만 — 갱신/적재는 이미 끝났고
+    미표시 행은 다음 실행에서 자연 재시도(재개)되므로 전체를 멈추지 않는다.
+    """
+    if not pending:
+        return
+    from src.sheets import HEADER_REFRESH_STATUS, RowUpdate
+    updates = [RowUpdate(row=r, columns={HEADER_REFRESH_STATUS: s}) for r, s in pending]
+    try:
+        client.write_refresh_status(tab_name, updates)
+    except Exception as e:  # noqa: BLE001 — 표시 실패해도 갱신은 유효(다음 실행이 재개).
+        print(f"[표시실패] 탭 '{tab_name}' '갱신 상태' write-back 중 오류: "
               f"{type(e).__name__}: {e} — 다음 실행에서 재개됨")
 
 
@@ -193,12 +211,14 @@ def _existing_links_for_keyword(client, staging_tab: str, keyword: str, cache: d
 
 
 def _flush_chunk(client, tab_name: str, chunk_jisikin: list, chunk_review: list,
-                 pending_status: list, pending_refresh_rows: list, summary: dict) -> None:
-    """한 청크의 스테이징 행을 append 한 뒤 '자료조사' write-back → '갱신' clear(이 순서 = 원자성).
+                 pending_collect: list, pending_refresh_status: list,
+                 pending_refresh_rows: list, summary: dict) -> None:
+    """한 청크의 스테이징 행을 append → 자료조사/갱신상태 write-back → '갱신' clear(이 순서 = 원자성).
 
-    - 적재 성공 ⟹ 그 청크 pending_status 표시(표시 찍힘 ⟹ 적재 완료 불변식, 재개 안전)
-                  + 그 청크 갱신 행들의 '갱신' 칸 clear(③).
-    - 적재 실패 ⟹ 표시도 갱신칸 clear 도 안 함(다음 실행이 재개) + 그 청크 수집분 failed 환산.
+    - 적재 성공 ⟹ 신규 행은 pending_collect 를 '자료조사' 칸에, 갱신 행은 pending_refresh_status
+                  를 '갱신 상태' 칸에 표시(표시 찍힘 ⟹ 적재 완료 불변식, 재개 안전)
+                  + 그 청크 갱신 행들의 '갱신' 칸 clear(③). '자료조사'(첫 수집)는 갱신해도 안 덮음.
+    - 적재 실패 ⟹ 두 표시도 갱신칸 clear 도 안 함(다음 실행이 재개) + 그 청크 수집분 failed 환산.
     호출 측이 버퍼(리스트) 객체를 매 청크마다 새로 만들어 넘기므로 여기서는 비우지 않는다
     (MagicMock 이 append 인자를 참조로 보관 → 호출 후 clear 시 검증값이 사라지는 함정 회피).
     """
@@ -213,8 +233,10 @@ def _flush_chunk(client, tab_name: str, chunk_jisikin: list, chunk_review: list,
         summary["collected"] = max(0, summary["collected"] - n)
         print(f"[적재실패] 탭 '{tab_name}' 스테이징 append 오류: {type(e).__name__}: {e}")
         return
-    # 적재 성공분만 '자료조사' 칸에 write-back → 그 뒤 갱신 행 '갱신' 칸 clear(완료 확정 후).
-    _flush_status(client, tab_name, pending_status)
+    # 적재 성공분만 write-back: 신규 → '자료조사', 갱신 → '갱신 상태'(자료조사 보존),
+    # 그 뒤 갱신 행 '갱신' 칸 clear(완료 확정 후).
+    _flush_collect_status(client, tab_name, pending_collect)
+    _flush_refresh_status(client, tab_name, pending_refresh_status)
     _flush_refresh_clear(client, tab_name, pending_refresh_rows)
 
 
@@ -276,7 +298,8 @@ def run_collection(
         # flush 시 버퍼를 비우지 않고 '새 리스트로 교체'한다(append 인자 참조 보존).
         chunk_jisikin: list[list] = []
         chunk_review: list[list] = []
-        pending_status: list[tuple[int, str]] = []
+        pending_collect: list[tuple[int, str]] = []        # 신규(첫 수집) 행 → '자료조사' 칸.
+        pending_refresh_status: list[tuple[int, str]] = []  # ③ 갱신 행 → '갱신 상태' 칸(자료조사 보존).
         pending_refresh_rows: list[int] = []  # ③ 이 청크에서 재수집(갱신)한 행들 — flush 후 '갱신' 칸 clear.
         processed_in_chunk = 0
 
@@ -286,7 +309,11 @@ def run_collection(
             digit = _stage_digit(stage_raw)
             row_num = row.get("_row")
             # ③ 갱신 표시가 있으면 '자료조사'가 채워져 있어도 재수집(append-only 추가).
-            is_refresh = _refresh_requested(row)
+            refresh_flag_set = _refresh_requested(row)
+            # 표시 라우팅: '자료조사'가 이미 채워진 행에서 갱신 표시 → 갱신(결과는 '갱신 상태' 칸).
+            #   엣지(자료조사 빈칸 + 갱신 표시 동시) = 첫 수집으로 처리(자료조사에 '수집' 문구).
+            #   단, 사장님이 찍은 '갱신' 칸은 두 경우 모두 비운다(refresh_flag_set 기준 clear).
+            is_refresh = refresh_flag_set and _already_collected(row)
 
             # ① 수집 대상 판정: '자료조사' 비어있음 OR '갱신' 칸 채워짐(③).
             #    둘 다 아니면(이미수집 + 갱신요청 없음) → 스킵(증분/재개 핵심).
@@ -348,11 +375,16 @@ def run_collection(
                     chunk_jisikin.extend(new_rows)
                     summary["collected"] += len(new_rows)
                     if row_num:
-                        status = (_format_refresh_status(day, len(new_rows)) if is_refresh
-                                  else _format_collect_status(day, len(new_rows)))
-                        pending_status.append((row_num, status))
                         if is_refresh:
-                            pending_refresh_rows.append(row_num)
+                            # 갱신 행 → '갱신 상태' 칸(자료조사는 첫 수집 기록으로 영구 보존).
+                            pending_refresh_status.append(
+                                (row_num, _format_refresh_status(day, len(new_rows))))
+                        else:
+                            # 신규(엣지 포함) → '자료조사' 칸(기존 동작 유지).
+                            pending_collect.append(
+                                (row_num, _format_collect_status(day, len(new_rows))))
+                        if refresh_flag_set:
+                            pending_refresh_rows.append(row_num)  # 사장님 '갱신' 표시 clear.
                     processed_in_chunk += 1
 
                 elif digit in STAGE_REVIEW:
@@ -394,11 +426,16 @@ def run_collection(
                     chunk_review.extend(new_rows)
                     summary["collected"] += len(new_rows)
                     if row_num:
-                        status = (_format_refresh_status(day, len(new_rows)) if is_refresh
-                                  else _format_collect_status(day, len(new_rows)))
-                        pending_status.append((row_num, status))
                         if is_refresh:
-                            pending_refresh_rows.append(row_num)
+                            # 갱신 행 → '갱신 상태' 칸(자료조사는 첫 수집 기록으로 영구 보존).
+                            pending_refresh_status.append(
+                                (row_num, _format_refresh_status(day, len(new_rows))))
+                        else:
+                            # 신규(엣지 포함) → '자료조사' 칸(기존 동작 유지).
+                            pending_collect.append(
+                                (row_num, _format_collect_status(day, len(new_rows))))
+                        if refresh_flag_set:
+                            pending_refresh_rows.append(row_num)  # 사장님 '갱신' 표시 clear.
                     processed_in_chunk += 1
 
                 else:
@@ -413,13 +450,16 @@ def run_collection(
             # ⑦ 일괄 안전: 청크 크기 도달 시 즉시 flush(적재→표시→갱신칸정리) → 중간 실패해도 재개 가능.
             if processed_in_chunk >= COLLECT_STATUS_FLUSH_EVERY:
                 _flush_chunk(client, tab_name, chunk_jisikin, chunk_review,
-                             pending_status, pending_refresh_rows, summary)
-                chunk_jisikin, chunk_review, pending_status, pending_refresh_rows = [], [], [], []
+                             pending_collect, pending_refresh_status,
+                             pending_refresh_rows, summary)
+                chunk_jisikin, chunk_review = [], []
+                pending_collect, pending_refresh_status, pending_refresh_rows = [], [], []
                 processed_in_chunk = 0
 
         # 탭 끝 — 남은 청크 flush.
         _flush_chunk(client, tab_name, chunk_jisikin, chunk_review,
-                     pending_status, pending_refresh_rows, summary)
+                     pending_collect, pending_refresh_status,
+                     pending_refresh_rows, summary)
 
     return summary
 

@@ -21,7 +21,7 @@ from src.integration_runner import (
     STAGING_TAB_REVIEW,
     run_collection,
 )
-from src.sheets import HEADER_COLLECT_STATUS, HEADER_REFRESH
+from src.sheets import HEADER_COLLECT_STATUS, HEADER_REFRESH, HEADER_REFRESH_STATUS
 
 
 def _client_with(tabs, existing=None, staging_records=None):
@@ -38,6 +38,8 @@ def _client_with(tabs, existing=None, staging_records=None):
     client.append_staging_rows.side_effect = lambda tab, header, rows: len(rows)
     # write_collect_status 는 write 한 셀 수 반환(실제 코어 시그니처와 동일).
     client.write_collect_status.side_effect = lambda tab, updates: len(updates)
+    # write_refresh_status('갱신 상태' 칸)도 동일 시그니처.
+    client.write_refresh_status.side_effect = lambda tab, updates: len(updates)
     # ③ clear_refresh_flags 는 비운 셀 수 반환.
     client.clear_refresh_flags.side_effect = lambda tab, rows: len(rows)
     # ④ read_tab_records 는 기존 스테이징 행 반환(갱신 중복확인용).
@@ -47,12 +49,22 @@ def _client_with(tabs, existing=None, staging_records=None):
 
 
 def _status_writes(client):
-    """write_collect_status 로 기록된 모든 (row, status) 페어를 평탄화해 반환."""
+    """write_collect_status 로 '자료조사' 칸에 기록된 모든 (row, status) 페어를 평탄화해 반환."""
     pairs = []
     for call in client.write_collect_status.call_args_list:
         tab, updates = call.args[0], call.args[1]
         for upd in updates:
             pairs.append((tab, upd.row, upd.columns[HEADER_COLLECT_STATUS]))
+    return pairs
+
+
+def _refresh_status_writes(client):
+    """write_refresh_status 로 '갱신 상태' 칸에 기록된 모든 (row, status) 페어를 평탄화해 반환."""
+    pairs = []
+    for call in client.write_refresh_status.call_args_list:
+        tab, updates = call.args[0], call.args[1]
+        for upd in updates:
+            pairs.append((tab, upd.row, upd.columns[HEADER_REFRESH_STATUS]))
     return pairs
 
 
@@ -635,8 +647,11 @@ def test_refresh_flag_recollects_even_when_status_filled():
     assert fetch_j.call_count == 2          # 재수집됨(sim+date)
     assert summary["collected"] == 1
     assert summary["skipped"] == 0
-    # '자료조사' 칸은 갱신 문구로 표시.
-    assert _status_writes(client) == [("x.카외", 2, "✅ 6/25 갱신(+1건)")]
+    # 갱신 결과는 '갱신 상태' 칸에만 표시.
+    assert _refresh_status_writes(client) == [("x.카외", 2, "✅ 6/25 갱신(+1건)")]
+    # '자료조사'(첫 수집 기록)는 절대 안 건드림(보존).
+    assert _status_writes(client) == []
+    client.write_collect_status.assert_not_called()
     # '갱신' 칸은 비워짐.
     assert _refresh_clears(client) == [("x.카외", 2)]
 
@@ -691,7 +706,9 @@ def test_refresh_skips_links_already_in_staging():
     links = [r[5] for r in rows]
     assert links == ["NEW1"]               # OLD1 중복 제외, 신규만 추가
     assert summary["collected"] == 1
-    assert _status_writes(client) == [("x.카외", 2, "✅ 6/25 갱신(+1건)")]
+    # 갱신 결과는 '갱신 상태' 칸, '자료조사'는 보존.
+    assert _refresh_status_writes(client) == [("x.카외", 2, "✅ 6/25 갱신(+1건)")]
+    assert _status_writes(client) == []
 
 
 def test_refresh_preserves_blank_links():
@@ -789,9 +806,67 @@ def test_refresh_empty_result_still_clears_flag():
     )
 
     client.append_staging_rows.assert_not_called()   # 신규 행 없음
-    assert _status_writes(client) == [("x.카외", 2, "✅ 6/25 갱신(+0건)")]
+    # 갱신 결과(+0건)는 '갱신 상태' 칸, '자료조사'는 보존.
+    assert _refresh_status_writes(client) == [("x.카외", 2, "✅ 6/25 갱신(+0건)")]
+    assert _status_writes(client) == []
     assert _refresh_clears(client) == [("x.카외", 2)]  # 그래도 갱신칸은 비움
     assert summary["collected"] == 0
+
+
+def test_refresh_never_overwrites_collect_status():
+    """③ 갱신은 '자료조사'(첫 수집 기록)를 절대 덮지 않는다 — write_collect_status 미호출.
+
+    핵심 회귀 가드: 갱신 결과는 '갱신 상태' 칸에만, 첫 수집 기록은 영구 보존.
+    """
+    client = _client_with(
+        {"x.카외": [{"키워드": "두피", "키워드 분류(단계)": "3 증상",
+                     HEADER_COLLECT_STATUS: "✅ 2026-06-10 수집(7건)",
+                     HEADER_REFRESH: "O", "_row": 2}]},
+    )
+    fetch_j = MagicMock(return_value=[
+        {"title": "두피 새 글 제목", "description": "새로 올라온 내용입니다", "link": "NEW"}
+    ])
+
+    run_collection(
+        client, fetch_jisikin=fetch_j, fetch_reviews=MagicMock(),
+        naver_client_id="id", naver_client_secret="sec",
+        apify_token="t", apify_actor_id="a~b", today="2026-06-25",
+    )
+
+    # 자료조사 칸 write 메서드는 호출조차 안 됨(첫 수집 기록 보존).
+    client.write_collect_status.assert_not_called()
+    # 갱신 결과는 '갱신 상태' 칸으로만.
+    assert _refresh_status_writes(client) == [("x.카외", 2, "✅ 6/25 갱신(+1건)")]
+
+
+def test_blank_collect_with_refresh_flag_treated_as_first_collect():
+    """엣지: '자료조사' 빈칸 + '갱신' 표시 동시 = 첫 수집으로 처리(자료조사에 '수집' 문구).
+
+    갱신 결과 칸이 아니라 자료조사 칸에 첫 수집 문구를 찍고, 사장님 '갱신' 표시는 비운다.
+    """
+    client = _client_with(
+        {"x.카외": [{"키워드": "신규두피", "키워드 분류(단계)": "3 증상",
+                     HEADER_COLLECT_STATUS: "",          # 첫 수집(빈칸)
+                     HEADER_REFRESH: "O", "_row": 2}]},   # 동시에 갱신 표시
+    )
+    fetch_j = MagicMock(return_value=[
+        {"title": "신규 질문 제목입니다", "description": "신규 본문 내용입니다", "link": "L"}
+    ])
+
+    summary = run_collection(
+        client, fetch_jisikin=fetch_j, fetch_reviews=MagicMock(),
+        naver_client_id="id", naver_client_secret="sec",
+        apify_token="t", apify_actor_id="a~b", today="2026-06-25",
+    )
+
+    assert summary["collected"] == 1
+    # 첫 수집 → '자료조사'에 '수집' 문구(갱신 문구 아님).
+    assert _status_writes(client) == [("x.카외", 2, "✅ 2026-06-25 수집(1건)")]
+    # 갱신 상태 칸엔 안 씀(첫 수집이므로).
+    assert _refresh_status_writes(client) == []
+    client.write_refresh_status.assert_not_called()
+    # 하지만 사장님이 찍은 '갱신' 표시는 비운다(다음 실행 무한 재수집 방지).
+    assert _refresh_clears(client) == [("x.카외", 2)]
 
 
 def test_format_refresh_status_month_day_no_leading_zero():
