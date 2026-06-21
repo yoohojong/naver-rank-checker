@@ -1,5 +1,9 @@
 """review_collect: Apify로 네이버 스마트스토어 리뷰를 무인 자동 수집 + 저점(1~3점) 필터.
 
+DEPRECATED: Apify accurate_dancer 액터는 리뷰 본문(reviewContent)이 Pro 유료잠금이라
+  실수집 0건이었다. 실동작 대체는 src/review_lowstar.py (Playwright 실브라우저 경로).
+  본 모듈은 코덱스 리뷰의 경로 비교(왜 Apify가 안 됐는지)를 위해 보존만 한다 — 신규 호출 금지.
+
 카페외부 원고 '재료'(4 대안 / 5 브랜드 단계) — 경쟁/제품의 불만·불안(저점 리뷰)을 모은다.
 네이버 anti-bot·프록시·캡차는 Apify 벤더가 떠안고, 우리는 REST API만 호출(직원 수작업 0).
 
