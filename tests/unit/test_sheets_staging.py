@@ -11,7 +11,6 @@ import pytest
 from src.sheets import (
     HEADER_COLLECT_STATUS,
     HEADER_REFRESH,
-    HEADER_REFRESH_STATUS,
     RowUpdate,
     SheetsClient,
 )
@@ -124,11 +123,11 @@ def test_append_staging_rows_empty_no_call():
     ss.worksheet.assert_not_called()
 
 
-# ── write_collect_status: 카페외부 자료수집 '자료조사' 칸 write-back ──────────
+# ── write_collect_status: 카페외부 자료수집 '수집상태' 칸 write-back ──────────
 
 
 def test_write_collect_status_writes_status_column_only():
-    """'자료조사' 칸이 있으면 그 칸에만 표시 write. 다른 칸은 가드로 거부."""
+    """'수집상태' 칸이 있으면 그 칸에만 표시 write. 다른 칸은 가드로 거부."""
     ws = MagicMock()
     ws.row_values.return_value = ["키워드", "키워드 분류", "보관함", HEADER_COLLECT_STATUS]
     ss = MagicMock()
@@ -144,7 +143,7 @@ def test_write_collect_status_writes_status_column_only():
     assert n == 2
     ws.batch_update.assert_called_once()
     cells = ws.batch_update.call_args.args[0]
-    # 자료조사 = 4번째 컬럼(0-idx 3) → D열.
+    # 수집상태 = 4번째 컬럼(0-idx 3) → D열.
     assert cells[0]["range"] == "D2"
     assert cells[0]["values"] == [["✅ 2026-06-21 수집(12건)"]]
     assert cells[1]["range"] == "D5"
@@ -161,17 +160,17 @@ def test_write_collect_status_rejects_other_columns():
     updates = [RowUpdate(row=2, columns={"노출영역": "AB", HEADER_COLLECT_STATUS: "✅ x"})]
     n = client.write_collect_status("샴푸 카외", updates)
 
-    # 노출영역은 거부, 자료조사만 기록 → 셀 1개.
+    # 노출영역은 거부, 수집상태만 기록 → 셀 1개.
     assert n == 1
     cells = ws.batch_update.call_args.args[0]
     assert len(cells) == 1
-    assert cells[0]["range"] == "C2"  # 자료조사 = 3번째 컬럼
+    assert cells[0]["range"] == "C2"  # 수집상태 = 3번째 컬럼
 
 
 def test_write_collect_status_missing_column_skips():
-    """탭에 '자료조사' 칸이 아직 없으면 skip(수집 자체는 진행) — batch_update 호출 안 함."""
+    """탭에 '수집상태' 칸이 아직 없으면 skip(수집 자체는 진행) — batch_update 호출 안 함."""
     ws = MagicMock()
-    ws.row_values.return_value = ["키워드", "키워드 분류"]  # 자료조사 없음
+    ws.row_values.return_value = ["키워드", "키워드 분류"]  # 수집상태 없음
     ss = MagicMock()
     ss.worksheet.return_value = ws
     client = _make_client(ss)
@@ -190,75 +189,25 @@ def test_write_collect_status_empty_no_call():
     ss.worksheet.assert_not_called()
 
 
-# ── write_refresh_status: ③ '갱신 상태' 칸 write-back(자료조사와 분리 — 첫 수집 보존) ──
+# ── write_collect_status: ③ 갱신 결과도 같은 '수집상태' 칸에 기록(병합 — 별도 칸 없음) ──
 
 
-def test_write_refresh_status_writes_status_column_only():
-    """'갱신 상태' 칸이 있으면 그 칸에만 표시 write. 다른 칸은 가드로 거부."""
+def test_write_collect_status_records_refresh_into_same_column():
+    """③ 갱신 문구('✅ M/D 갱신(+N건)')도 '수집상태' 칸에 기록(2026-06-21 병합 — 별도 칸 X)."""
     ws = MagicMock()
-    ws.row_values.return_value = [
-        "키워드", "보관함", HEADER_COLLECT_STATUS, HEADER_REFRESH, HEADER_REFRESH_STATUS]
+    ws.row_values.return_value = ["키워드", "보관함", HEADER_COLLECT_STATUS, HEADER_REFRESH]
     ss = MagicMock()
     ss.worksheet.return_value = ws
     client = _make_client(ss)
 
-    updates = [
-        RowUpdate(row=2, columns={HEADER_REFRESH_STATUS: "✅ 6/25 갱신(+3건)"}),
-        RowUpdate(row=5, columns={HEADER_REFRESH_STATUS: "✅ 6/25 갱신(+0건)"}),
-    ]
-    n = client.write_refresh_status("샴푸 카외", updates)
+    updates = [RowUpdate(row=2, columns={HEADER_COLLECT_STATUS: "✅ 6/25 갱신(+3건)"})]
+    n = client.write_collect_status("샴푸 카외", updates)
 
-    assert n == 2
-    ws.batch_update.assert_called_once()
-    cells = ws.batch_update.call_args.args[0]
-    # 갱신 상태 = 5번째 컬럼(0-idx 4) → E열.
-    assert cells[0]["range"] == "E2"
-    assert cells[0]["values"] == [["✅ 6/25 갱신(+3건)"]]
-    assert cells[1]["range"] == "E5"
-
-
-def test_write_refresh_status_rejects_other_columns():
-    """HEADER_REFRESH_STATUS 외 컬럼은 거부(자료조사·시스템 칸 보호)."""
-    ws = MagicMock()
-    ws.row_values.return_value = [
-        "키워드", HEADER_COLLECT_STATUS, HEADER_REFRESH_STATUS]
-    ss = MagicMock()
-    ss.worksheet.return_value = ws
-    client = _make_client(ss)
-
-    # 자료조사(첫 수집)는 절대 덮으면 안 됨 → write_refresh_status 가 거부해야 함.
-    updates = [RowUpdate(
-        row=2, columns={HEADER_COLLECT_STATUS: "덮으면안됨", HEADER_REFRESH_STATUS: "✅ 6/25 갱신(+1건)"})]
-    n = client.write_refresh_status("샴푸 카외", updates)
-
-    # 자료조사는 거부, 갱신 상태만 기록 → 셀 1개.
     assert n == 1
     cells = ws.batch_update.call_args.args[0]
-    assert len(cells) == 1
-    assert cells[0]["range"] == "C2"  # 갱신 상태 = 3번째 컬럼
-    assert cells[0]["values"] == [["✅ 6/25 갱신(+1건)"]]
-
-
-def test_write_refresh_status_missing_column_skips():
-    """탭에 '갱신 상태' 칸이 아직 없으면 skip(갱신 자체는 진행) — batch_update 호출 안 함."""
-    ws = MagicMock()
-    ws.row_values.return_value = ["키워드", HEADER_COLLECT_STATUS, HEADER_REFRESH]  # 갱신 상태 없음
-    ss = MagicMock()
-    ss.worksheet.return_value = ws
-    client = _make_client(ss)
-
-    n = client.write_refresh_status(
-        "샴푸 카외", [RowUpdate(row=2, columns={HEADER_REFRESH_STATUS: "✅ x"})]
-    )
-    assert n == 0
-    ws.batch_update.assert_not_called()
-
-
-def test_write_refresh_status_empty_no_call():
-    ss = MagicMock()
-    client = _make_client(ss)
-    assert client.write_refresh_status("샴푸 카외", []) == 0
-    ss.worksheet.assert_not_called()
+    # 수집상태 = 3번째 컬럼(0-idx 2) → C열. 갱신 문구도 같은 칸에 기록.
+    assert cells[0]["range"] == "C2"
+    assert cells[0]["values"] == [["✅ 6/25 갱신(+3건)"]]
 
 
 # ── clear_refresh_flags: ③ 갱신 칸 비우기(재수집 완료 후 '갱신' 표시만 clear) ──────

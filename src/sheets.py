@@ -57,19 +57,17 @@ HEADER_L = "노출여부(통합탭 순위)"  # L — integrated_rank
 HEADER_M = "노출여부(카페구좌순위)"  # M — cafe_slot_rank
 HEADER_JISIKIN = "지식인탭"  # O — 'O' or 빈칸
 HEADER_LINK = "링크"  # 사장님 입력 컬럼 (D-023 2026-05-14: 자동 갱신 절대 X — reference 용)
-# 카페외부 자료수집 '수집완료' 표시 컬럼 (bogwanham addCollectStatusColumn 이 만드는 이름).
+# 카페외부 자료수집 '수집/갱신 시점' 표시 컬럼 (bogwanham addCollectStatusColumn 이 만드는 이름).
 # 값이 채워진 행 = 이미 수집됨 → integration_runner 가 스킵(증분). 빈 행만 수집 후 write-back.
-# 형식: '✅ YYYY-MM-DD 수집(N건)'. 사장님 가시화 + 재개 마커를 한 칸으로 겸함.
-HEADER_COLLECT_STATUS = "자료조사"
-# 카페외부 '갱신' 요청 컬럼 (bogwanham addCollectStatusColumn 이 '자료조사' 바로 오른쪽에 만듦).
-# 사장님이 이 칸에 아무 표시('O'/'갱신'/체크 등)하면 → '자료조사'가 채워져 있어도 재수집 대상.
-# 재수집 끝나면 integration_runner 가 이 칸을 비우고(clear), '자료조사' 칸은 최신 표시로 갱신.
+# 첫 수집='✅ YYYY-MM-DD 수집(N건)', 갱신='✅ M/D 갱신(+N건)'(시점 갱신, 같은 칸 덮어씀).
+# 실제 자료는 보관함에 날짜별로 보존되므로 시트엔 '마지막 수집/갱신 시점' 한 칸이면 충분(2026-06-21 병합).
+# 사장님 가시화 + 재개(증분) 마커를 한 칸으로 겸한다.
+HEADER_COLLECT_STATUS = "수집상태"
+# 카페외부 '갱신' 요청 컬럼 (bogwanham addCollectStatusColumn 이 '수집상태' 바로 오른쪽에 만듦).
+# 사장님이 이 칸에 아무 표시('O'/'갱신'/체크 등)하면 → '수집상태'가 채워져 있어도 재수집 대상.
+# 재수집 끝나면 integration_runner 가 이 칸을 비우고(clear), '수집상태' 칸을 갱신 문구로 덮는다.
 # ⚠️ 갱신은 기존 수집 자료를 덮지 않고 새 자료를 '추가'만 한다(append-only 불변식).
 HEADER_REFRESH = "갱신"
-# 카페외부 '갱신 상태' 출력 컬럼 (bogwanham addCollectStatusColumn 이 '갱신' 바로 오른쪽에 만듦).
-# 마지막 갱신(재수집) 결과를 '✅ M/D 갱신(+N건)' 으로 기록. 빈칸 = 갱신한 적 없음.
-# ⚠️ '자료조사'(첫 수집 결과)는 갱신해도 절대 덮지 않는다 → 갱신 결과는 이 칸에만 쌓는다(분리).
-HEADER_REFRESH_STATUS = "갱신 상태"
 HEADER_CURRENT_INPUT_KEY = "현재입력키"
 HEADER_LAST_CHECKED_INPUT_KEY = "마지막검사입력키"
 HEADER_RAW_AREA = "raw_노출영역"
@@ -803,15 +801,17 @@ class SheetsClient:
         return len(cells)
 
     def write_collect_status(self, tab_name: str, updates: list["RowUpdate"]) -> int:
-        """카페외부 자료수집 '수집완료' 표시(자료조사 컬럼)만 write-back.
+        """카페외부 '수집상태' 칸 write-back — 첫 수집·갱신 둘 다 이 한 칸에 기록.
 
-        C3 증분: integration_runner 가 키워드 1건(또는 청크) 수집 직후 그 행의 '자료조사'
-        칸에 '✅ YYYY-MM-DD 수집(N건)' 을 서비스계정으로 기록한다. 다음 실행에서 이 칸이
-        채워진 행은 스킵 → (a)증분 (b)재개(끊겨도 빈 칸부터) (c)사장님 가시화 동시 달성.
+        C3 증분: integration_runner 가 키워드 1건(또는 청크) 수집 직후 그 행의 '수집상태'
+        칸에 첫 수집='✅ YYYY-MM-DD 수집(N건)'/갱신='✅ M/D 갱신(+N건)' 을 서비스계정으로
+        기록한다(갱신 시 같은 칸을 시점 문구로 덮음). 다음 실행에서 이 칸이 채워진 행은 스킵
+        → (a)증분 (b)재개(끊겨도 빈 칸부터) (c)사장님 가시화 동시 달성. 실제 자료는 보관함에
+        날짜별로 보존되므로 시트엔 '마지막 수집/갱신 시점' 한 칸이면 충분(2026-06-21 병합).
 
         write_type_results 와 동일한 최소-가드 패턴: HEADER_COLLECT_STATUS 외 컬럼은 거부.
-        write_results 의 D-023 가드를 완화하지 않는다(이 전용 경로로만 자료조사 칸 기록).
-        탭에 '자료조사' 헤더가 아직 없으면(사장님이 칸을 안 만듦) skip + log — 수집 자체는 진행.
+        write_results 의 D-023 가드를 완화하지 않는다(이 전용 경로로만 수집상태 칸 기록).
+        탭에 '수집상태' 헤더가 아직 없으면(사장님이 칸을 안 만듦) skip + log — 수집 자체는 진행.
         """
         if not updates:
             return 0
@@ -821,7 +821,7 @@ class SheetsClient:
         if HEADER_COLLECT_STATUS not in mapping:
             print(
                 f"  [COLLECT-STATUS] {tab_name}: '{HEADER_COLLECT_STATUS}' 칸 없음 — "
-                f"표시 skip(메뉴 '자료조사 칸 추가' 필요). 수집은 정상 진행됨."
+                f"표시 skip(메뉴 '수집상태·갱신 칸 추가' 필요). 수집은 정상 진행됨."
             )
             return 0
 
@@ -844,54 +844,13 @@ class SheetsClient:
             )
         return len(cells)
 
-    def write_refresh_status(self, tab_name: str, updates: list["RowUpdate"]) -> int:
-        """카페외부 '갱신 상태' 칸만 write-back — 마지막 갱신(재수집) 결과 표시.
-
-        ③ 갱신 흐름: 사장님이 '갱신' 칸 표시 → 재수집 → 끝나면 '✅ M/D 갱신(+N건)' 문구를
-        '자료조사'가 아니라 이 '갱신 상태' 칸에 기록한다. 첫 수집('자료조사') 기록은 영구 보존
-        (갱신해도 덮어쓰지 않음) → 첫 수집과 갱신을 분리해 사장님이 둘 다 본다.
-
-        write_collect_status 와 동일한 최소-가드 패턴: HEADER_REFRESH_STATUS 외 컬럼은 거부.
-        탭에 '갱신 상태' 헤더가 아직 없으면(사장님이 칸을 안 만듦) skip + log — 수집/갱신은 진행.
-        """
-        if not updates:
-            return 0
-        ws = self.spreadsheet.worksheet(tab_name)
-        headers = ws.row_values(1)
-        mapping = map_headers_to_columns(headers)
-        if HEADER_REFRESH_STATUS not in mapping:
-            print(
-                f"  [REFRESH-STATUS] {tab_name}: '{HEADER_REFRESH_STATUS}' 칸 없음 — "
-                f"표시 skip(메뉴 '자료조사 칸 추가' 필요). 갱신은 정상 진행됨."
-            )
-            return 0
-
-        status_col = mapping[HEADER_REFRESH_STATUS] + 1
-        cells = []
-        for upd in updates:
-            for col_name, new_val in upd.columns.items():
-                if col_name != HEADER_REFRESH_STATUS:
-                    print(f"  [REFRESH-STATUS-GUARD] '{col_name}' write 거부 (row {upd.row})")
-                    continue
-                cells.append({
-                    "range": gspread.utils.rowcol_to_a1(upd.row, status_col),
-                    "values": [[new_val]],
-                })
-
-        if cells:
-            _sheets_api_retry(
-                lambda: ws.batch_update(cells, value_input_option="RAW"),
-                ctx=f"{tab_name} (refresh status write)",
-            )
-        return len(cells)
-
     def clear_refresh_flags(self, tab_name: str, row_numbers: list[int]) -> int:
         """카페외부 '갱신' 칸을 비운다(재수집 완료 후 그 행의 갱신 표시만 clear).
 
         ③ 갱신 흐름: 사장님이 '갱신' 칸에 표시 → integration_runner 가 그 행을
-        ('자료조사'가 채워져 있어도) 재수집 → 끝나면 이 메서드로 '갱신' 칸만 비운다
-        (그래야 다음 실행에서 또 재수집되지 않음). 갱신 결과는 write_refresh_status 로
-        '갱신 상태' 칸에 기록('자료조사'=첫 수집 기록은 영구 보존, 갱신해도 안 덮음).
+        ('수집상태'가 채워져 있어도) 재수집 → 끝나면 이 메서드로 '갱신' 칸만 비운다
+        (그래야 다음 실행에서 또 재수집되지 않음). 갱신 결과는 write_collect_status 로
+        '수집상태' 칸을 갱신 문구('✅ M/D 갱신(+N건)')로 덮어 기록(한 칸 병합, 2026-06-21).
 
         write_collect_status 와 동일한 가드 철학: '갱신' 칸 외 다른 칸은 절대 안 건드린다.
         탭에 '갱신' 헤더가 없으면 skip + log(수집/표시 자체는 정상 진행).

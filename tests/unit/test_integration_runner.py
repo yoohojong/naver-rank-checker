@@ -1,9 +1,9 @@
 """integration_runner 단위 테스트 (SheetsClient·fetch_* 전부 mock — 키/네트워크 없이 행동 검증).
 
-C3: 카외 제품 탭 → 단계별 수집(지식인/리뷰) → 스테이징 탭 적재 + '자료조사' 칸 증분 표시.
+C3: 카외 제품 탭 → 단계별 수집(지식인/리뷰) → 스테이징 탭 적재 + '수집상태' 칸 증분 표시.
 검증 포인트:
   ① 단계 라우팅(3 증상→지식인, 4 대안/5 브랜드→리뷰)
-  ② 증분(표시기반): '자료조사' 칸이 채워진 행은 스킵, 빈 행만 수집 → 수집 후 그 칸에 write-back
+  ② 증분(표시기반): '수집상태' 칸이 채워진 행은 스킵, 빈 행만 수집 → 수집 후 그 칸에 write-back
   ③ 키워드별 try/except 격리(한 건 실패해도 전체 계속)
   ④ summary 카운트(수집/실패/스킵)
   ⑤ 키 없음/단계 미지정 행 건너뜀
@@ -21,7 +21,7 @@ from src.integration_runner import (
     STAGING_TAB_REVIEW,
     run_collection,
 )
-from src.sheets import HEADER_COLLECT_STATUS, HEADER_REFRESH, HEADER_REFRESH_STATUS
+from src.sheets import HEADER_COLLECT_STATUS, HEADER_REFRESH
 
 
 def _client_with(tabs, existing=None, staging_records=None):
@@ -37,9 +37,8 @@ def _client_with(tabs, existing=None, staging_records=None):
     # append_staging_rows 는 append 한 행 수 반환(실제 코어 시그니처와 동일).
     client.append_staging_rows.side_effect = lambda tab, header, rows: len(rows)
     # write_collect_status 는 write 한 셀 수 반환(실제 코어 시그니처와 동일).
+    # 첫 수집·갱신 둘 다 이 메서드로 '수집상태' 칸에 기록(2026-06-21 병합).
     client.write_collect_status.side_effect = lambda tab, updates: len(updates)
-    # write_refresh_status('갱신 상태' 칸)도 동일 시그니처.
-    client.write_refresh_status.side_effect = lambda tab, updates: len(updates)
     # ③ clear_refresh_flags 는 비운 셀 수 반환.
     client.clear_refresh_flags.side_effect = lambda tab, rows: len(rows)
     # ④ read_tab_records 는 기존 스테이징 행 반환(갱신 중복확인용).
@@ -49,22 +48,15 @@ def _client_with(tabs, existing=None, staging_records=None):
 
 
 def _status_writes(client):
-    """write_collect_status 로 '자료조사' 칸에 기록된 모든 (row, status) 페어를 평탄화해 반환."""
+    """write_collect_status 로 '수집상태' 칸에 기록된 모든 (tab, row, status) 페어를 평탄화해 반환.
+
+    2026-06-21 병합: 첫 수집·갱신 둘 다 이 한 메서드/칸으로 기록된다.
+    """
     pairs = []
     for call in client.write_collect_status.call_args_list:
         tab, updates = call.args[0], call.args[1]
         for upd in updates:
             pairs.append((tab, upd.row, upd.columns[HEADER_COLLECT_STATUS]))
-    return pairs
-
-
-def _refresh_status_writes(client):
-    """write_refresh_status 로 '갱신 상태' 칸에 기록된 모든 (row, status) 페어를 평탄화해 반환."""
-    pairs = []
-    for call in client.write_refresh_status.call_args_list:
-        tab, updates = call.args[0], call.args[1]
-        for upd in updates:
-            pairs.append((tab, upd.row, upd.columns[HEADER_REFRESH_STATUS]))
     return pairs
 
 
@@ -120,7 +112,7 @@ def test_routes_symptom_keyword_to_jisikin():
     assert summary["collected"] == 1
     assert summary["failed"] == 0
     assert summary["skipped"] == 0
-    # 증분 표시: 수집 직후 그 행(_row=2)의 '자료조사' 칸에 write-back.
+    # 증분 표시: 수집 직후 그 행(_row=2)의 '수집상태' 칸에 write-back.
     writes = _status_writes(client)
     assert writes == [("두피.카외", 2, "✅ 2026-06-20 수집(1건)")]
 
@@ -159,12 +151,12 @@ def test_routes_alternative_and_brand_to_reviews(stage):
     assert row[3] == "최악"
     assert row[5] == "u1"
     assert summary["collected"] == 1
-    # 증분 표시: 리뷰 행도 수집 후 '자료조사' 칸에 write-back.
+    # 증분 표시: 리뷰 행도 수집 후 '수집상태' 칸에 write-back.
     assert _status_writes(client) == [("x.카외", 2, "✅ 2026-06-20 수집(1건)")]
 
 
 def test_skips_row_already_collected_status_filled():
-    """'자료조사' 칸이 이미 채워진 행은 스킵(증분) — API 호출도 표시 write-back 도 안 함."""
+    """'수집상태' 칸이 이미 채워진 행은 스킵(증분) — API 호출도 표시 write-back 도 안 함."""
     client = _client_with(
         {"x.카외": [{"키워드": "두피 가려움", "키워드 분류(단계)": "3 증상",
                      HEADER_COLLECT_STATUS: "✅ 2026-06-19 수집(12건)", "_row": 2}]},
@@ -185,7 +177,7 @@ def test_skips_row_already_collected_status_filled():
 
 
 def test_collects_again_regardless_of_date_when_status_empty():
-    """날짜가 바뀌어도 '자료조사' 칸이 비어 있으면 수집한다(과거 날짜기반 약점 해소).
+    """날짜가 바뀌어도 '수집상태' 칸이 비어 있으면 수집한다(과거 날짜기반 약점 해소).
 
     예전 로직: 같은 키워드를 어제 수집했으면 오늘 또 수집(날짜 키가 달라). 약점 = 날짜만 바뀌면
     이미 받은 키워드를 무한 재수집. 새 로직: 표시 칸이 비었는지로만 판단 → 표시되면 다시는 안 함.
@@ -476,7 +468,7 @@ def test_format_summary_basic_no_filter_wording():
 
 
 def test_failure_keyword_gets_no_status_writeback():
-    """fetch 실패한 키워드는 '자료조사' 표시를 받지 않는다(다음 실행이 빈 칸부터 재개)."""
+    """fetch 실패한 키워드는 '수집상태' 표시를 받지 않는다(다음 실행이 빈 칸부터 재개)."""
     client = _client_with(
         {"x.카외": [
             {"키워드": "터지는키워드", "키워드 분류(단계)": "3 증상", "_row": 2},
@@ -505,7 +497,7 @@ def test_failure_keyword_gets_no_status_writeback():
 
 
 def test_empty_result_still_marks_status_to_avoid_reretry():
-    """결과 0건이어도 '자료조사' 칸에 '(0건)' 표시 → 무한 재시도 방지(시도했음을 기록)."""
+    """결과 0건이어도 '수집상태' 칸에 '(0건)' 표시 → 무한 재시도 방지(시도했음을 기록)."""
     client = _client_with(
         {"x.카외": [{"키워드": "희귀키워드", "키워드 분류(단계)": "3 증상", "_row": 2}]}
     )
@@ -524,7 +516,7 @@ def test_empty_result_still_marks_status_to_avoid_reretry():
 
 
 def test_staging_append_failure_skips_status_for_resume():
-    """청크 스테이징 append 실패 시 그 청크는 '자료조사' 표시 안 함(재개 불변식).
+    """청크 스테이징 append 실패 시 그 청크는 '수집상태' 표시 안 함(재개 불변식).
 
     표시가 찍힌 행 ⟹ 적재 완료. append 가 터지면 표시를 안 찍어 다음 실행이 다시 수집한다.
     """
@@ -549,7 +541,7 @@ def test_staging_append_failure_skips_status_for_resume():
 
 
 def test_status_writeback_uses_dedicated_method_not_write_results():
-    """'자료조사' 표시는 write_collect_status 전용 경로로만 — write_results(K/L/M/O 가드) 안 씀."""
+    """'수집상태' 표시는 write_collect_status 전용 경로로만 — write_results(K/L/M/O 가드) 안 씀."""
     client = _client_with(
         {"x.카외": [{"키워드": "두피", "키워드 분류(단계)": "3 증상", "_row": 2}]}
     )
@@ -628,7 +620,7 @@ def test_mixed_filled_and_empty_only_empty_collected():
 
 
 def test_refresh_flag_recollects_even_when_status_filled():
-    """③ '자료조사'가 채워져 있어도 '갱신' 칸에 표시가 있으면 재수집한다(OR 조건)."""
+    """③ '수집상태'가 채워져 있어도 '갱신' 칸에 표시가 있으면 재수집한다(OR 조건)."""
     client = _client_with(
         {"x.카외": [{"키워드": "두피 가려움", "키워드 분류(단계)": "3 증상",
                      HEADER_COLLECT_STATUS: "✅ 2026-06-10 수집(5건)",
@@ -647,11 +639,8 @@ def test_refresh_flag_recollects_even_when_status_filled():
     assert fetch_j.call_count == 2          # 재수집됨(sim+date)
     assert summary["collected"] == 1
     assert summary["skipped"] == 0
-    # 갱신 결과는 '갱신 상태' 칸에만 표시.
-    assert _refresh_status_writes(client) == [("x.카외", 2, "✅ 6/25 갱신(+1건)")]
-    # '자료조사'(첫 수집 기록)는 절대 안 건드림(보존).
-    assert _status_writes(client) == []
-    client.write_collect_status.assert_not_called()
+    # 갱신 결과도 '수집상태' 칸에 갱신 문구로 기록(2026-06-21 병합 — 같은 칸 덮음).
+    assert _status_writes(client) == [("x.카외", 2, "✅ 6/25 갱신(+1건)")]
     # '갱신' 칸은 비워짐.
     assert _refresh_clears(client) == [("x.카외", 2)]
 
@@ -706,9 +695,8 @@ def test_refresh_skips_links_already_in_staging():
     links = [r[5] for r in rows]
     assert links == ["NEW1"]               # OLD1 중복 제외, 신규만 추가
     assert summary["collected"] == 1
-    # 갱신 결과는 '갱신 상태' 칸, '자료조사'는 보존.
-    assert _refresh_status_writes(client) == [("x.카외", 2, "✅ 6/25 갱신(+1건)")]
-    assert _status_writes(client) == []
+    # 갱신 결과도 '수집상태' 칸에 갱신 문구로 기록(병합 — 같은 칸 덮음).
+    assert _status_writes(client) == [("x.카외", 2, "✅ 6/25 갱신(+1건)")]
 
 
 def test_refresh_preserves_blank_links():
@@ -789,7 +777,7 @@ def test_refresh_review_skips_existing_source_urls():
 
 
 def test_refresh_empty_result_still_clears_flag():
-    """③ 갱신했는데 신규 0건이어도 '갱신' 칸은 비우고 '자료조사'에 갱신(+0건) 표시(무한 재시도 방지)."""
+    """③ 갱신했는데 신규 0건이어도 '갱신' 칸은 비우고 '수집상태'에 갱신(+0건) 표시(무한 재시도 방지)."""
     client = _client_with(
         {"x.카외": [{"키워드": "희귀", "키워드 분류(단계)": "3 증상",
                      HEADER_COLLECT_STATUS: "✅ 2026-06-10 수집(5건)",
@@ -806,17 +794,17 @@ def test_refresh_empty_result_still_clears_flag():
     )
 
     client.append_staging_rows.assert_not_called()   # 신규 행 없음
-    # 갱신 결과(+0건)는 '갱신 상태' 칸, '자료조사'는 보존.
-    assert _refresh_status_writes(client) == [("x.카외", 2, "✅ 6/25 갱신(+0건)")]
-    assert _status_writes(client) == []
+    # 갱신 결과(+0건)도 '수집상태' 칸에 갱신 문구로 기록(병합 — 같은 칸 덮음).
+    assert _status_writes(client) == [("x.카외", 2, "✅ 6/25 갱신(+0건)")]
     assert _refresh_clears(client) == [("x.카외", 2)]  # 그래도 갱신칸은 비움
     assert summary["collected"] == 0
 
 
-def test_refresh_never_overwrites_collect_status():
-    """③ 갱신은 '자료조사'(첫 수집 기록)를 절대 덮지 않는다 — write_collect_status 미호출.
+def test_refresh_overwrites_collect_status_with_refresh_text():
+    """③ 갱신은 '수집상태' 칸을 갱신 시점 문구로 덮는다(2026-06-21 병합 — 별도 칸 없음).
 
-    핵심 회귀 가드: 갱신 결과는 '갱신 상태' 칸에만, 첫 수집 기록은 영구 보존.
+    핵심 회귀 가드: 첫 수집·갱신 둘 다 같은 '수집상태' 칸/메서드로 기록.
+    (실제 자료는 보관함에 날짜별로 보존되므로 시트엔 '마지막 시점' 한 칸이면 충분.)
     """
     client = _client_with(
         {"x.카외": [{"키워드": "두피", "키워드 분류(단계)": "3 증상",
@@ -833,16 +821,15 @@ def test_refresh_never_overwrites_collect_status():
         apify_token="t", apify_actor_id="a~b", today="2026-06-25",
     )
 
-    # 자료조사 칸 write 메서드는 호출조차 안 됨(첫 수집 기록 보존).
-    client.write_collect_status.assert_not_called()
-    # 갱신 결과는 '갱신 상태' 칸으로만.
-    assert _refresh_status_writes(client) == [("x.카외", 2, "✅ 6/25 갱신(+1건)")]
+    # 갱신 결과는 '수집상태' 칸에 갱신 문구로 기록(같은 칸 덮음).
+    client.write_collect_status.assert_called()
+    assert _status_writes(client) == [("x.카외", 2, "✅ 6/25 갱신(+1건)")]
 
 
 def test_blank_collect_with_refresh_flag_treated_as_first_collect():
-    """엣지: '자료조사' 빈칸 + '갱신' 표시 동시 = 첫 수집으로 처리(자료조사에 '수집' 문구).
+    """엣지: '수집상태' 빈칸 + '갱신' 표시 동시 = 첫 수집으로 처리(수집상태에 '수집' 문구).
 
-    갱신 결과 칸이 아니라 자료조사 칸에 첫 수집 문구를 찍고, 사장님 '갱신' 표시는 비운다.
+    갱신 결과 칸이 아니라 수집상태 칸에 첫 수집 문구를 찍고, 사장님 '갱신' 표시는 비운다.
     """
     client = _client_with(
         {"x.카외": [{"키워드": "신규두피", "키워드 분류(단계)": "3 증상",
@@ -860,11 +847,8 @@ def test_blank_collect_with_refresh_flag_treated_as_first_collect():
     )
 
     assert summary["collected"] == 1
-    # 첫 수집 → '자료조사'에 '수집' 문구(갱신 문구 아님).
+    # 첫 수집 → '수집상태'에 '수집' 문구(갱신 문구 아님).
     assert _status_writes(client) == [("x.카외", 2, "✅ 2026-06-25 수집(1건)")]
-    # 갱신 상태 칸엔 안 씀(첫 수집이므로).
-    assert _refresh_status_writes(client) == []
-    client.write_refresh_status.assert_not_called()
     # 하지만 사장님이 찍은 '갱신' 표시는 비운다(다음 실행 무한 재수집 방지).
     assert _refresh_clears(client) == [("x.카외", 2)]
 
@@ -878,7 +862,7 @@ def test_format_refresh_status_month_day_no_leading_zero():
 
 
 def test_should_collect_or_condition():
-    """수집 대상 판정 = '자료조사' 비어있음 OR '갱신' 채워짐."""
+    """수집 대상 판정 = '수집상태' 비어있음 OR '갱신' 채워짐."""
     assert ir._should_collect({}) is True                                    # 둘 다 빈칸 → 수집
     assert ir._should_collect({HEADER_COLLECT_STATUS: "✅ ..."}) is False     # 이미수집+갱신X → 스킵
     assert ir._should_collect({HEADER_COLLECT_STATUS: "✅ ...", HEADER_REFRESH: "O"}) is True  # 갱신 → 수집
