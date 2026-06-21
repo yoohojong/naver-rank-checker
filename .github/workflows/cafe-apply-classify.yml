@@ -1,0 +1,73 @@
+name: cafe-apply-classify
+# CSV 키워드 단계 분류를 라이브 시트 '키워드 분류' 칸에 일괄 반영 (수동 전용).
+# data/keyword_classify_shampoo.csv → 대상 탭(기본 '샴푸 카외')의 각 키워드 행에
+#   '{단계} {유형}'(예: '3 증상') 기록 + '키워드 분류' 칸 드롭다운 목록 갱신.
+# ⚠️ cron 없음 — 사장님 수동 dispatch 전용(no-auto-activation 규칙).
+# dry_run='true' 로 먼저 매칭만 확인 후 'false' 로 실반영 권장.
+
+on:
+  workflow_dispatch:
+    inputs:
+      target_tab:
+        description: '대상 탭 이름'
+        required: false
+        default: '샴푸 카외'
+      dry_run:
+        description: "true=시트 안 씀(매칭만 출력) / false=실반영"
+        required: false
+        type: choice
+        default: 'false'
+        options:
+          - 'false'
+          - 'true'
+
+# 순위체커/재료수집과 별도 그룹 — 서로 취소/대기 영향 없음.
+concurrency:
+  group: cafe-apply-classify
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6.0.2
+        with:
+          token: ${{ secrets.ACTIONS_PAT || github.token }}
+
+      - name: Verify checkout
+        shell: bash
+        run: |
+          test -f requirements.txt
+          test -f src/apply_keyword_classify.py
+          test -f data/keyword_classify_shampoo.csv
+
+      - name: Setup Python 3.13
+        uses: actions/setup-python@v6.2.0
+        with:
+          python-version: '3.13'
+
+      - name: Setup venv + install deps
+        shell: bash
+        run: |
+          python -m venv .venv
+          ./.venv/bin/python -m pip install --upgrade pip
+          ./.venv/bin/python -m pip install -r requirements.txt
+
+      - name: Apply keyword classify to sheet
+        shell: bash
+        env:
+          SPREADSHEET_ID: ${{ secrets.SPREADSHEET_ID }}
+          SERVICE_ACCOUNT_JSON: ${{ secrets.SERVICE_ACCOUNT_JSON }}
+          TARGET_TAB: ${{ inputs.target_tab }}
+          CSV_PATH: 'data/keyword_classify_shampoo.csv'
+          # dry_run='true' 일 때만 DRY_RUN=1 (스크립트는 '1' 만 dry-run 으로 인식).
+          DRY_RUN: ${{ inputs.dry_run == 'true' && '1' || '' }}
+          PYTHONIOENCODING: 'utf-8'
+        run: |
+          ./.venv/bin/python -u -m src.apply_keyword_classify
