@@ -69,6 +69,14 @@ on:
         description: '재료 추출 — 수집결과_리뷰(네이버 772건)를 [별점|원문|출처|제품명|태그] 형식 CSV 로 산출. true/false'
         required: false
         default: 'false'
+      hw_verify:
+        description: '화해 수집기 검증 — 실제 키워드의 저점후기 수집 + 별점 구조 디버그. true/false'
+        required: false
+        default: 'false'
+      hw_target:
+        description: '화해 검증 대상(키워드 또는 제품 id). 기본 헤드앤숄더.'
+        required: false
+        default: '헤드앤숄더'
 
 concurrency:
   group: cafe-jisikin-smoketest
@@ -701,8 +709,71 @@ jobs:
           path: 재료_네이버_저점후기.csv
           if-no-files-found: warn
 
+  # 화해 수집기 검증 — 실제 키워드로 저점후기 수집 + 별점 구조(별 아이콘) 디버그.
+  hw_verify:
+    if: ${{ inputs.hw_verify == 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 18
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6.0.2
+        with:
+          token: ${{ secrets.ACTIONS_PAT || github.token }}
+      - name: Setup Python 3.13
+        uses: actions/setup-python@v6.2.0
+        with:
+          python-version: '3.13'
+      - name: Setup venv + install deps
+        shell: bash
+        run: |
+          python -m venv .venv
+          ./.venv/bin/python -m pip install --upgrade pip
+          ./.venv/bin/python -m pip install -r requirements.txt
+      - name: Install Playwright chromium
+        shell: bash
+        run: |
+          ./.venv/bin/python -m playwright install --with-deps chromium
+      - name: 화해 저점후기 수집 검증 + 별점구조 디버그
+        shell: bash
+        env:
+          HW_TARGET: ${{ github.event.inputs.hw_target }}
+          PYTHONIOENCODING: 'utf-8'
+        run: |
+          ./.venv/bin/python -u - <<'PY'
+          import os, time
+          from playwright.sync_api import sync_playwright
+          from src.review_hwahae import _UA, _EXTRACT_JS, _search_product_id, fetch_hwahae_lowstar
+          tgt = os.environ.get("HW_TARGET") or "헤드앤숄더"
+          # 1) 수집기 직접 호출(저점만).
+          t = time.time()
+          rows = fetch_hwahae_lowstar(tgt, max_reviews=20, max_score=2)
+          print(f"=== 화해 '{tgt}' 저점후기(별점<=2) {len(rows)}건 / {time.time()-t:.0f}s ===", flush=True)
+          for i, r in enumerate(rows[:6], 1):
+              print(f"  {i}. ({r.get('score')}점) {(r.get('content') or '')[:100]}", flush=True)
+          # 2) 별점 구조 디버그: 모든 후기(별점 무관) 수 + 카드 1개 HTML.
+          with sync_playwright() as p:
+              br = p.chromium.launch(headless=True, args=["--disable-blink-features=AutomationControlled"])
+              ctx = br.new_context(user_agent=_UA, locale="ko-KR", viewport={"width":1366,"height":3000})
+              pg = ctx.new_page()
+              pid = _search_product_id(pg, tgt)
+              pg.goto(f"https://www.hwahae.co.kr/products/{pid}", wait_until="domcontentloaded", timeout=45000)
+              time.sleep(5)
+              try:
+                  el = pg.query_selector("text=전체 리뷰보기")
+                  if el: el.click(); time.sleep(4)
+              except Exception: pass
+              for _ in range(5): pg.mouse.wheel(0,4000); time.sleep(1.2)
+              allrows = pg.evaluate(_EXTRACT_JS)
+              scored = [r for r in allrows if r.get('score') is not None]
+              print(f"   [디버그] 후기카드 {len(allrows)}개 / 별점읽힌것 {len(scored)}개", flush=True)
+              # 별점 못 읽으면 카드 HTML 덤프(별 구조 파악).
+              card = pg.evaluate("() => { const d=Array.from(document.querySelectorAll('li,article,div')).filter(e=>/\\d{4}\\.\\d{2}\\.\\d{2}/.test(e.innerText||'')&&(e.innerText||'').length>30&&(e.innerText||'').length<500); const el=d.find(e=>!d.some(o=>o!==e&&e.contains(o))); return el?el.outerHTML.replace(/\\s+/g,' ').slice(0,600):'NONE'; }")
+              print(f"   [디버그] 카드HTML: {card}", flush=True)
+              br.close()
+          PY
+
   smoke:
-    if: ${{ inputs.review_timing != 'true' && inputs.count_keywords != 'true' && inputs.matrix_probe != 'true' && inputs.yield_probe != 'true' && inputs.shop_probe != 'true' && inputs.hwahae_probe != 'true' && inputs.recon_probe != 'true' && inputs.gp_verify != 'true' && inputs.material_export != 'true' }}
+    if: ${{ inputs.review_timing != 'true' && inputs.count_keywords != 'true' && inputs.matrix_probe != 'true' && inputs.yield_probe != 'true' && inputs.shop_probe != 'true' && inputs.hwahae_probe != 'true' && inputs.recon_probe != 'true' && inputs.gp_verify != 'true' && inputs.material_export != 'true' && inputs.hw_verify != 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
