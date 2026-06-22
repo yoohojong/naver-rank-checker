@@ -3,14 +3,13 @@ name: weekly-digest
 # M11 (2026-06-23): 카페외부 주간 총괄 다이제스트 (총괄자용). 일일 telegram-report 와 별개.
 # 데이터는 rank-check 의 sheet-backup artifact 재가공(시트 read·서비스계정 키 불필요).
 #
-# ⚠️ 자동발송 비활성 (사장님 "켜" 전까지):
-#   - 아래 schedule 은 주석 처리 — 현재는 수동(workflow_dispatch)만 가능, 자동 발동 안 함.
-#   - 수동 실행도 기본 dry-run(Actions 로그에 메시지만 출력). 'send=true' 입력해야 텔레그램 발송.
-#   - 사장님 go 시: schedule 주석 해제(월 07:00 KST) → 매주 자동 발송 시작.
+# ✅ 자동발송 ON (사장님 "켜" 2026-06-23): 매주 월요일 07:00 KST 자동 발송.
+#   - 수동 실행(workflow_dispatch)은 기본 dry-run(로그만), 'send=true' 입력 시 텔레그램 발송.
+#   - 끄려면 아래 schedule 두 줄 다시 주석 처리.
 
 on:
-  # schedule:
-  #   - cron: '0 22 * * 0'   # 월요일 07:00 KST (일요일 22:00 UTC) — 사장님 go 후 주석 해제
+  schedule:
+    - cron: '0 22 * * 0'   # 월요일 07:00 KST (일요일 22:00 UTC)
   workflow_dispatch:
     inputs:
       send:
