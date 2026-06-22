@@ -81,6 +81,14 @@ on:
         description: '드라이브 자동저장 트리거 작동 확인 — 수집결과 탭 "적재완료" 칸 채움여부로 역추적. true/false'
         required: false
         default: 'false'
+      harvest_urls:
+        description: '주소수집 — 4·5단계 키워드를 검색해 경쟁사 상품 URL(스마트스토어 /main/ 포함)을 뽑아 확장 붙여넣기용 목록 산출. true/false'
+        required: false
+        default: 'false'
+      harvest_limit:
+        description: '주소수집 키워드 상한(한 번에 처리할 키워드 수, 시간 관리용). 0=전체.'
+        required: false
+        default: '40'
 
 concurrency:
   group: cafe-jisikin-smoketest
@@ -826,8 +834,119 @@ jobs:
                   print("    → 적재완료 전부 빈칸 = 드라이브 자동저장 트리거 아직 안 돎(OFF) ❌", flush=True)
           PY
 
+  # 주소수집 — 4·5단계 키워드를 네이버 통합검색해 경쟁사 상품 URL(브랜드 + 스마트스토어 /main/ 포함)을
+  #   뽑아 '확장 붙여넣기용 목록'으로 산출. (검색은 로그인월 무관 → 서버에서 됨. 수집은 사장님 확장이 함.)
+  harvest_urls:
+    if: ${{ inputs.harvest_urls == 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 50
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6.0.2
+        with:
+          token: ${{ secrets.ACTIONS_PAT || github.token }}
+      - name: Setup Python 3.13
+        uses: actions/setup-python@v6.2.0
+        with:
+          python-version: '3.13'
+      - name: Setup venv + install deps
+        shell: bash
+        run: |
+          python -m venv .venv
+          ./.venv/bin/python -m pip install --upgrade pip
+          ./.venv/bin/python -m pip install -r requirements.txt
+      - name: Install Playwright chromium
+        shell: bash
+        run: |
+          ./.venv/bin/python -m playwright install --with-deps chromium
+      - name: 4·5단계 키워드 → 상품 URL 수집
+        shell: bash
+        env:
+          SPREADSHEET_ID: ${{ secrets.SPREADSHEET_ID }}
+          SERVICE_ACCOUNT_JSON: ${{ secrets.SERVICE_ACCOUNT_JSON }}
+          HARVEST_LIMIT: ${{ inputs.harvest_limit }}
+          PYTHONIOENCODING: 'utf-8'
+        run: |
+          ./.venv/bin/python -u - <<'PY'
+          import os, re, time, random
+          from playwright.sync_api import sync_playwright
+          from src.review_lowstar import _UA
+          from src.config import SERVICE_ACCOUNT_JSON, SPREADSHEET_ID
+          from src.sheets import SheetsClient
+          from src.integration_runner import _stage_value, _stage_digit, COL_KEYWORD
+
+          # 상품 URL — 브랜드/스마트스토어 정식슬러그 + 스마트스토어 /main/(로그인월, 단 사장님 로그인 확장에선 열림).
+          PROD = re.compile(r"https?://(?:brand|smartstore)\.naver\.com/(?:main|[A-Za-z0-9_\-]+)/products/\d+")
+
+          try:
+              lim = int(os.environ.get("HARVEST_LIMIT") or "40")
+          except ValueError:
+              lim = 40
+
+          client = SheetsClient(spreadsheet_id=SPREADSHEET_ID, service_account_json=SERVICE_ACCOUNT_JSON)
+          data = client.load_all_data_tabs(tab_filter=lambda n: "카외" in n)
+          kws = []
+          seen_kw = set()
+          for tab, rows in data.items():
+              for row in rows or []:
+                  kw = (row.get(COL_KEYWORD) or "").strip()
+                  d = _stage_digit(_stage_value(row))
+                  if kw and d in ("4", "5") and kw not in seen_kw:
+                      seen_kw.add(kw); kws.append(kw)
+          total = len(kws)
+          if lim > 0:
+              kws = kws[:lim]
+          print(f"=== 4·5단계 키워드 {total}개 중 이번 처리 {len(kws)}개 (상한 {lim or '전체'}) ===", flush=True)
+
+          all_urls = []           # 평면 목록(확장 붙여넣기용, 중복 제거)
+          per_kw_lines = []       # 키워드별 상세
+          seen_url = set()
+          with sync_playwright() as p:
+              br = p.chromium.launch(headless=True, args=["--disable-blink-features=AutomationControlled"])
+              ctx = br.new_context(user_agent=_UA, locale="ko-KR", viewport={"width":1366,"height":2200})
+              pg = ctx.new_page()
+              for i, kw in enumerate(kws, 1):
+                  found = []
+                  try:
+                      pg.goto("https://search.naver.com/search.naver?query="+kw.replace(" ","+"),
+                              wait_until="domcontentloaded", timeout=45000)
+                      time.sleep(2.5)
+                      for _ in range(3):
+                          pg.mouse.wheel(0, 2200); time.sleep(0.7)
+                      blob = "\n".join(pg.eval_on_selector_all("a","els=>els.map(e=>e.href).filter(Boolean)")) + "\n" + pg.content()
+                      found = list(dict.fromkeys(PROD.findall(blob)))
+                  except Exception as e:
+                      print(f"  [{i}/{len(kws)}] '{kw}' 검색오류 {type(e).__name__}", flush=True)
+                  per_kw_lines.append(f"# {kw} ({len(found)}개)")
+                  for u in found:
+                      per_kw_lines.append(u)
+                      if u not in seen_url:
+                          seen_url.add(u); all_urls.append(u)
+                  per_kw_lines.append("")
+                  print(f"  [{i}/{len(kws)}] '{kw}' → 상품 {len(found)}개 (누적 고유 {len(all_urls)})", flush=True)
+                  time.sleep(random.uniform(1.5, 4.0))  # 과속 차단 회피
+              br.close()
+
+          with open("경쟁사상품주소.txt", "w", encoding="utf-8") as f:
+              f.write("\n".join(all_urls) + "\n")
+          with open("키워드별_상품주소.txt", "w", encoding="utf-8") as f:
+              f.write("\n".join(per_kw_lines) + "\n")
+          print(f"=== 산출: 고유 상품주소 {len(all_urls)}개 (붙여넣기용 '경쟁사상품주소.txt') ===", flush=True)
+          # 앞 20개 미리보기.
+          for u in all_urls[:20]:
+              print("   "+u, flush=True)
+          PY
+      - name: 주소 목록 아티팩트 업로드
+        uses: actions/upload-artifact@v4
+        with:
+          name: 경쟁사-상품주소
+          path: |
+            경쟁사상품주소.txt
+            키워드별_상품주소.txt
+          if-no-files-found: warn
+
   smoke:
-    if: ${{ inputs.review_timing != 'true' && inputs.count_keywords != 'true' && inputs.matrix_probe != 'true' && inputs.yield_probe != 'true' && inputs.shop_probe != 'true' && inputs.hwahae_probe != 'true' && inputs.recon_probe != 'true' && inputs.gp_verify != 'true' && inputs.material_export != 'true' && inputs.hw_verify != 'true' && inputs.deposit_check != 'true' }}
+    if: ${{ inputs.review_timing != 'true' && inputs.count_keywords != 'true' && inputs.matrix_probe != 'true' && inputs.yield_probe != 'true' && inputs.shop_probe != 'true' && inputs.hwahae_probe != 'true' && inputs.recon_probe != 'true' && inputs.gp_verify != 'true' && inputs.material_export != 'true' && inputs.hw_verify != 'true' && inputs.deposit_check != 'true' && inputs.harvest_urls != 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
