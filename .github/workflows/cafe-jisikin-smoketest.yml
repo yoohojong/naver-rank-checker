@@ -65,6 +65,10 @@ on:
         description: '글로우픽 검증 대상(제품 id 또는 키워드). 기본 161538(헤드앤숄더 가려운두피).'
         required: false
         default: '161538'
+      material_export:
+        description: '재료 추출 — 수집결과_리뷰(네이버 772건)를 [별점|원문|출처|제품명|태그] 형식 CSV 로 산출. true/false'
+        required: false
+        default: 'false'
 
 concurrency:
   group: cafe-jisikin-smoketest
@@ -607,8 +611,98 @@ jobs:
               br.close()
           PY
 
+  # 재료 추출 — 수집결과_리뷰(네이버 저점후기)를 사장님 확정 형식으로 가공:
+  #   [별점 | 후기원문 | 출처 | 제품명 | 태그(사용감/불만/제외후보)], 제품별 정리. CSV 아티팩트 산출.
+  material_export:
+    if: ${{ inputs.material_export == 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6.0.2
+        with:
+          token: ${{ secrets.ACTIONS_PAT || github.token }}
+      - name: Setup Python 3.13
+        uses: actions/setup-python@v6.2.0
+        with:
+          python-version: '3.13'
+      - name: Setup venv + install deps
+        shell: bash
+        run: |
+          python -m venv .venv
+          ./.venv/bin/python -m pip install --upgrade pip
+          ./.venv/bin/python -m pip install -r requirements.txt
+      - name: 재료 추출(형식 가공 + 태그)
+        shell: bash
+        env:
+          SPREADSHEET_ID: ${{ secrets.SPREADSHEET_ID }}
+          SERVICE_ACCOUNT_JSON: ${{ secrets.SERVICE_ACCOUNT_JSON }}
+          PYTHONIOENCODING: 'utf-8'
+        run: |
+          ./.venv/bin/python -u - <<'PY'
+          import csv, re
+          from collections import defaultdict, Counter
+          from src.config import SERVICE_ACCOUNT_JSON, SPREADSHEET_ID
+          from src.sheets import SheetsClient
+          from src.integration_runner import STAGING_TAB_REVIEW
+
+          # 태그 규칙(사장님 방침: 삭제 X, 분류만). 제품과 무관한 불만 = 제외후보.
+          EXCLUDE = re.compile(r"배송|택배|포장|박스|가격|비싸|할인|품절|재고|사은품|적립|쿠폰|환불|교환|반품|배달")
+          FEEL = re.compile(r"향|냄새|거품|텍스처|발림|펌프|뚜껑|용기|점도|묽|꾸덕|헹굼|뽀득|뻣뻣|떡|기름|유분|건조|촉촉|시원|쿨|세정|각질|두피|가려움|따가|자극")
+
+          def tag(body):
+              b = body or ""
+              if EXCLUDE.search(b) and not FEEL.search(b):
+                  return "제외후보"
+              if FEEL.search(b):
+                  return "사용감"
+              return "불만"
+
+          client = SheetsClient(spreadsheet_id=SPREADSHEET_ID, service_account_json=SERVICE_ACCOUNT_JSON)
+          recs = client.read_tab_records(STAGING_TAB_REVIEW)
+          by_product = defaultdict(list)
+          for r in recs or []:
+              kw = (r.get("키워드") or "").strip()
+              star = (r.get("제목") or "").strip()     # 리뷰는 제목=별점
+              body = (r.get("본문") or "").strip()
+              if not kw or not body or star in ("", "0건"):
+                  continue
+              by_product[kw].append({"star": star, "body": body, "tag": tag(body)})
+
+          rows_out = []
+          for prod in sorted(by_product, key=lambda k: -len(by_product[k])):
+              for it in by_product[prod]:
+                  rows_out.append([it["star"], it["body"], "네이버", prod, it["tag"]])
+
+          with open("재료_네이버_저점후기.csv", "w", encoding="utf-8-sig", newline="") as f:
+              w = csv.writer(f)
+              w.writerow(["별점", "후기원문", "출처", "제품명", "태그"])
+              w.writerows(rows_out)
+
+          tagcnt = Counter(r[4] for r in rows_out)
+          print(f"=== 재료 산출 완료: 총 {len(rows_out)}건 / 제품 {len(by_product)}개 ===", flush=True)
+          print(f"=== 태그 분포: {dict(tagcnt)} ===", flush=True)
+          print("--- 제품별 건수 ---", flush=True)
+          for prod in sorted(by_product, key=lambda k: -len(by_product[k])):
+              print(f"   {len(by_product[prod]):>4}건  {prod}", flush=True)
+          print("--- 샘플(사용감/불만 5건) ---", flush=True)
+          shown = 0
+          for r in rows_out:
+              if r[4] in ("사용감", "불만"):
+                  print(f"   ({r[0]}점/{r[4]}) [{r[3]}] {r[1][:90]}", flush=True)
+                  shown += 1
+                  if shown >= 5:
+                      break
+          PY
+      - name: CSV 아티팩트 업로드
+        uses: actions/upload-artifact@v4
+        with:
+          name: 재료-네이버-저점후기
+          path: 재료_네이버_저점후기.csv
+          if-no-files-found: warn
+
   smoke:
-    if: ${{ inputs.review_timing != 'true' && inputs.count_keywords != 'true' && inputs.matrix_probe != 'true' && inputs.yield_probe != 'true' && inputs.shop_probe != 'true' && inputs.hwahae_probe != 'true' && inputs.recon_probe != 'true' && inputs.gp_verify != 'true' }}
+    if: ${{ inputs.review_timing != 'true' && inputs.count_keywords != 'true' && inputs.matrix_probe != 'true' && inputs.yield_probe != 'true' && inputs.shop_probe != 'true' && inputs.hwahae_probe != 'true' && inputs.recon_probe != 'true' && inputs.gp_verify != 'true' && inputs.material_export != 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
