@@ -57,6 +57,14 @@ on:
         description: '후기 로딩 정찰 — 글로우픽·화해 제품페이지가 후기를 어떤 XHR(JSON)로 불러오는지 캡처. true/false'
         required: false
         default: 'false'
+      gp_verify:
+        description: '글로우픽 수집기 검증 — 실제 제품의 저점후기를 fetch_glowpick_lowstar 로 수집해 출력. true/false'
+        required: false
+        default: 'false'
+      gp_target:
+        description: '글로우픽 검증 대상(제품 id 또는 키워드). 기본 161538(헤드앤숄더 가려운두피).'
+        required: false
+        default: '161538'
 
 concurrency:
   group: cafe-jisikin-smoketest
@@ -487,8 +495,50 @@ jobs:
               br.close()
           PY
 
+  # 글로우픽 수집기 실검증 — 실제 제품 저점후기를 fetch_glowpick_lowstar 로 뽑아 출력(별점·원문).
+  gp_verify:
+    if: ${{ inputs.gp_verify == 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 18
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6.0.2
+        with:
+          token: ${{ secrets.ACTIONS_PAT || github.token }}
+      - name: Setup Python 3.13
+        uses: actions/setup-python@v6.2.0
+        with:
+          python-version: '3.13'
+      - name: Setup venv + install deps
+        shell: bash
+        run: |
+          python -m venv .venv
+          ./.venv/bin/python -m pip install --upgrade pip
+          ./.venv/bin/python -m pip install -r requirements.txt
+      - name: Install Playwright chromium
+        shell: bash
+        run: |
+          ./.venv/bin/python -m playwright install --with-deps chromium
+      - name: 글로우픽 저점후기 수집 검증
+        shell: bash
+        env:
+          GP_TARGET: ${{ github.event.inputs.gp_target }}
+          PYTHONIOENCODING: 'utf-8'
+        run: |
+          ./.venv/bin/python -u - <<'PY'
+          import os, time
+          from src.review_glowpick import fetch_glowpick_lowstar
+          tgt = os.environ.get("GP_TARGET") or "161538"
+          t = time.time()
+          rows = fetch_glowpick_lowstar(tgt, max_reviews=25, max_score=2)
+          print(f"=== 글로우픽 '{tgt}' 저점후기 {len(rows)}건 / {time.time()-t:.0f}s ===", flush=True)
+          for i, r in enumerate(rows, 1):
+              c = (r.get('content') or '')[:140].replace('\n',' ')
+              print(f"  {i}. ({r.get('score')}점) {c}", flush=True)
+          PY
+
   smoke:
-    if: ${{ inputs.review_timing != 'true' && inputs.count_keywords != 'true' && inputs.matrix_probe != 'true' && inputs.yield_probe != 'true' && inputs.shop_probe != 'true' && inputs.hwahae_probe != 'true' && inputs.recon_probe != 'true' }}
+    if: ${{ inputs.review_timing != 'true' && inputs.count_keywords != 'true' && inputs.matrix_probe != 'true' && inputs.yield_probe != 'true' && inputs.shop_probe != 'true' && inputs.hwahae_probe != 'true' && inputs.recon_probe != 'true' && inputs.gp_verify != 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
