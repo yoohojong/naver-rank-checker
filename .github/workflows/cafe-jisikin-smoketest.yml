@@ -456,22 +456,31 @@ jobs:
                       for mth, u, b in hits[:6]:
                           print(f"   [{mth}] {u[:130]}", flush=True)
                           print(f"      ▷ {b[:280]}", flush=True)
-                      # 글로우픽: 후기 아이템 DOM 선택자 정찰(class 에 review 포함).
+                      # 글로우픽: 후기 '카드' 단위 outerHTML 덤프(별점/본문 중첩 구조 확정용).
                       if name == "글로우픽":
-                          samp = pg.evaluate(
-                              "() => Array.from(document.querySelectorAll('[class*=review i],[class*=Review]')).slice(0,4).map(e => e.tagName+'.'+(e.className||'').slice(0,60)+' :: '+(e.innerText||'').replace(/\\s+/g,' ').slice(0,80))"
+                          cards = pg.evaluate(
+                              "() => { const L=document.querySelector('[class*=productReviewL]'); if(!L) return ['NO_LIST']; "
+                              "return Array.from(L.querySelectorAll('li')).slice(0,3).map(e=>e.outerHTML.replace(/\\s+/g,' ').slice(0,420)); }"
                           )
-                          for s in samp:
-                              print(f"      DOM: {s}", flush=True)
-                      # 화해: 후기 관련 링크/버튼/경로 탐색.
+                          for i, s in enumerate(cards):
+                              print(f"      G카드{i}: {s}", flush=True)
+                      # 화해: '전체 리뷰보기' 이동 후 후기 카드 구조 덤프.
                       if name == "화해":
-                          links = pg.evaluate(
-                              "() => Array.from(document.querySelectorAll('a,button')).map(e => (e.getAttribute('href')||'')+' | '+(e.innerText||'').replace(/\\s+/g,' ').slice(0,30)).filter(t => /리뷰|후기|평점|review/i.test(t)).slice(0,8)"
-                          )
-                          for s in links:
-                              print(f"      화해링크: {s}", flush=True)
-                          body_samp = pg.inner_text("body")[:500].replace("\n", " ")
-                          print(f"      화해본문샘플: {body_samp}", flush=True)
+                          try:
+                              el = pg.query_selector("text=전체 리뷰보기")
+                              if el:
+                                  el.click(); time.sleep(4)
+                                  for _ in range(4):
+                                      pg.mouse.wheel(0, 3000); time.sleep(1.2)
+                              print(f"      화해 전체리뷰 후 URL={pg.url} 본문길이={len(pg.inner_text('body'))}", flush=True)
+                              # 별점 글자(0~5) + 날짜 패턴 주변 카드 덤프
+                              cards = pg.evaluate(
+                                  "() => Array.from(document.querySelectorAll('li,article,[class*=review i]')).filter(e=>/\\d{4}\\.\\d{2}\\.\\d{2}/.test(e.innerText||'') && (e.innerText||'').length>30 && (e.innerText||'').length<600).slice(0,3).map(e=>e.outerHTML.replace(/\\s+/g,' ').slice(0,420))"
+                              )
+                              for i, s in enumerate(cards):
+                                  print(f"      H카드{i}: {s}", flush=True)
+                          except Exception as e2:
+                              print(f"      화해 카드덤프 오류: {type(e2).__name__}: {e2}", flush=True)
                   except Exception as e:
                       print(f"=== {name}: ERROR {type(e).__name__}: {e} ===", flush=True)
                   ctx.close()
