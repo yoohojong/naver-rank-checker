@@ -107,6 +107,7 @@ def run_collection(
     reviews_on: bool = True,
     review_max: int = 20,
     review_max_score: int = 3,
+    review_brand_whitelist=(),
     today: str | None = None,
     tab_filter=None,
 ) -> dict:
@@ -121,6 +122,10 @@ def run_collection(
         reviews_on: 리뷰 채널 토글. 기본 True(Playwright 는 토큰 불필요). False 면 리뷰 단계 전부 스킵.
         review_max: 리뷰 단계 키워드당 수집 목표 건수(fetch_reviews max_reviews 로 전달).
         review_max_score: 이 별점 이하만 수집(기본 3 = 저점 1~3점).
+        review_brand_whitelist: 저점리뷰(4·5단계) 대상 브랜드 한정(2026-06-22 실증용).
+            브랜드명 문자열 시퀀스. 비면(기본) 한정 없음(종전대로 단계 4·5 전부 — 기존 동작 보존).
+            설정되면 '키워드'에 화이트리스트 브랜드명 중 하나라도 포함된 4·5단계 행만 리뷰 수집,
+            나머지 4·5단계 행은 스킵(전수 수집 시 GHA 60분 timeout 회피 — 대표 소수만 1회 실증).
         today: 'YYYY-MM-DD' (테스트 주입용). None 이면 오늘 KST.
         tab_filter: 탭 이름 → bool. None 이면 이름에 '카외' 포함 탭만.
 
@@ -135,6 +140,9 @@ def run_collection(
         tab_filter = lambda name: "카외" in name  # noqa: E731
 
     naver_on = bool(naver_client_id and naver_client_secret)
+
+    # 저점리뷰 브랜드 한정(실증용). 정규화: 공백 제거 + 빈 값 제외. 비면 한정 없음.
+    brand_whitelist = tuple(b.strip() for b in (review_brand_whitelist or ()) if b and b.strip())
 
     summary = {"collected": 0, "failed": 0, "skipped": 0, "tabs": 0}
 
@@ -213,6 +221,11 @@ def run_collection(
                         # ⑤ 리뷰 채널 비활성 → 스킵.
                         summary["skipped"] += 1
                         continue
+                    # 브랜드 한정(실증용): 화이트리스트 설정 시 '키워드'에 그 브랜드명을 포함한 행만.
+                    #   비면 한정 없음(기존 동작). 대표 소수 브랜드만 1회 실증 → GHA timeout 회피.
+                    if brand_whitelist and not any(b in keyword for b in brand_whitelist):
+                        summary["skipped"] += 1
+                        continue
                     if (keyword, day) in seen_review:
                         summary["skipped"] += 1
                         continue
@@ -283,6 +296,7 @@ def main() -> int:
     from src.config import (
         NAVER_OPENAPI_CLIENT_ID,
         NAVER_OPENAPI_CLIENT_SECRET,
+        REVIEW_BRAND_WHITELIST,
         SERVICE_ACCOUNT_JSON,
         SPREADSHEET_ID,
     )
@@ -298,6 +312,9 @@ def main() -> int:
     reviews_on = os.environ.get("CAFE_REVIEWS_ON", "true").strip().lower() != "false"
     if not reviews_on:
         print("[integration_runner] ⚠️ CAFE_REVIEWS_ON=false — 저점리뷰 수집 비활성.")
+    if REVIEW_BRAND_WHITELIST:
+        print(f"[integration_runner] 🔖 저점리뷰 브랜드 한정 ON — {', '.join(REVIEW_BRAND_WHITELIST)} "
+              f"({len(REVIEW_BRAND_WHITELIST)}개) 포함 키워드만 수집.")
 
     # 무거운 의존성(gspread/playwright)은 main 실행 시에만 import(테스트 import 가벼움 유지).
     from src.jisikin_collect import fetch_jisikin
@@ -317,6 +334,7 @@ def main() -> int:
         naver_client_id=NAVER_OPENAPI_CLIENT_ID,
         naver_client_secret=NAVER_OPENAPI_CLIENT_SECRET,
         reviews_on=reviews_on,
+        review_brand_whitelist=REVIEW_BRAND_WHITELIST,
     )
 
     line = format_summary(summary)

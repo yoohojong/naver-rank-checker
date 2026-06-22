@@ -49,3 +49,13 @@ APIFY_MAX_REVIEW_PAGES = int(os.environ.get("APIFY_MAX_REVIEW_PAGES", "3"))
 CAFE_WHITELIST = frozenset(
     s.strip() for s in os.environ.get("CAFE_WHITELIST_SLUGS", "").split(",") if s.strip()
 )
+
+# 저점리뷰 대표 브랜드 화이트리스트(2026-06-22 실증용).
+# 배경: 4·5단계 키워드 전부(약 506개) 저점리뷰를 긁으면 GHA 60분 timeout 초과(검증됨).
+#   대표 유명 브랜드 소수(3개=38초 검증)로 한정하면 몇 분 안에 1회 실증 가능.
+# 동작: 환경변수 REVIEW_BRAND_WHITELIST = "니조랄,헤드앤숄더,도브" 콤마 구분.
+#   설정되면 STAGE_REVIEW(4·5단계) 행 중 '키워드'에 화이트리스트 브랜드명을 포함한 행만 리뷰 수집.
+#   미설정 시 = 빈 tuple = 한정 없음(= 종전대로 단계 4·5 전부 — 기존 동작 보존, 안전 default).
+REVIEW_BRAND_WHITELIST = tuple(
+    s.strip() for s in os.environ.get("REVIEW_BRAND_WHITELIST", "").split(",") if s.strip()
+)

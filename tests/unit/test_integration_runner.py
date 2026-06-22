@@ -117,6 +117,61 @@ def test_routes_alternative_and_brand_to_reviews(stage):
     assert summary["collected"] == 1
 
 
+def test_review_brand_whitelist_collects_only_matching_brand():
+    """저점리뷰 브랜드 한정(실증용): 화이트리스트 브랜드명을 포함한 4·5단계 행만 리뷰 수집."""
+    client = _client_with(
+        {"x.카외": [
+            {"키워드": "니조랄샴푸", "키워드 분류(단계)": "5 브랜드", "_row": 2},
+            {"키워드": "기타브랜드샴푸", "키워드 분류(단계)": "5 브랜드", "_row": 3},
+        ]}
+    )
+    fetch_r = MagicMock(return_value=[
+        {"score": 1, "content": "별로", "product_name": "P", "date": "d",
+         "source_url": "https://brand.naver.com/x/products/1"}
+    ])
+
+    summary = run_collection(
+        client,
+        fetch_jisikin=MagicMock(),
+        fetch_reviews=fetch_r,
+        naver_client_id="id",
+        naver_client_secret="sec",
+        review_brand_whitelist=("니조랄", "헤드앤숄더"),
+        today="2026-06-20",
+    )
+
+    # 화이트리스트 브랜드(니조랄) 행만 리뷰 호출 — 비매칭 행은 스킵.
+    fetch_r.assert_called_once()
+    assert fetch_r.call_args.args[0] == "니조랄샴푸"
+    assert summary["collected"] == 1
+    assert summary["skipped"] == 1  # 비매칭 '기타브랜드샴푸' 행.
+
+
+def test_review_brand_whitelist_empty_collects_all():
+    """화이트리스트 비면(기본) 한정 없음 — 4·5단계 전부 종전대로 수집(기존 동작 보존)."""
+    client = _client_with(
+        {"x.카외": [
+            {"키워드": "니조랄샴푸", "키워드 분류(단계)": "5 브랜드", "_row": 2},
+            {"키워드": "기타브랜드샴푸", "키워드 분류(단계)": "5 브랜드", "_row": 3},
+        ]}
+    )
+    fetch_r = MagicMock(return_value=[
+        {"score": 1, "content": "별로", "product_name": "P", "date": "d", "source_url": "u"}
+    ])
+
+    summary = run_collection(
+        client,
+        fetch_jisikin=MagicMock(),
+        fetch_reviews=fetch_r,
+        naver_client_id="id",
+        naver_client_secret="sec",
+        today="2026-06-20",
+    )
+
+    assert fetch_r.call_count == 2  # 둘 다 수집(한정 없음).
+    assert summary["collected"] == 2
+
+
 def test_review_uses_link_when_present():
     """시트 '링크' 칸에 상품 URL이 있으면 키워드 대신 그 URL을 review_lowstar 에 넘긴다."""
     client = _client_with(
