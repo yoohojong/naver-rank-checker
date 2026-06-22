@@ -25,6 +25,10 @@ on:
         description: '저점리뷰 키워드당 목표 건수'
         required: false
         default: '5'
+      count_keywords:
+        description: '라이브 시트 카외 탭 단계별 키워드 개수만 카운트(읽기전용, true/false)'
+        required: false
+        default: 'false'
 
 concurrency:
   group: cafe-jisikin-smoketest
@@ -35,7 +39,7 @@ permissions:
 
 jobs:
   smoke:
-    if: ${{ inputs.review_timing != 'true' }}
+    if: ${{ inputs.review_timing != 'true' && inputs.count_keywords != 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -143,4 +147,72 @@ jobs:
                   print(f"[{i}/{len(kws)}] '{kw}' 예외: {type(e).__name__}: {e} ({dt:.0f}s)", flush=True)
                   traceback.print_exc()
           print(f"=== 진단 종료: 총 {time.time() - t0:.0f}s ===", flush=True)
+          PY
+
+  count_keywords:
+    if: ${{ inputs.count_keywords == 'true' }}
+    runs-on: ubuntu-latest
+    # 읽기전용 — 시트 read 가 행오버하면 여기서 멈춤(=1h 행오버가 시트read 였는지 판별).
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6.0.2
+        with:
+          token: ${{ secrets.ACTIONS_PAT || github.token }}
+
+      - name: Setup Python 3.13
+        uses: actions/setup-python@v6.2.0
+        with:
+          python-version: '3.13'
+
+      - name: Setup venv + install deps
+        shell: bash
+        run: |
+          python -m venv .venv
+          ./.venv/bin/python -m pip install --upgrade pip
+          ./.venv/bin/python -m pip install -r requirements.txt
+
+      - name: 라이브 시트 단계별 키워드 카운트(읽기전용)
+        shell: bash
+        env:
+          SPREADSHEET_ID: ${{ secrets.SPREADSHEET_ID }}
+          SERVICE_ACCOUNT_JSON: ${{ secrets.SERVICE_ACCOUNT_JSON }}
+          PYTHONIOENCODING: 'utf-8'
+        run: |
+          ./.venv/bin/python -u - <<'PY'
+          import time
+          from src.config import SERVICE_ACCOUNT_JSON, SPREADSHEET_ID
+          from src.integration_runner import _stage_value, _stage_digit, COL_KEYWORD
+          from src.sheets import SheetsClient
+
+          print("=== 시트 read 시작 ===", flush=True)
+          t0 = time.time()
+          client = SheetsClient(spreadsheet_id=SPREADSHEET_ID, service_account_json=SERVICE_ACCOUNT_JSON)
+          data = client.load_all_data_tabs(tab_filter=lambda n: "카외" in n)
+          print(f"=== 시트 read 완료: 카외 탭 {len(data)}개 / {time.time()-t0:.1f}s ===", flush=True)
+
+          from collections import Counter
+          per_stage = Counter()
+          review_keywords = []
+          for tab, rows in data.items():
+              tab_cnt = Counter()
+              for row in rows or []:
+                  kw = (row.get(COL_KEYWORD) or "").strip()
+                  d = _stage_digit(_stage_value(row))
+                  if not kw or not d:
+                      continue
+                  per_stage[d] += 1
+                  tab_cnt[d] += 1
+                  if d in ("4", "5"):
+                      review_keywords.append(kw)
+              print(f"  탭 '{tab}': 행 {len(rows or [])} / 단계분포 {dict(tab_cnt)}", flush=True)
+
+          n45 = per_stage["4"] + per_stage["5"]
+          print(f"=== 단계별 키워드(전체): {dict(per_stage)} ===", flush=True)
+          print(f"=== 저점리뷰(Playwright) 대상 4/5단계 키워드 = {n45}개 ===", flush=True)
+          # 키워드당 healthy 19s, worst ~125s(상품5×지연) 가정한 추정시간
+          print(f"    추정 소요: best {n45*19//60}분 ~ worst {n45*125//60}분 (60분 타임아웃 대비)", flush=True)
+          print("    대상 키워드 목록:", flush=True)
+          for k in review_keywords:
+              print(f"      - {k}", flush=True)
           PY
