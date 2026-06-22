@@ -41,6 +41,14 @@ on:
         description: '수율 진단 키워드(콤마). 비우면 대표 샘플(브랜드제품/카테고리/대안 혼합).'
         required: false
         default: ''
+      shop_probe:
+        description: '스마트스토어 우회 테스트 — 네이버쇼핑 경로로 로그인 없이 실슬러그 상품+후기 되는지. true/false'
+        required: false
+        default: 'false'
+      shop_kws:
+        description: '우회 테스트 키워드(콤마). 비우면 스마트스토어로만 팔던 0건 제품 샘플.'
+        required: false
+        default: ''
 
 concurrency:
   group: cafe-jisikin-smoketest
@@ -199,8 +207,100 @@ jobs:
               br.close()
           PY
 
+  # 스마트스토어 우회 테스트 — 통합검색이 주던 '/main/'(로그인월) 말고, 네이버쇼핑(search.shopping)
+  #   경로로 '실슬러그' 상품URL 을 얻으면 로그인 없이 후기까지 되는지 실증. 되면 수율 10→수백 가능.
+  shop_probe:
+    if: ${{ inputs.shop_probe == 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 18
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6.0.2
+        with:
+          token: ${{ secrets.ACTIONS_PAT || github.token }}
+      - name: Setup Python 3.13
+        uses: actions/setup-python@v6.2.0
+        with:
+          python-version: '3.13'
+      - name: Setup venv + install deps
+        shell: bash
+        run: |
+          python -m venv .venv
+          ./.venv/bin/python -m pip install --upgrade pip
+          ./.venv/bin/python -m pip install -r requirements.txt
+      - name: Install Playwright chromium
+        shell: bash
+        run: |
+          ./.venv/bin/python -m playwright install --with-deps chromium
+      - name: 네이버쇼핑 경로 우회 테스트
+        shell: bash
+        env:
+          SHOP_KWS: ${{ inputs.shop_kws }}
+          PYTHONIOENCODING: 'utf-8'
+        run: |
+          ./.venv/bin/python -u - <<'PY'
+          import os, re, time
+          from playwright.sync_api import sync_playwright
+          from src.review_lowstar import _UA, _IDPICK_JS, _extract_ids_from_summary_url
+
+          kws = [k.strip() for k in (os.environ.get("SHOP_KWS") or "").split(",") if k.strip()]
+          if not kws:
+              kws = ["세타필세럼", "도브샴푸비누", "바이오더마크림"]   # 스마트스토어로만 팔던 0건 제품
+          # 실슬러그(=/main/ 아님) 상품 URL — 이게 잡히면 공개 페이지라 로그인 불필요.
+          REAL = re.compile(r"https?://(?:smartstore|brand)\.naver\.com/(?!main/)[A-Za-z0-9_\-]+/products/\d+")
+
+          with sync_playwright() as p:
+              br = p.chromium.launch(headless=True, args=["--disable-blink-features=AutomationControlled"])
+              ctx = br.new_context(user_agent=_UA, locale="ko-KR", viewport={"width":1366,"height":2200})
+              pg = ctx.new_page()
+              review_reqs = []
+              sniff = {"origin": None, "merchant": None}
+              def on_req(req):
+                  u = req.url
+                  if "/reviews/query-pages" in u or "product-summary" in u:
+                      review_reqs.append(u)
+                  o, m = _extract_ids_from_summary_url(u)
+                  if o: sniff["origin"] = o
+                  if m: sniff["merchant"] = m
+              pg.on("request", on_req)
+
+              for kw in kws:
+                  try:
+                      # 1) 네이버쇼핑이 실브라우저로 열리나? (코드가 '봇차단'이라 안 쓰던 곳)
+                      pg.goto("https://search.shopping.naver.com/search/all?query="+kw.replace(" ","+"),
+                              wait_until="domcontentloaded", timeout=45000)
+                      time.sleep(4)
+                      for _ in range(3):
+                          pg.mouse.wheel(0, 2200); time.sleep(1.0)
+                      title = (pg.title() or "")[:40]
+                      blocked = ("쇼핑" not in title and "naver" not in pg.url)
+                      blob = "\n".join(pg.eval_on_selector_all("a","els=>els.map(e=>e.href).filter(Boolean)")) + "\n" + pg.content()
+                      reals = list(dict.fromkeys(REAL.findall(blob)))
+                      print(f"=== {kw}: 쇼핑검색 title='{title}' 실슬러그상품={len(reals)} ===", flush=True)
+                      if not reals:
+                          print("   (실슬러그 상품 0 — 쇼핑검색이 막혔거나 상품 못 찾음)", flush=True)
+                          continue
+                      # 2) 실슬러그 상품 페이지 → 로그인 없이 열리고 후기 요청이 관측되나?
+                      review_reqs.clear(); sniff["origin"]=None; sniff["merchant"]=None
+                      pg.goto(reals[0], wait_until="domcontentloaded", timeout=45000)
+                      time.sleep(6)
+                      final = pg.url
+                      login = "로그인튕김" if "nidlogin" in final else "공개OK"
+                      ids = pg.evaluate(_IDPICK_JS)
+                      origin = ids.get("origin") or sniff.get("origin")
+                      merchant = ids.get("merchant") or sniff.get("merchant")
+                      print(f"   상품 {reals[0][:55]}", flush=True)
+                      print(f"   → {login} / origin={origin} merchant={merchant} / 후기·요약요청관측={len(review_reqs)}", flush=True)
+                      for u in review_reqs[:2]:
+                          print(f"      관측요청: {u[:95]}", flush=True)
+                  except Exception as e:
+                      print(f"=== {kw}: ERROR {type(e).__name__}: {e} ===", flush=True)
+                  time.sleep(3)
+              br.close()
+          PY
+
   smoke:
-    if: ${{ inputs.review_timing != 'true' && inputs.count_keywords != 'true' && inputs.matrix_probe != 'true' && inputs.yield_probe != 'true' }}
+    if: ${{ inputs.review_timing != 'true' && inputs.count_keywords != 'true' && inputs.matrix_probe != 'true' && inputs.yield_probe != 'true' && inputs.shop_probe != 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
