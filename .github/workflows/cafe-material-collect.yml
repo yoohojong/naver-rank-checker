@@ -3,27 +3,35 @@ name: cafe-material-collect
 # 사장님 시트의 '카외' 제품 탭 → 단계별 수집(지식인/리뷰) → 수집결과_* 스테이징 탭 적재.
 # rank-check.yml 패턴 재활용. 순위체커(rank-check)와 schedule·concurrency 완전 분리.
 # ⚠️ 키 없을 때 안전: integration_runner 가 네이버/APIFY 키 없으면 해당 채널만 스킵(에러 X).
+#
+# ── 병렬(matrix) 가속 (2026-06-23) ────────────────────────────────────────────
+#   shards 입력 >1 이면 4·5단계 저점리뷰 키워드(약 506개)를 shards 개 job 으로 동시 분할 수집.
+#   실측(GHA): 키워드당 평균 ~27s, 차단 0, job 마다 egress IP 다름(부하 분산). shards=12 → ~30분에 전수.
+#   shards=1(기본) 이면 종전 단일 job(지식인+리뷰) 그대로. 분할 시엔 지식인 키 미주입(12× 중복수집 방지).
+#   분할은 md5 해시 disjoint + 이어받기(이미 적재 스킵) → 동시/재실행해도 중복 0(멱등).
 
 on:
-  # 2026-06-21 사장님 결정(D-062): 카페외부 시스템 '가동 게이트'(단계 태깅·리뷰 API 키 등) 열기 전까지
-  # 자동(cron) 실행 중지. 이유: 미가동 상태로 cron 이 돌아 '수집 0' 알림이 상노(rank-check) 채널에 섞여
-  # 사장님 혼란("침범") 유발. → 자동 스케줄 제거, 코드·수동실행은 보존. 활성화 시 cron 복구 가능.
+  # 2026-06-21 사장님 결정(D-062): 자동(cron) 실행 중지(수동 게이트). 활성화 시 cron 복구 가능.
   # schedule:
-  #   - cron: '0 12 * * 1'   # (보존용 주석: 매주 월 KST 21:00) — 활성화 결정 시 주석 해제
+  #   - cron: '0 12 * * 1'   # (보존용 주석: 매주 월 KST 21:00)
   workflow_dispatch:  # 수동 전용 (cron 비활성 — 사장님 활성화 결정 전까지)
     inputs:
+      shards:
+        description: '병렬 분할 수(=동시 job 수). 1=단일(종전). 12 권장(≈30분 전수). Free 동시한도 20.'
+        required: false
+        default: '1'
       review_brands:
-        description: '저점리뷰 대상 브랜드 한정(콤마구분, 예: 니조랄,헤드앤숄더,도브). 비우면 한정 없음(4·5단계 전부=전수). 대표 소수 브랜드만 1회 실증할 때만 채움.'
+        description: '저점리뷰 대상 브랜드 한정(콤마구분). 비우면 4·5단계 전부(전수). 대표 소수 실증 시만 채움.'
         required: false
         default: ''
       review_keyword_budget:
-        description: '이어받기: 이 run 에서 처리할 새 리뷰 키워드 수 상한(GHA 타임아웃 회피). 0=무제한. 기본 22(≈키워드당 2분 × 22 = 44분).'
+        description: '단일(shards=1) 모드의 run 당 새 키워드 상한(타임아웃 회피). 0=무제한. 기본 22. (matrix 모드선 무시)'
         required: false
         default: '22'
       review_max:
-        description: '키워드당 저점리뷰 목표 건수(직전 실증 20건 → 상향). 기본 40.'
+        description: '키워드당 저점리뷰 목표 건수. 기본 100.'
         required: false
-        default: '40'
+        default: '100'
 
 # 순위체커(naver-rank-check)와 별도 그룹 — 서로 취소/대기 영향 없음.
 concurrency:
@@ -34,11 +42,32 @@ permissions:
   contents: read
 
 jobs:
-  collect:
+  # shards 입력 → [0,1,...,N-1] JSON 배열(matrix 동적 생성). shards=1 이면 [0] = 단일 job.
+  prep:
     runs-on: ubuntu-latest
-    # 50분 = GHA job 한도(60분) 안전마진. 이어받기라 review_keyword_budget 예산만큼만 처리하고
-    # 매 run 스스로 종료 → 타임아웃 강제종료(=데이터 유실) 회피. 여러 번 dispatch 로 506개 누적.
+    timeout-minutes: 3
+    outputs:
+      shards: ${{ steps.mk.outputs.shards }}
+    steps:
+      - name: shard 인덱스 배열 생성
+        id: mk
+        shell: bash
+        env:
+          N: ${{ github.event.inputs.shards }}
+        run: |
+          python3 -c "import json,os; n=max(1,int(os.environ.get('N') or '1')); print('shards='+json.dumps(list(range(n))))" >> "$GITHUB_OUTPUT"
+          python3 -c "import os; n=max(1,int(os.environ.get('N') or '1')); print(('단일 모드(1 job)' if n==1 else f'병렬 모드 — {n} job 동시'))"
+
+  collect:
+    needs: prep
+    runs-on: ubuntu-latest
+    # 50분 = GHA 60분 한도 안전마진. matrix 면 shard 당 키워드가 적어 한참 남음.
     timeout-minutes: 50
+    strategy:
+      fail-fast: false        # 한 shard 실패가 나머지를 취소하지 않게.
+      max-parallel: 20        # 계정 동시 job 한도(Free 20)까지. shards 가 작으면 shards 가 상한.
+      matrix:
+        shard: ${{ fromJSON(needs.prep.outputs.shards) }}
 
     steps:
       - name: Checkout
@@ -53,6 +82,12 @@ jobs:
           test -f requirements.txt
           test -f src/integration_runner.py
 
+      # 러너 egress IP — matrix job 들이 서로 다른 IP 인지 확인(네이버 부하 분산 근거).
+      - name: 러너 egress IP
+        shell: bash
+        run: |
+          echo "shard=${{ matrix.shard }}/${{ github.event.inputs.shards }} egress_ip=$(curl -s --max-time 10 https://api.ipify.org || echo unknown)"
+
       - name: Setup Python 3.13
         uses: actions/setup-python@v6.2.0
         with:
@@ -66,8 +101,6 @@ jobs:
           ./.venv/bin/python -m pip install -r requirements.txt
 
       # 저점리뷰 수집(review_lowstar)은 Playwright 실브라우저(chromium) 필요.
-      # requirements.txt 에 playwright 패키지는 있으나, 브라우저 바이너리는 별도 설치가 필요하다.
-      # --with-deps 로 우분투 런너에 chromium + OS 의존 라이브러리까지 한 번에 설치.
       - name: Install Playwright chromium
         shell: bash
         run: |
@@ -79,28 +112,27 @@ jobs:
         env:
           SPREADSHEET_ID: ${{ secrets.SPREADSHEET_ID }}
           SERVICE_ACCOUNT_JSON: ${{ secrets.SERVICE_ACCOUNT_JSON }}
-          # 신규 키 (미설정 시 해당 채널만 자동 스킵 — integration_runner 가드).
-          NAVER_OPENAPI_CLIENT_ID: ${{ secrets.NAVER_OPENAPI_CLIENT_ID }}
-          NAVER_OPENAPI_CLIENT_SECRET: ${{ secrets.NAVER_OPENAPI_CLIENT_SECRET }}
+          # 지식인(NAVER) 키: 단일 모드(shards=1)에서만 주입. 분할 모드선 미주입 → 지식인 중복수집 방지(리뷰만).
+          NAVER_OPENAPI_CLIENT_ID: ${{ github.event.inputs.shards == '1' && secrets.NAVER_OPENAPI_CLIENT_ID || '' }}
+          NAVER_OPENAPI_CLIENT_SECRET: ${{ github.event.inputs.shards == '1' && secrets.NAVER_OPENAPI_CLIENT_SECRET || '' }}
           APIFY_TOKEN: ${{ secrets.APIFY_TOKEN }}
           APIFY_ACTOR_ID: ${{ secrets.APIFY_ACTOR_ID }}
-          # 저점리뷰 브랜드 한정(실증/소량). 비우면 한정 없음(=전수, 기존 동작). dispatch inputs 로 1회 주입.
           REVIEW_BRAND_WHITELIST: ${{ github.event.inputs.review_brands }}
-          # 이어받기: 이 run 처리할 새 리뷰 키워드 수 상한(타임아웃 회피). 0=무제한. 미지정 시 코드 기본(22).
-          REVIEW_KEYWORD_BUDGET: ${{ github.event.inputs.review_keyword_budget }}
-          # 키워드당 저점리뷰 목표 건수(직전 20건 → 상향). 미지정 시 코드 기본(40).
+          # 이 job 이 처리할 분할: "i/N". shards=1 이면 "0/1" → 분할 없음(전부 처리).
+          REVIEW_SHARD: ${{ matrix.shard }}/${{ github.event.inputs.shards }}
+          # 예산: 분할 모드선 0(무제한 — shard 가 이미 키워드 수를 제한). 단일 모드선 입력값(기본 22).
+          REVIEW_KEYWORD_BUDGET: ${{ github.event.inputs.shards == '1' && github.event.inputs.review_keyword_budget || '0' }}
           REVIEW_MAX: ${{ github.event.inputs.review_max }}
-          # C9: 요약 텔레그램 전송용 (integration_runner 가 끝에 send_report 호출).
-          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          # 텔레그램: 단일 모드에서만(분할 모드선 12× 알림 폭주 방지 — 요약은 run 로그로).
+          TELEGRAM_BOT_TOKEN: ${{ github.event.inputs.shards == '1' && secrets.TELEGRAM_BOT_TOKEN || '' }}
+          TELEGRAM_CHAT_ID: ${{ github.event.inputs.shards == '1' && secrets.TELEGRAM_CHAT_ID || '' }}
           PYTHONIOENCODING: 'utf-8'
         run: |
           ./.venv/bin/python -u -m src.integration_runner
 
-      # C9: integration_runner 내부 send_report 가 막혔을 때를 대비한 always() 백업 알림.
-      # run step 의 성공/실패 상태를 사장님 텔레그램으로 통보. 비차단(secret 없으면 [SKIP]).
+      # C9: 백업 알림 — 단일 모드에서만(분할 모드선 shard 마다 알림 폭주 방지).
       - name: Send Telegram notification (수집 결과 백업 알림)
-        if: always()
+        if: ${{ always() && github.event.inputs.shards == '1' }}
         continue-on-error: true
         shell: bash
         env:
@@ -114,5 +146,5 @@ jobs:
           from src.notify import send_report
           status = os.environ.get("RUN_STATUS", "unknown")
           mark = "✅ 성공" if status == "success" else f"⚠️ {status}"
-          send_report(f"[카페외부 재료수집] cron 종료 — {mark}")
+          send_report(f"[카페외부 재료수집] 종료 — {mark}")
           PY

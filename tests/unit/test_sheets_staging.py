@@ -73,7 +73,9 @@ def test_append_staging_rows_existing_tab_with_header():
     n = client.append_staging_rows("수집결과_지식인", header, rows)
 
     assert n == 1
-    ws.append_rows.assert_called_once_with(rows, value_input_option="RAW")
+    ws.append_rows.assert_called_once_with(
+        rows, value_input_option="RAW", insert_data_option="INSERT_ROWS"
+    )
     # 헤더 이미 있으므로 update 호출 안 함
     ws.update.assert_not_called()
 
@@ -93,7 +95,9 @@ def test_append_staging_rows_creates_tab_when_missing():
     ss.add_worksheet.assert_called_once()
     # 새 탭이면 헤더부터 기록
     new_ws.update.assert_called_once_with("A1", [header], value_input_option="RAW")
-    new_ws.append_rows.assert_called_once_with(rows, value_input_option="RAW")
+    new_ws.append_rows.assert_called_once_with(
+        rows, value_input_option="RAW", insert_data_option="INSERT_ROWS"
+    )
 
 
 def test_append_staging_rows_writes_header_when_tab_empty():

@@ -910,18 +910,31 @@ class SheetsClient:
                     ctx=f"{tab_name} (header write)",
                 )
         except gspread.exceptions.WorksheetNotFound:
-            ws = _sheets_api_retry(
-                lambda: self.spreadsheet.add_worksheet(
-                    title=tab_name, rows=1000, cols=max(len(header), 7)
-                ),
-                ctx=f"{tab_name} (create tab)",
-            )
-            _sheets_api_retry(
-                lambda: ws.update("A1", [header], value_input_option="RAW"),
-                ctx=f"{tab_name} (header write)",
-            )
+            try:
+                ws = _sheets_api_retry(
+                    lambda: self.spreadsheet.add_worksheet(
+                        title=tab_name, rows=1000, cols=max(len(header), 7)
+                    ),
+                    ctx=f"{tab_name} (create tab)",
+                )
+                _sheets_api_retry(
+                    lambda: ws.update("A1", [header], value_input_option="RAW"),
+                    ctx=f"{tab_name} (header write)",
+                )
+            except gspread.exceptions.APIError:
+                # 동시(matrix) 실행: 다른 job 이 먼저 같은 탭을 만든 경우(중복생성 400) →
+                # 새로 만들지 말고 이미 만들어진 탭을 다시 가져온다(생성 레이스 방어).
+                ws = _sheets_api_retry(
+                    lambda: self.spreadsheet.worksheet(tab_name),
+                    ctx=f"{tab_name} (refetch after concurrent create)",
+                )
+        # insert_data_option="INSERT_ROWS": 기본값 OVERWRITE 면 여러 job 이 동시에 append 시
+        #   같은 '마지막 행'을 찾아 서로 덮어쓸 수 있다. INSERT_ROWS 는 항상 새 행을 삽입 →
+        #   matrix 병렬 수집에서 shard 끼리 append 가 겹쳐도 데이터 유실 없음(동시안전).
         _sheets_api_retry(
-            lambda: ws.append_rows(rows, value_input_option="RAW"),
+            lambda: ws.append_rows(
+                rows, value_input_option="RAW", insert_data_option="INSERT_ROWS"
+            ),
             ctx=f"{tab_name} (append {len(rows)} rows)",
         )
         return len(rows)
