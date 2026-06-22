@@ -3,12 +3,14 @@
 
 카페외부 원고 '재료'(경쟁사 제품의 불만·사용감 디테일)를 모으는 3소스(네이버/화해/글로우픽) 중 하나.
 글로우픽은 로그인월·봇차단이 없어 가장 쉽다(2026-06-23 실증). 후기는 `/products/{id}/reviews`
-페이지를 스크롤하면 DOM 에 렌더된다 — 후기 API(`/api/proxy/reviewApiK/api/reviews`)는 protobuf
-인코딩이라 직접 복제가 어렵고, **렌더된 화면(DOM)을 긁는 것이 정답**(정찰 결과).
+페이지를 스크롤하면 화면에 렌더된다.
+
+추출 방식(정찰 확정): 후기 API(`/api/proxy/reviewApiK/api/reviews`)는 protobuf 라 복제가 어렵고,
+별점 별(<li class*=starRed>)은 후기 본문과 형제 구조라 DOM 선택자도 까다롭다. → **렌더된 후기영역의
+'텍스트'를 정규식으로 파싱**한다. 글로우픽 후기 텍스트 한 건 = `{작성자}{나이/타입} {별점} {YYYY.MM.DD}
+{본문}`. 별점 = 날짜 바로 앞 숫자(0.5~5), 본문 = 날짜 뒤 텍스트(다음 후기 시작 전까지).
 
 수집 기준(사장님 확정): 별점 낮은(<=max_score, 기본 2) 후기 + **원문 그대로**(요약/자르기 X).
-  → 제품 불만·사용감 디테일이 원고 '리얼함' 재료. 선별/필터는 사람이(자동삭제 안 함).
-
 출력(3소스 공통): [{score, content, product_name, source_url, source}]
 """
 from __future__ import annotations
@@ -25,9 +27,17 @@ _UA = (
 )
 _PRODUCT_RE = re.compile(r"glowpick\.com/products/(\d+)")
 
+# 후기 한 건 = (별점)(날짜)(본문). 본문은 다음 후기의 '별점+날짜' 시작 전까지(비탐욕, 개행 포함).
+_REVIEW_RE = re.compile(
+    r"([0-5](?:\.5)?)\s+(\d{4}\.\d{2}\.\d{2})\s+(.+?)(?=\s+[0-5](?:\.5)?\s+\d{4}\.\d{2}\.\d{2}|\Z)",
+    re.S,
+)
+# 본문 끝에 붙는 다음 후기 '작성자 나이/타입' 토막을 떼기 위한 꼬리 패턴(휴리스틱, 과하지 않게).
+_TAIL_RE = re.compile(r"\s+\S{1,12}\s+\d{0,2}[가-힣/]*$")
+
 
 def _search_product_id(pg, keyword: str) -> str | None:
-    """글로우픽 검색에서 첫 제품 id 확보. 이미 숫자 id 면 그대로 사용."""
+    """글로우픽 검색에서 첫 제품 id 확보. 이미 숫자 id/URL 이면 그대로 사용."""
     kw = (keyword or "").strip()
     if kw.isdigit():
         return kw
@@ -45,45 +55,35 @@ def _search_product_id(pg, keyword: str) -> str | None:
     return m.group(1) if m else None
 
 
-# DOM 에서 후기(별점+본문)를 뽑는 JS (정찰 확정: 별점 = 채워진 빨간 별 <li class*=starRed> 개수,
-# 본문 = 날짜(YYYY.MM.DD) 뒤 텍스트). 후기 리스트 컨테이너(productReviewL) 안에서, 날짜+빨간별을 가진
-# '가장 안쪽' 요소를 후기 카드로 본다(부모 중복 제외).
-_EXTRACT_JS = r"""
-() => {
-  const L = document.querySelector('[class*=productReviewL]') || document.body;
-  const dateRe = /\d{4}\.\d{2}\.\d{2}/;
-  const cand = Array.from(L.querySelectorAll('*')).filter(e => {
-    const t = e.innerText || '';
-    return dateRe.test(t) && t.length >= 20 && t.length <= 700 && e.querySelector('[class*=starRed]');
-  });
-  const out = [];
-  const seen = new Set();
-  for (const el of cand) {
-    // 더 안쪽 카드가 있으면(부모) 건너뜀 → 가장 타이트한 카드만.
-    if (cand.some(o => o !== el && el.contains(o))) continue;
-    const red = el.querySelectorAll('[class*=starRed]').length;
-    const half = el.querySelectorAll('[class*=starHalf], [class*=Half]').length;
-    const score = red + (half ? 0.5 : 0);
-    const t = el.innerText || '';
-    const m = t.match(/(\d{4}\.\d{2}\.\d{2})\s*([\s\S]+)/);
-    const body = (m ? m[2] : t).replace(/\s+/g, ' ').trim();
-    if (body.length < 10) continue;
-    const key = body.slice(0, 40);
-    if (seen.has(key)) continue;
-    seen.add(key);
-    out.push({ score: score, content: body });
-  }
-  return out;
-}
-"""
-
-
-def _extract_reviews(pg) -> list[dict]:
+def _review_text(pg) -> str:
+    """후기 리스트 영역의 렌더된 텍스트(없으면 body 전체)."""
+    for sel in ("[class*=productReviewL]", "[class*=reviewsPage]"):
+        try:
+            t = pg.inner_text(sel)
+            if t and len(t) > 50:
+                return t
+        except Exception:
+            continue
     try:
-        rows = pg.evaluate(_EXTRACT_JS)
+        return pg.inner_text("body")
     except Exception:
-        rows = []
-    return rows or []
+        return ""
+
+
+def parse_reviews(text: str) -> list[dict]:
+    """후기 영역 텍스트 → [{score, content}] (별점=날짜 앞 숫자, 본문=날짜 뒤)."""
+    out: list[dict] = []
+    for m in _REVIEW_RE.finditer(text or ""):
+        try:
+            score = float(m.group(1))
+        except ValueError:
+            continue
+        body = re.sub(r"\s+", " ", m.group(3)).strip()
+        body = _TAIL_RE.sub("", body).strip()  # 다음 작성자 토막 제거(휴리스틱)
+        if len(body) < 10:
+            continue
+        out.append({"score": score, "content": body})
+    return out
 
 
 def fetch_glowpick_lowstar(
@@ -92,18 +92,12 @@ def fetch_glowpick_lowstar(
     max_score: float = 2.0,
     *,
     headless: bool = True,
-    max_scrolls: int = 30,
+    max_scrolls: int = 40,
 ) -> list[dict]:
-    """글로우픽 제품의 저점(별점<=max_score) 후기를 수집.
-
-    keyword_or_id: 검색 키워드(예 "헤드앤숄더 가려운 두피") 또는 제품 id(숫자) 또는 제품 URL.
-    스크롤로 후기를 추가 로드하며 DOM 에서 별점+본문을 긁는다. 목표 수 도달/스크롤 한도서 종료.
-    반환: [{score, content, product_name, source_url, source}] (저점만, 원문 보존).
-    """
+    """글로우픽 제품의 저점(별점<=max_score) 후기를 수집. 원문 보존."""
     target = (keyword_or_id or "").strip()
     if not target:
         return []
-    results: list[dict] = []
     with sync_playwright() as p:
         browser = p.chromium.launch(
             headless=headless, args=["--disable-blink-features=AutomationControlled"]
@@ -118,45 +112,42 @@ def fetch_glowpick_lowstar(
                 return []
             url = f"https://www.glowpick.com/products/{pid}/reviews"
             pg.goto(url, wait_until="domcontentloaded", timeout=45000)
-            time.sleep(4)
+            time.sleep(5)
             try:
-                product_name = (pg.title() or "").split("|")[0].strip()[:80]
+                product_name = (pg.title() or "").split("|")[0].split("리뷰")[0].strip()[:80]
             except Exception:
                 product_name = ""
-            seen_keys: set = set()
+
+            collected: dict[str, dict] = {}  # body[:50] → review
             stale = 0
             for _ in range(max_scrolls):
-                for rv in _extract_reviews(pg):
-                    sc = rv.get("score")
-                    content = (rv.get("content") or "").strip()
-                    if not content:
-                        continue
-                    key = content[:40]
-                    if key in seen_keys:
-                        continue
-                    seen_keys.add(key)
-                    # 저점만(별점 모르면 보류 — 글로우픽은 별점 항상 노출).
-                    if isinstance(sc, (int, float)) and sc <= max_score:
-                        results.append({
-                            "score": sc, "content": content,
-                            "product_name": product_name,
-                            "source_url": url, "source": SOURCE,
-                        })
-                        if len(results) >= max_reviews:
-                            return results
-                before = len(seen_keys)
-                pg.mouse.wheel(0, 4000)
-                time.sleep(1.3)
-                # 더 안 늘면 종료(끝까지 봄).
-                if len(seen_keys) == before:
+                for rv in parse_reviews(_review_text(pg)):
+                    key = rv["content"][:50]
+                    if key not in collected:
+                        collected[key] = rv
+                low = [r for r in collected.values() if r["score"] <= max_score]
+                if len(low) >= max_reviews:
+                    break
+                before = len(collected)
+                pg.mouse.wheel(0, 5000)
+                time.sleep(1.5)
+                if len(collected) == before:
                     stale += 1
-                    if stale >= 3:
+                    if stale >= 4:
                         break
                 else:
                     stale = 0
+
+            results = [
+                {
+                    "score": r["score"], "content": r["content"],
+                    "product_name": product_name, "source_url": url, "source": SOURCE,
+                }
+                for r in collected.values() if r["score"] <= max_score
+            ]
+            return results[:max_reviews]
         finally:
             browser.close()
-    return results[:max_reviews]
 
 
 if __name__ == "__main__":
