@@ -539,17 +539,39 @@ jobs:
               time.sleep(6)
               for _ in range(6):
                   pg.mouse.wheel(0, 5000); time.sleep(1.5)
-              for sel in ["[class*=productReviewL]", "[class*=reviewsPage]", "body"]:
+              # 정렬/더보기 후보 버튼 텍스트 덤프.
+              ctrls = pg.evaluate(
+                  "() => Array.from(document.querySelectorAll('button,a,div,span,li'))"
+                  ".map(e => (e.innerText||'').replace(/\\s+/g,' ').trim())"
+                  ".filter(t => /순$|별점|평점|낮은|높은|더보기|정렬|sort/i.test(t) && t.length>=2 && t.length<16)"
+                  ".filter((v,i,a)=>a.indexOf(v)===i).slice(0,25)"
+              )
+              print(f"   정렬/더보기 후보: {ctrls}", flush=True)
+              # '낮은' 또는 '별점' 관련 정렬 클릭 시도 → 저점 우선화.
+              for label in ["낮은 평점순", "평점 낮은순", "별점 낮은순", "낮은순", "평점낮은순"]:
                   try:
-                      t = pg.inner_text(sel); print(f"   sel {sel}: len={len(t)}", flush=True)
+                      el = pg.query_selector(f"text={label}")
+                      if el:
+                          el.click(); time.sleep(3)
+                          print(f"   '{label}' 클릭됨", flush=True); break
+                  except Exception:
+                      pass
+              else:
+                  # 드롭다운(최신 순)을 먼저 열고 옵션 노출 시도.
+                  try:
+                      d = pg.query_selector("text=최신 순") or pg.query_selector("text=최신순")
+                      if d:
+                          d.click(); time.sleep(2)
+                          opts = pg.evaluate("() => Array.from(document.querySelectorAll('li,button,div,a')).map(e=>(e.innerText||'').trim()).filter(t=>/순$|낮은|높은|평점|별점/.test(t)&&t.length<12).filter((v,i,a)=>a.indexOf(v)===i).slice(0,12)")
+                          print(f"   드롭다운 옵션: {opts}", flush=True)
                   except Exception as e:
-                      print(f"   sel {sel}: ERR {type(e).__name__}", flush=True)
-              full = pg.inner_text("body")
-              m = re.search(r".{60}\d{4}\.\d{2}\.\d{2}.{120}", full)
-              print(f"   날짜주변샘플: {m.group(0) if m else 'NO_DATE'}", flush=True)
-              rows = parse_reviews(full)
-              print(f"   body 파싱 후기={len(rows)} / 저점(<=2)={sum(1 for r in rows if r['score']<=2)}", flush=True)
-              for r in rows[:6]:
+                      print(f"   드롭다운 오류: {type(e).__name__}", flush=True)
+              time.sleep(2)
+              for _ in range(4):
+                  pg.mouse.wheel(0, 5000); time.sleep(1.3)
+              rows = parse_reviews(pg.inner_text("body"))
+              print(f"   [정렬후] 파싱 후기={len(rows)} / 저점(<=2)={sum(1 for r in rows if r['score']<=2)}", flush=True)
+              for r in [x for x in rows if x['score'] <= 2][:6]:
                   print(f"      ({r['score']}점) {r['content'][:90]}", flush=True)
               br.close()
           PY
