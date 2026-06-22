@@ -33,6 +33,14 @@ on:
         description: 'matrix 병렬 실증(4 job 동시 + job별 egress IP + 실측, 시트 미접근). true/false'
         required: false
         default: 'false'
+      yield_probe:
+        description: '수율 진단 — 키워드별 검색이 주는 상품URL 종류(brand/smartstore-main/other) 계측. true/false'
+        required: false
+        default: 'false'
+      yield_kws:
+        description: '수율 진단 키워드(콤마). 비우면 대표 샘플(브랜드제품/카테고리/대안 혼합).'
+        required: false
+        default: ''
 
 concurrency:
   group: cafe-jisikin-smoketest
@@ -93,8 +101,85 @@ jobs:
           print(f"PROBE shard={s} kw='{kw}' 결과={len(rows)}건 / {time.time()-t:.0f}s", flush=True)
           PY
 
+  # 수율 진단 — 키워드별로 통합검색이 주는 상품URL 종류를 계측.
+  #   brand.naver.com(코드가 씀) vs smartstore/main(로그인월=코드 스킵) vs smartstore/기타(코드가 씀) vs 0.
+  #   '브랜드제품인데 0건'의 원인이 (a)검색이 상품을 안 줌 (b)smartstore/main 만 줘서 스킵 인지 판별.
+  yield_probe:
+    if: ${{ inputs.yield_probe == 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6.0.2
+        with:
+          token: ${{ secrets.ACTIONS_PAT || github.token }}
+      - name: Setup Python 3.13
+        uses: actions/setup-python@v6.2.0
+        with:
+          python-version: '3.13'
+      - name: Setup venv + install deps
+        shell: bash
+        run: |
+          python -m venv .venv
+          ./.venv/bin/python -m pip install --upgrade pip
+          ./.venv/bin/python -m pip install -r requirements.txt
+      - name: Install Playwright chromium
+        shell: bash
+        run: |
+          ./.venv/bin/python -m playwright install --with-deps chromium
+      - name: 키워드별 검색 상품URL 종류 계측
+        shell: bash
+        env:
+          YIELD_KWS: ${{ inputs.yield_kws }}
+          PYTHONIOENCODING: 'utf-8'
+        run: |
+          ./.venv/bin/python -u - <<'PY'
+          import os, re, time
+          from playwright.sync_api import sync_playwright
+          from src.review_lowstar import parse_product_urls, _UA, fetch_low_star_reviews
+
+          kws = [k.strip() for k in (os.environ.get("YIELD_KWS") or "").split(",") if k.strip()]
+          if not kws:
+              kws = [
+                  "헤드앤숄더", "케라시스",                 # 후기 나온 대형 브랜드(대조군)
+                  "니조랄연고", "니조랄2%", "헤드앤숄더딥클린",  # 5-브랜드제품(특정 제품/규격)
+                  "도브센서티브뷰티바", "아모스녹차실감샴푸",   # 5-브랜드제품
+                  "순한샴푸", "아토피샴푸",                  # 5-카테고리(일반어)
+                  "비듬제거", "두피케어",                    # 4-대안(상품 아님)
+              ]
+          BRAND = re.compile(r"https?://brand\.naver\.com/[A-Za-z0-9_\-]+/products/\d+")
+          SSMAIN = re.compile(r"https?://smartstore\.naver\.com/main/products/\d+")
+          SSOTHER = re.compile(r"https?://smartstore\.naver\.com/(?!main/)[A-Za-z0-9_\-]+/products/\d+")
+
+          with sync_playwright() as p:
+              br = p.chromium.launch(headless=True, args=["--disable-blink-features=AutomationControlled"])
+              ctx = br.new_context(user_agent=_UA, locale="ko-KR", viewport={"width":1366,"height":2200})
+              pg = ctx.new_page()
+              print("kw | brand | ss/main(skip) | ss/other | code_usable | 실수집후기", flush=True)
+              for kw in kws:
+                  try:
+                      pg.goto("https://search.naver.com/search.naver?query="+kw.replace(" ","+"),
+                              wait_until="domcontentloaded", timeout=45000)
+                      time.sleep(3)
+                      for _ in range(3):
+                          pg.mouse.wheel(0, 2200); time.sleep(0.9)
+                      anchors = pg.eval_on_selector_all("a", "els => els.map(e=>e.href).filter(Boolean)")
+                      blob = "\n".join(anchors) + "\n" + pg.content()
+                      b = len(set(BRAND.findall(blob)))
+                      m = len(set(SSMAIN.findall(blob)))
+                      o = len(set(SSOTHER.findall(blob)))
+                      usable = len(parse_product_urls(blob))
+                      # 실제 코드 경로로도 몇 건 나오는지(짧게 20건 목표)
+                      n = len(fetch_low_star_reviews(kw, max_reviews=20))
+                      print(f"{kw} | {b} | {m} | {o} | {usable} | {n}", flush=True)
+                  except Exception as e:
+                      print(f"{kw} | ERROR {type(e).__name__}: {e}", flush=True)
+                  time.sleep(2)
+              br.close()
+          PY
+
   smoke:
-    if: ${{ inputs.review_timing != 'true' && inputs.count_keywords != 'true' && inputs.matrix_probe != 'true' }}
+    if: ${{ inputs.review_timing != 'true' && inputs.count_keywords != 'true' && inputs.matrix_probe != 'true' && inputs.yield_probe != 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
