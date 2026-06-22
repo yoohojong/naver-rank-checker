@@ -45,7 +45,9 @@ def build_text_from_paths(prev_path, curr_path, today=None) -> str:
 
 def main() -> int:
     do_send = len(sys.argv) > 1 and sys.argv[1] == "send"
-    runs = list_success_runs()
+    # ⚠️ 주간(168h 전)은 일일(24h)보다 깊은 history 필요. rank-check ~8회/일 → 기본 30개는
+    # ~3.75일치라 7일 전에 못 닿음(지난주 비교 누락). 150개 = ~19일치(14일 retention 충분 커버).
+    runs = list_success_runs(limit=150)
     if not runs:
         print("[WEEKLY] 성공 run 없음 — 보고 생략")
         return 0
