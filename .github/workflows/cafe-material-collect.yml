@@ -32,6 +32,10 @@ on:
         description: '키워드당 저점리뷰 목표 건수. 기본 100.'
         required: false
         default: '100'
+      shard_stagger_sec:
+        description: '분할 시 shard 시작 지연(초) — 동시 시트읽기 429 회피. shard_index×이 값 만큼 대기. 기본 8.'
+        required: false
+        default: '8'
 
 # 순위체커(naver-rank-check)와 별도 그룹 — 서로 취소/대기 영향 없음.
 concurrency:
@@ -120,6 +124,8 @@ jobs:
           REVIEW_BRAND_WHITELIST: ${{ github.event.inputs.review_brands }}
           # 이 job 이 처리할 분할: "i/N". shards=1 이면 "0/1" → 분할 없음(전부 처리).
           REVIEW_SHARD: ${{ matrix.shard }}/${{ github.event.inputs.shards }}
+          # shard 시작 지연(초) — 동시 시트읽기 429 분산. shard_index × 이 값.
+          REVIEW_SHARD_STAGGER_SEC: ${{ github.event.inputs.shard_stagger_sec }}
           # 예산: 분할 모드선 0(무제한 — shard 가 이미 키워드 수를 제한). 단일 모드선 입력값(기본 22).
           REVIEW_KEYWORD_BUDGET: ${{ github.event.inputs.shards == '1' && github.event.inputs.review_keyword_budget || '0' }}
           REVIEW_MAX: ${{ github.event.inputs.review_max }}

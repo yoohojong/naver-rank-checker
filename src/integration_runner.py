@@ -205,7 +205,8 @@ def run_collection(
     summary["tabs"] = len(data)
 
     # 중복방지 키 — 스테이징 탭별 1회만 읽음(행마다 재조회 회피).
-    seen_jisikin = _existing_keys(client, STAGING_TAB_JISIKIN)
+    # 지식인 탭 read 는 지식인 채널이 켜진 경우에만(matrix 분할 모드는 리뷰만 → 불필요한 시트 read 생략 = 429 완화).
+    seen_jisikin = _existing_keys(client, STAGING_TAB_JISIKIN) if naver_on else set()
     seen_review = _existing_keys(client, STAGING_TAB_REVIEW)
 
     # 이어받기: 리뷰 탭에 이미 적재된 키워드(수집일 무관)는 이번 run 에서 건너뜀(미수집분만 처리).
@@ -452,6 +453,21 @@ def main() -> int:
                 print(f"[integration_runner] 🧩 matrix 분할 — shard {_i+1}/{_n} (이 job 은 {_n}분의 1만 수집).")
         except ValueError:
             review_shard = None
+
+    # 시작 지연(stagger): matrix 의 N개 job 이 '동시에' 시트를 읽으면
+    #   sheets.googleapis.com 'Read requests per minute per user'(기본 60/분) 429 가 난다
+    #   (각 shard 시작 read ≈ 6회 × 12 = ~72회/순간). shard index 만큼 시작을 어긋나게 해 read 를 분산.
+    #   REVIEW_SHARD_STAGGER_SEC(기본 8초) × shard_index 만큼 대기. 단일 모드(shard 0)는 지연 0.
+    if review_shard and review_shard[0] > 0:
+        try:
+            stagger_base = max(0, int(os.environ.get("REVIEW_SHARD_STAGGER_SEC", "8")))
+        except ValueError:
+            stagger_base = 8
+        delay = review_shard[0] * stagger_base
+        if delay > 0:
+            import time as _time
+            print(f"[integration_runner] ⏳ shard {review_shard[0]} 시작 {delay}s 지연 — 시트 read 429 분산.")
+            _time.sleep(delay)
     # 키워드당 저점리뷰 목표 건수(직전 실증은 총 20건으로 적었음 → 상향). 사장님이 REVIEW_MAX 로 조정.
     try:
         review_max = max(1, int(os.environ.get("REVIEW_MAX", "40")))
