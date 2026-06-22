@@ -22,8 +22,12 @@ def test_dispatch_inputs_defaults():
     wf = _load()
     inputs = wf["on"]["workflow_dispatch"]["inputs"]
     assert inputs["target_tab"]["default"] == "샴푸 카외"
-    assert inputs["dry_run"]["default"] == "false"
-    assert inputs["dry_run"]["options"] == ["false", "true"]
+    # (2026-06-22 작업4) 안전 우선 — dry_run 기본 'true'(먼저 매칭만 확인 후 실반영).
+    assert inputs["dry_run"]["default"] == "true"
+    assert inputs["dry_run"]["options"] == ["true", "false"]
+    # (2026-06-22 작업4) csv 선택 input — shampoo/body. 바디워시 탭 태깅 경로.
+    assert inputs["csv"]["default"] == "shampoo"
+    assert inputs["csv"]["options"] == ["shampoo", "body"]
 
 
 def test_run_step_env_and_secrets():
@@ -34,7 +38,11 @@ def test_run_step_env_and_secrets():
     assert env["SPREADSHEET_ID"] == "${{ secrets.SPREADSHEET_ID }}"
     assert env["SERVICE_ACCOUNT_JSON"] == "${{ secrets.SERVICE_ACCOUNT_JSON }}"
     assert env["TARGET_TAB"] == "${{ inputs.target_tab }}"
-    assert env["CSV_PATH"] == "data/keyword_classify_shampoo.csv"
+    # (2026-06-22 작업4) csv 선택(shampoo/body)에 따라 CSV_PATH 분기.
+    assert env["CSV_PATH"] == (
+        "${{ inputs.csv == 'body' && 'data/keyword_classify_body.csv' "
+        "|| 'data/keyword_classify_shampoo.csv' }}"
+    )
     # dry_run='true' → DRY_RUN='1', 아니면 빈값(실반영).
     assert env["DRY_RUN"] == "${{ inputs.dry_run == 'true' && '1' || '' }}"
 

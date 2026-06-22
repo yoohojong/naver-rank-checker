@@ -1,25 +1,38 @@
 name: cafe-apply-classify
 # CSV 키워드 단계 분류를 라이브 시트 '키워드 분류' 칸에 일괄 반영 (수동 전용).
-# data/keyword_classify_shampoo.csv → 대상 탭(기본 '샴푸 카외')의 각 키워드 행에
+# csv 선택(shampoo/body) → data/keyword_classify_{shampoo|body}.csv 를 읽어
+#   대상 탭(target_tab: 샴푸 카외 / 바디워시 카외 등)의 각 키워드 행에
 #   '{단계} {유형}'(예: '3 증상') 기록 + '키워드 분류' 칸 드롭다운 목록 갱신.
 # ⚠️ cron 없음 — 사장님 수동 dispatch 전용(no-auto-activation 규칙).
-# dry_run='true' 로 먼저 매칭만 확인 후 'false' 로 실반영 권장.
+# dry_run='true'(기본) 로 먼저 매칭만 확인 후 'false' 로 실반영 권장.
+# (2026-06-22 작업4) 바디워시 누락 원인 = 바디 탭 미태깅. body CSV(235건)를 추가해 태깅 경로 마련.
+#   csv=body, target_tab=<실제 바디워시 카외 탭명> 으로 dispatch → 바디워시도 수집 대상에 들어옴.
 
 on:
   workflow_dispatch:
     inputs:
       target_tab:
-        description: '대상 탭 이름'
+        description: '대상 탭 이름 (예: 샴푸 카외 / 바디워시 카외)'
         required: false
         default: '샴푸 카외'
+      # (2026-06-22 작업4) CSV 선택 — 바디워시 탭 태깅을 위해 분류 CSV를 고를 수 있게 추가.
+      #   샴푸 탭이면 shampoo, 바디워시 탭이면 body 를 고른다(대상 탭과 짝을 맞출 것).
+      csv:
+        description: "분류 CSV (shampoo=샴푸 / body=바디워시)"
+        required: false
+        type: choice
+        default: 'shampoo'
+        options:
+          - 'shampoo'
+          - 'body'
       dry_run:
         description: "true=시트 안 씀(매칭만 출력) / false=실반영"
         required: false
         type: choice
-        default: 'false'
+        default: 'true'
         options:
-          - 'false'
           - 'true'
+          - 'false'
 
 # 순위체커/재료수집과 별도 그룹 — 서로 취소/대기 영향 없음.
 concurrency:
@@ -45,7 +58,12 @@ jobs:
         run: |
           test -f requirements.txt
           test -f src/apply_keyword_classify.py
-          test -f data/keyword_classify_shampoo.csv
+          # 선택한 CSV(shampoo/body)가 실제로 있는지 검증.
+          if [ "${{ inputs.csv }}" = "body" ]; then
+            test -f data/keyword_classify_body.csv
+          else
+            test -f data/keyword_classify_shampoo.csv
+          fi
 
       - name: Setup Python 3.13
         uses: actions/setup-python@v6.2.0
@@ -65,7 +83,8 @@ jobs:
           SPREADSHEET_ID: ${{ secrets.SPREADSHEET_ID }}
           SERVICE_ACCOUNT_JSON: ${{ secrets.SERVICE_ACCOUNT_JSON }}
           TARGET_TAB: ${{ inputs.target_tab }}
-          CSV_PATH: 'data/keyword_classify_shampoo.csv'
+          # (2026-06-22 작업4) csv 선택(shampoo/body)에 따라 분류 CSV 경로 분기.
+          CSV_PATH: ${{ inputs.csv == 'body' && 'data/keyword_classify_body.csv' || 'data/keyword_classify_shampoo.csv' }}
           # dry_run='true' 일 때만 DRY_RUN=1 (스크립트는 '1' 만 dry-run 으로 인식).
           DRY_RUN: ${{ inputs.dry_run == 'true' && '1' || '' }}
           PYTHONIOENCODING: 'utf-8'
