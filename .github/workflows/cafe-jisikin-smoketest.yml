@@ -263,11 +263,28 @@ jobs:
               print(f"  탭 '{tab}': 행 {len(rows or [])} / 단계분포 {dict(tab_cnt)}", flush=True)
 
           n45 = per_stage["4"] + per_stage["5"]
+          target_kw = set(review_keywords)
           print(f"=== 단계별 키워드(전체): {dict(per_stage)} ===", flush=True)
-          print(f"=== 저점리뷰(Playwright) 대상 4/5단계 키워드 = {n45}개 ===", flush=True)
-          # 키워드당 healthy 19s, worst ~125s(상품5×지연) 가정한 추정시간
-          print(f"    추정 소요: best {n45*19//60}분 ~ worst {n45*125//60}분 (60분 타임아웃 대비)", flush=True)
-          print("    대상 키워드 목록:", flush=True)
-          for k in review_keywords:
-              print(f"      - {k}", flush=True)
+          print(f"=== 저점리뷰(Playwright) 대상 4/5단계 키워드 = {n45}개(고유 {len(target_kw)}) ===", flush=True)
+
+          # ★ 완료도 확인: 수집결과_리뷰 탭에 실제 적재된(저장된) 고유 키워드 수 vs 대상.
+          from src.integration_runner import STAGING_TAB_REVIEW
+          try:
+              recs = client.read_tab_records(STAGING_TAB_REVIEW)
+          except Exception as e:
+              recs = []
+              print(f"  (수집결과_리뷰 read 실패: {type(e).__name__})", flush=True)
+          done_all = {(r.get("키워드") or "").strip() for r in (recs or []) if (r.get("키워드") or "").strip()}
+          # 0건 마커도 '처리완료'로 침(다음 run 재시도 방지용 마커). 실제 후기 있는 키워드만 따로 카운트.
+          with_reviews = {(r.get("키워드") or "").strip() for r in (recs or [])
+                          if (r.get("키워드") or "").strip() and (r.get("제목") or "").strip() not in ("", "0건")}
+          done_in_target = target_kw & done_all
+          remaining = target_kw - done_all
+          print(f"=== 저장 현황(수집결과_리뷰): 적재 행 {len(recs or [])} ===", flush=True)
+          print(f"=== 처리완료 키워드(0건 마커 포함) = {len(done_in_target)}/{len(target_kw)} / 남은 {len(remaining)}개 ===", flush=True)
+          print(f"=== 실제 후기 있는 키워드 = {len(with_reviews & target_kw)}개 ===", flush=True)
+          if remaining:
+              print("    아직 안 한 키워드(최대 30개):", flush=True)
+              for k in list(remaining)[:30]:
+                  print(f"      - {k}", flush=True)
           PY
