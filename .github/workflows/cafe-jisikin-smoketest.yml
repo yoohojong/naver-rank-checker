@@ -136,27 +136,48 @@ jobs:
           ./.venv/bin/python -u - <<'PY'
           import os, re, time
           from playwright.sync_api import sync_playwright
-          from src.review_lowstar import parse_product_urls, _UA, _IDPICK_JS
+          from src.review_lowstar import (
+              _UA, _IDPICK_JS, _FETCH_JS, _REVIEW_API_PATH, _SORT_LOW_FIRST,
+              _PAGE_SIZE, _extract_ids_from_summary_url,
+          )
 
           kws = [k.strip() for k in (os.environ.get("YIELD_KWS") or "").split(",") if k.strip()]
           if not kws:
-              kws = [
-                  "헤드앤숄더", "케라시스",                 # 후기 나온 대형 브랜드(대조군)
-                  "니조랄연고", "니조랄2%", "헤드앤숄더딥클린",  # 5-브랜드제품(특정 제품/규격)
-                  "도브센서티브뷰티바", "아모스녹차실감샴푸",   # 5-브랜드제품
-                  "순한샴푸", "아토피샴푸",                  # 5-카테고리(일반어)
-                  "비듬제거", "두피케어",                    # 4-대안(상품 아님)
-              ]
+              # ss/main 만 나오던 0건 키워드 + 대조군(brand 나오는 키워드).
+              kws = ["도브센서티브뷰티바", "순한샴푸", "아토피샴푸", "비듬제거", "헤드앤숄더"]
           BRAND = re.compile(r"https?://brand\.naver\.com/[A-Za-z0-9_\-]+/products/\d+")
           SSMAIN = re.compile(r"https?://smartstore\.naver\.com/main/products/\d+")
-          SSOTHER = re.compile(r"https?://smartstore\.naver\.com/(?!main/)[A-Za-z0-9_\-]+/products/\d+")
 
-          # 중첩 sync_playwright 금지 → 하나의 컨텍스트에서 검색 계측 + 첫 상품 ID해소까지 직접 수행.
+          def test_url(pg, sniff, url):
+              """한 상품 URL → 이동 후 (리다이렉트 최종URL / ID해소 / 후기API 1페이지) 결과."""
+              sniff["origin"] = None; sniff["merchant"] = None
+              try:
+                  pg.goto(url, wait_until="domcontentloaded", timeout=45000)
+              except Exception as e:
+                  return f"goto_ERR:{type(e).__name__}"
+              time.sleep(5)
+              final = pg.url
+              ids = pg.evaluate(_IDPICK_JS)
+              origin = ids.get("origin") or sniff.get("origin")
+              merchant = ids.get("merchant") or sniff.get("merchant")
+              if not (origin and merchant):
+                  login = "LOGIN" if ("login" in final or "nid.naver" in final) else ""
+                  return f"ID=FAIL {login} final={final[:55]}"
+              res = pg.evaluate(_FETCH_JS, {"merchant": merchant, "origin": origin,
+                    "page": 1, "pageSize": _PAGE_SIZE, "sort": _SORT_LOW_FIRST, "path": _REVIEW_API_PATH})
+              return f"ID=OK status={res.get('status')} total={res.get('total')} got={len(res.get('reviews',[]))}"
+
           with sync_playwright() as p:
               br = p.chromium.launch(headless=True, args=["--disable-blink-features=AutomationControlled"])
               ctx = br.new_context(user_agent=_UA, locale="ko-KR", viewport={"width":1366,"height":2200})
               pg = ctx.new_page()
-              print("kw | brand | ss/main(skip) | ss/other | code_usable | 첫상품ID해소", flush=True)
+              sniff = {"origin": None, "merchant": None}
+              def _on_req(req):
+                  o, m = _extract_ids_from_summary_url(req.url)
+                  if o: sniff["origin"] = o
+                  if m: sniff["merchant"] = m
+              pg.on("request", _on_req)
+
               for kw in kws:
                   try:
                       pg.goto("https://search.naver.com/search.naver?query="+kw.replace(" ","+"),
@@ -164,24 +185,16 @@ jobs:
                       time.sleep(3)
                       for _ in range(3):
                           pg.mouse.wheel(0, 2200); time.sleep(0.9)
-                      anchors = pg.eval_on_selector_all("a", "els => els.map(e=>e.href).filter(Boolean)")
-                      blob = "\n".join(anchors) + "\n" + pg.content()
-                      b = len(set(BRAND.findall(blob)))
-                      m = len(set(SSMAIN.findall(blob)))
-                      o = len(set(SSOTHER.findall(blob)))
-                      usable = parse_product_urls(blob)
-                      idok = "-"
-                      if usable:
-                          try:
-                              pg.goto(usable[0], wait_until="domcontentloaded", timeout=45000)
-                              time.sleep(5)
-                              ids = pg.evaluate(_IDPICK_JS)
-                              idok = "OK" if (ids.get("origin") and ids.get("merchant")) else "FAIL"
-                          except Exception as e2:
-                              idok = f"ERR:{type(e2).__name__}"
-                      print(f"{kw} | {b} | {m} | {o} | {len(usable)} | {idok}", flush=True)
+                      blob = "\n".join(pg.eval_on_selector_all("a","els=>els.map(e=>e.href).filter(Boolean)")) + "\n" + pg.content()
+                      brand_urls = list(dict.fromkeys(BRAND.findall(blob)))
+                      ssmain_urls = list(dict.fromkeys(SSMAIN.findall(blob)))
+                      print(f"=== {kw}: brand={len(brand_urls)} ss/main={len(ssmain_urls)} ===", flush=True)
+                      if brand_urls:
+                          print(f"   BRAND  : {test_url(pg, sniff, brand_urls[0])}", flush=True)
+                      if ssmain_urls:
+                          print(f"   SSMAIN : {test_url(pg, sniff, ssmain_urls[0])}", flush=True)
                   except Exception as e:
-                      print(f"{kw} | ERROR {type(e).__name__}: {e}", flush=True)
+                      print(f"=== {kw}: ERROR {type(e).__name__}: {e} ===", flush=True)
                   time.sleep(2)
               br.close()
           PY
