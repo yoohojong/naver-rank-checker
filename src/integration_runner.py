@@ -27,7 +27,20 @@
 from __future__ import annotations
 
 import os
+import time
 from datetime import datetime, timedelta, timezone
+
+
+def _env_int(name: str, default: int) -> int:
+    """환경변수를 int 로 읽되 미설정/파싱실패/0이하면 default(견고). 비개발 사장님 운영 안전."""
+    raw = (os.environ.get(name, "") or "").strip()
+    if not raw:
+        return default
+    try:
+        v = int(raw)
+    except (ValueError, TypeError):
+        return default
+    return v if v > 0 else default
 
 # 스테이징 탭 이름(수집 전용 — 사장님 입력 탭 '카외' 와 분리).
 STAGING_TAB_JISIKIN = "수집결과_지식인"
@@ -59,6 +72,18 @@ COL_REFRESH = "갱신"
 
 # 표시 write-back 청크 크기 — 이 키워드 수마다 '수집상태' 칸 flush(재개 안전 ↔ API burst 균형).
 COLLECT_STATUS_FLUSH_EVERY = 20
+
+# ⑧ 배치 상한 — GitHub Actions 60분 timeout 안전장치(2026-06-22).
+#   enrich(답변 본문 추출)가 붙으면서 키워드당 ~2분(링크별 detail fetch). '3 증상' 태깅 ~57개를
+#   한 번에 다 돌리면 ~2시간 → GHA timeout 실패. 그래서 한 실행당 '실제 수집한' 키워드 수를
+#   채널별로 N개까지만 처리하고, 나머지 빈 행은 이번 실행에서 건너뛴다(다음 실행이 이어서).
+#   이미 '수집상태' 도장으로 증분이 되므로 다음 실행은 자연히 다음 빈 행부터 처리한다.
+#   * 카운트 기준 = '실제 수집을 시작한(채널 라우팅 통과)' 키워드. 이미수집/단계미지정/키없음 등
+#     조용한 스킵은 카운트하지 않는다(빈 행 N개를 확실히 소화하기 위함).
+MAX_KEYWORDS_PER_RUN_DEFAULT = 25
+# ⑧ 시간 가드(이중 안전) — 누적 처리시간이 이 초를 넘으면 현재 키워드까지만 마치고 루프 중단.
+#   25개로도 혹시 느릴 때 대비(부분 결과 저장 + 종료, 다음 실행이 이어서). 기본 50분(=3000초).
+MAX_RUN_SECONDS_DEFAULT = 3000
 
 
 def _stage_value(row: dict) -> str:
@@ -113,6 +138,31 @@ def _should_collect(row: dict) -> bool:
     - 갱신 표시 → '수집상태'가 채워져 있어도 재수집(append-only 추가).
     """
     return (not _already_collected(row)) or _refresh_requested(row)
+
+
+def _count_collectable(data: dict, naver_on: bool, apify_on: bool) -> int:
+    """⑧ 전체 '수집 대상' 행 수 — '수집상태 빈칸(또는 갱신요청) + 라우팅 가능 채널' 행.
+
+    배치 상한/시간가드의 remaining_empty 정밀집계용. run 시작 스냅샷(data)을 기준으로,
+    실제로 수집을 시도할 자격이 있는 행만 센다(이미수집·단계미지정·키없음·URL없음 행 제외).
+    리뷰는 URL 유무까지 본다(URL 없으면 어차피 스킵 → 후보 아님).
+    """
+    total = 0
+    for rows in data.values():
+        for row in rows or []:
+            if not _should_collect(row):
+                continue
+            keyword = (row.get(COL_KEYWORD) or "").strip()
+            digit = _stage_digit(_stage_value(row))
+            if not keyword or not digit:
+                continue
+            if digit in STAGE_JISIKIN:
+                if naver_on:
+                    total += 1
+            elif digit in STAGE_REVIEW:
+                if apify_on and (row.get(COL_LINK) or "").strip():
+                    total += 1
+    return total
 
 
 def _format_collect_status(day: str, n: int) -> str:
@@ -237,6 +287,9 @@ def run_collection(
     apify_extra_input: dict | None = None,
     today: str | None = None,
     tab_filter=None,
+    max_keywords_per_run: int | None = None,
+    max_run_seconds: int | None = None,
+    time_fn=None,
 ) -> dict:
     """카외 탭 전수 수집 → 스테이징 적재. summary dict 반환.
 
@@ -248,18 +301,34 @@ def run_collection(
         apify_*: Apify 토큰/액터(없으면 리뷰 채널 스킵).
         today: 'YYYY-MM-DD' (테스트 주입용). None 이면 오늘 KST.
         tab_filter: 탭 이름 → bool. None 이면 이름에 '카외' 포함 탭만.
+        max_keywords_per_run: ⑧ 한 실행당 '실제 수집'할 키워드 상한(채널별 분리 카운트).
+            None 이면 env MAX_KEYWORDS_PER_RUN(기본 25). 도달한 채널은 이후 빈 행을 건너뜀
+            (표시 안 찍힘 → 다음 실행이 자연 재개). GHA 60분 timeout 안전장치.
+        max_run_seconds: ⑧ 누적 처리시간 상한(초). None 이면 env MAX_RUN_SECONDS(기본 3000=50분).
+            이 시간을 넘으면 현재 키워드까지 마치고 루프 중단(부분 결과 저장 + 종료). 이중 안전.
+        time_fn: 경과시간 측정 함수(기본 time.monotonic — 테스트 주입용). 0인자 호출, 초 반환.
 
     Returns:
-        {"collected": int, "failed": int, "skipped": int, "tabs": int}
+        {"collected": int, "failed": int, "skipped": int, "tabs": int,
+         "processed_jisikin": int, "processed_review": int,
+         "remaining_empty": int, "elapsed_sec": float, "stopped_by_time": bool}
         - collected: 스테이징에 적재한 행 수.
         - failed:    fetch/append 예외로 처리 못 한 키워드 행 수.
         - skipped:   이미수집(수집상태 채워짐)·키/단계 미지정·라우팅 외·키 미설정·URL 없음으로 건너뛴 행 수.
+        - processed_jisikin/processed_review: 이번 배치에서 '실제 수집'한 키워드 수(채널별).
+        - remaining_empty: 상한/시간가드로 이번에 못 한, 아직 빈(수집대상) 행 수(다음 실행 몫).
+        - elapsed_sec: 처리 누적 경과(초). stopped_by_time: 시간가드로 중단됐으면 True.
 
     증분/재개(①):
         탭별로 처리하되, 한 탭 안에서 COLLECT_STATUS_FLUSH_EVERY 키워드마다 (a)그때까지의
         스테이징 행을 append 하고 (b)그 행들의 '수집상태' 칸을 write-back 한다. 순서 보장 =
         '수집상태' 표시가 찍힌 행 ⟹ 그 행 스테이징 적재 완료. 중간에 끊겨도 미표시 행만 다음
         실행에서 자연 재개된다. 표시 칸이 이미 채워진 행은 애초에 스킵(날짜 무관).
+
+    배치 상한/시간 가드(⑧):
+        '수집상태'가 비어 수집 대상인 키워드를 앞에서부터 채널별 max_keywords_per_run 개만 처리하고,
+        나머지(또는 max_run_seconds 초과 시점 이후)는 이번 실행에서 건너뛴다. 건너뛴 행엔 '수집상태'를
+        찍지 않으므로 다음 실행이 자연히 다음 빈 행부터 이어간다(증분 도장 활용).
     """
     day = today or _today_kst()
     if tab_filter is None:
@@ -268,7 +337,20 @@ def run_collection(
     naver_on = bool(naver_client_id and naver_client_secret)
     apify_on = bool(apify_token)
 
-    summary = {"collected": 0, "failed": 0, "skipped": 0, "tabs": 0}
+    # ⑧ 배치 상한/시간 가드 — 인자 우선, 없으면 env, 둘 다 없으면 기본값.
+    cap_jisikin = (max_keywords_per_run if max_keywords_per_run is not None
+                   else _env_int("MAX_KEYWORDS_PER_RUN", MAX_KEYWORDS_PER_RUN_DEFAULT))
+    cap_review = cap_jisikin  # 채널별 분리 카운트(각 채널 독립적으로 같은 상한 적용).
+    time_budget = (max_run_seconds if max_run_seconds is not None
+                   else _env_int("MAX_RUN_SECONDS", MAX_RUN_SECONDS_DEFAULT))
+    clock = time_fn or time.monotonic
+    start_ts = clock()
+
+    summary = {
+        "collected": 0, "failed": 0, "skipped": 0, "tabs": 0,
+        "processed_jisikin": 0, "processed_review": 0,
+        "remaining_empty": 0, "elapsed_sec": 0.0, "stopped_by_time": False,
+    }
 
     # ④ 갱신 시 기존 스테이징 link 중복 제외용 캐시(스테이징 탭당 1회 read). run 전체에서 공유.
     existing_link_cache: dict[str, dict] = {}
@@ -276,7 +358,18 @@ def run_collection(
     data = client.load_all_data_tabs(tab_filter=tab_filter)
     summary["tabs"] = len(data)
 
+    # ⑧ 시간 가드로 루프 전체를 중단했음을 탭 루프 밖으로 전파(부분 결과 저장 후 종료).
+    stop_all = False
+
+    def _within_time_budget() -> bool:
+        """누적 경과가 time_budget 이내면 True. time_budget<=0 이면 가드 비활성(항상 True)."""
+        if time_budget <= 0:
+            return True
+        return (clock() - start_ts) < time_budget
+
     for tab_name, rows in data.items():
+        if stop_all:
+            break
         # 탭별 청크 버퍼 — 채널별 스테이징 행 + 그 청크에서 표시할 (행, 문구).
         # 청크 경계에서 staging append 먼저 → status write-back 순으로 flush(원자성 보장).
         # flush 시 버퍼를 비우지 않고 '새 리스트로 교체'한다(append 인자 참조 보존).
@@ -313,6 +406,11 @@ def run_collection(
                 if digit in STAGE_JISIKIN:
                     if not naver_on:
                         summary["skipped"] += 1
+                        continue
+                    # ⑧ 배치 상한: 지식인 채널이 이번 실행 상한에 도달했으면 이 빈 행은 다음 실행 몫.
+                    #    '수집상태' 안 찍음 → 다음 실행이 이 행부터 자연 재개. 스킵(skipped) 아님.
+                    if summary["processed_jisikin"] >= cap_jisikin:
+                        summary["remaining_empty"] += 1
                         continue
                     # 정확도순 100건 + 최신순 100건 수집 후 link 기준 중복제거(sim 우선).
                     # ★ 자동 쓰레기/품질 필터 없음 — 사장님 결정(2026-06-21): "광고 댓글 하나 섞였다고
@@ -377,6 +475,7 @@ def run_collection(
                         if refresh_flag_set:
                             pending_refresh_rows.append(row_num)  # 사장님 '갱신' 표시 clear.
                     processed_in_chunk += 1
+                    summary["processed_jisikin"] += 1  # ⑧ 채널별 배치 상한 카운트.
 
                 elif digit in STAGE_REVIEW:
                     if not apify_on:
@@ -386,6 +485,11 @@ def run_collection(
                     if not urls:
                         # ⑤ 상품 URL 없으면 리뷰 수집 무의미 → 스킵.
                         summary["skipped"] += 1
+                        continue
+                    # ⑧ 배치 상한: 리뷰 채널이 이번 실행 상한에 도달했으면 이 빈 행은 다음 실행 몫.
+                    #    '수집상태' 안 찍음 → 다음 실행이 이 행부터 자연 재개. 스킵(skipped) 아님.
+                    if summary["processed_review"] >= cap_review:
+                        summary["remaining_empty"] += 1
                         continue
                     reviews = fetch_reviews(
                         urls,
@@ -424,6 +528,7 @@ def run_collection(
                         if refresh_flag_set:
                             pending_refresh_rows.append(row_num)  # 사장님 '갱신' 표시 clear.
                     processed_in_chunk += 1
+                    summary["processed_review"] += 1  # ⑧ 채널별 배치 상한 카운트.
 
                 else:
                     # 1/2 정보 등 라우팅 대상 외 단계 → 스킵.
@@ -442,21 +547,55 @@ def run_collection(
                 pending_collect, pending_refresh_rows = [], []
                 processed_in_chunk = 0
 
-        # 탭 끝 — 남은 청크 flush.
+            # ⑧ 시간 가드(이중 안전): 현재 키워드까지 마친 뒤 누적 경과가 예산 초과면 루프 중단.
+            #    버퍼는 아래 탭-끝 flush 에서 적재(부분 결과 저장). 다음 실행이 미표시 행부터 재개.
+            if not _within_time_budget():
+                summary["stopped_by_time"] = True
+                stop_all = True
+                print(f"[시간가드] 누적 {clock() - start_ts:.0f}초 ≥ 예산 {time_budget}초 — "
+                      f"현재 키워드까지만 처리하고 이번 실행 중단(다음 실행이 이어서).")
+                break
+
+        # 탭 끝(또는 시간가드 중단) — 남은 청크 flush(부분 결과 저장).
         _flush_chunk(client, tab_name, chunk_jisikin, chunk_review,
                      pending_collect, pending_refresh_rows, summary)
 
+    # ⑧ 시간가드로 중단된 경우, 미처리로 남은 '수집 대상(빈 행)' 수를 remaining_empty 에 합산.
+    #    전체 수집대상 행 = '수집상태 빈칸 + 라우팅 가능 채널' 행. 이번에 실제 처리(processed)했거나
+    #    상한으로 이미 remaining 에 센 행을 빼면, 시간가드로 아예 손도 못 댄 빈 행 수가 나온다.
+    #    (data 는 run 시작 시점 스냅샷이라 도장 write-back 이 반영 안 됨 → 전체 후보를 안전히 재집계 가능.)
+    if stop_all:
+        total_candidates = _count_collectable(data, naver_on, apify_on)
+        already_accounted = (summary["processed_jisikin"] + summary["processed_review"]
+                             + summary["remaining_empty"])
+        summary["remaining_empty"] += max(0, total_candidates - already_accounted)
+
+    summary["elapsed_sec"] = round(clock() - start_ts, 1)
     return summary
 
 
 def format_summary(summary: dict) -> str:
-    """사람이 읽는 한 줄 요약(stdout + 텔레그램용). 비개발 사장님용 한글."""
+    """사람이 읽는 한 줄 요약(stdout + 텔레그램용). 비개발 사장님용 한글.
+
+    ⑧ 배치 정보(이번 처리 키워드 수 / 남은 빈 행 / 누적 초)를 함께 노출 — 몇 번 더 돌려야
+    끝나는지 사장님·나 가시성. 시간가드로 중단됐으면 '(시간가드)' 표식.
+    """
+    processed = summary.get("processed_jisikin", 0) + summary.get("processed_review", 0)
+    remaining = summary.get("remaining_empty", 0)
+    elapsed = summary.get("elapsed_sec", 0)
+    batch = (
+        f" | 이번 배치: 키워드 {processed}개 처리(지식인 {summary.get('processed_jisikin', 0)}/"
+        f"리뷰 {summary.get('processed_review', 0)}) / 남은 빈 행 {remaining}개 / 누적 {elapsed}초"
+    )
+    if summary.get("stopped_by_time"):
+        batch += " (시간가드 중단)"
     return (
         "[카페외부 재료수집] "
         f"수집 {summary.get('collected', 0)}건 / "
         f"실패 {summary.get('failed', 0)}건 / "
         f"스킵 {summary.get('skipped', 0)}건 "
         f"(대상 탭 {summary.get('tabs', 0)}개)"
+        + batch
     )
 
 

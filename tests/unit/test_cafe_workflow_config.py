@@ -67,3 +67,29 @@ def test_c9_always_notification_step_present():
     notify = next(s for s in steps if "Telegram" in s.get("name", ""))
     assert notify["if"] == "always()"
     assert notify["continue-on-error"] == "true"
+
+
+def test_batch_cap_env_wired():
+    """⑧ 배치 상한/시간가드 env 가 run step 에 배선돼 있어야 한다(GHA 60분 timeout 회피)."""
+    wf = _load()
+    steps = wf["jobs"]["collect"]["steps"]
+    env = next(s for s in steps if s.get("name") == "Run cafe material collection")["env"]
+    assert env["MAX_KEYWORDS_PER_RUN"] == "${{ github.event.inputs.max_keywords }}"
+    assert env["MAX_RUN_SECONDS"] == "${{ github.event.inputs.max_run_seconds }}"
+
+
+def test_dispatch_inputs_for_batch_cap():
+    """수동 트리거 시 max_keywords / max_run_seconds 를 inputs 로 받을 수 있어야 한다(선택)."""
+    wf = _load()
+    inputs = wf["on"]["workflow_dispatch"]["inputs"]
+    assert "max_keywords" in inputs
+    assert "max_run_seconds" in inputs
+    # 미입력 허용(required=false) — 비우면 integration_runner 기본값 사용.
+    assert inputs["max_keywords"]["required"] == "false"
+    assert inputs["max_run_seconds"]["required"] == "false"
+
+
+def test_timeout_still_60_min_with_batch_guard():
+    """배치 가드가 있어도 job timeout 은 60분 유지(이중 안전 — 가드 + GHA timeout)."""
+    wf = _load()
+    assert wf["jobs"]["collect"]["timeout-minutes"] == "60"

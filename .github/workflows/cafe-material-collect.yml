@@ -9,8 +9,20 @@ on:
   #     활성화하려면 아래 schedule 블록 2줄(매주 월 KST21=UTC12)의 주석(#)만 풀면 됩니다.
   # schedule:
   #   # 매주 월요일 KST 21:00 = UTC 12:00 (주 1회 — 원고 재료는 매일 필요 없음, 무료 API 호출량 절약).
+  #   # ⚠️ enrich(답변 본문 추출)로 키워드당 ~2분 → 57개면 ~2시간 > GHA 60분 timeout. 그래서 한 실행당
+  #   #    max_keywords(기본 25)개만 처리하는 증분 배치로 동작. cron 활성화 시 같은 cron 을 여러 번
+  #   #    돌리거나(예: 30분 간격) max_keywords 를 키워드 총수에 맞춰 조절해 누적 소화. 활성화 = 위 2줄 주석 해제.
   #   - cron: '0 12 * * 1'
   workflow_dispatch:  # 사장님 수동 트리거(시트 메뉴 '🔍 자료조사 시작' / GitHub Actions 버튼)
+    inputs:
+      max_keywords:
+        description: '한 실행당 처리할 키워드 수(채널별). 비우면 기본 25. GHA 60분 timeout 회피용 배치 상한.'
+        required: false
+        default: ''
+      max_run_seconds:
+        description: '누적 처리시간 상한(초). 비우면 기본 3000(50분). 이중 안전장치(현재 키워드까지 마치고 중단).'
+        required: false
+        default: ''
 
 # 순위체커(naver-rank-check)와 별도 그룹 — 서로 취소/대기 영향 없음.
 concurrency:
@@ -61,6 +73,10 @@ jobs:
           NAVER_OPENAPI_CLIENT_SECRET: ${{ secrets.NAVER_OPENAPI_CLIENT_SECRET }}
           APIFY_TOKEN: ${{ secrets.APIFY_TOKEN }}
           APIFY_ACTOR_ID: ${{ secrets.APIFY_ACTOR_ID }}
+          # ⑧ 배치 상한/시간 가드 — GHA 60분 timeout 회피. 비우면 integration_runner 기본값(25 / 3000초).
+          #    수동 트리거 시 inputs 로 덮어쓸 수 있음(미입력=빈 문자열=기본값 사용).
+          MAX_KEYWORDS_PER_RUN: ${{ github.event.inputs.max_keywords }}
+          MAX_RUN_SECONDS: ${{ github.event.inputs.max_run_seconds }}
           # C9: 요약 텔레그램 전송용 (integration_runner 가 끝에 send_report 호출).
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}

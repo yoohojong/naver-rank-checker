@@ -969,3 +969,202 @@ def test_jisikin_body_falls_back_when_enrich_raises():
     assert summary["collected"] == 1
     assert summary["failed"] == 0  # enrich 예외는 격리 — 키워드 실패로 치지 않는다.
     assert bodies == ["폴백 description 본문"]
+
+
+# ── ⑧ 배치 상한(MAX_KEYWORDS_PER_RUN) + 시간 가드(MAX_RUN_SECONDS) ──────────────
+#    GHA 60분 timeout 회피: 한 실행당 채널별 N개만 수집, 나머지 빈 행은 다음 실행 몫.
+#    실제 네트워크 0(fetch mock). 시간은 time_fn 주입으로 가짜 시계 사용.
+
+
+def _jisikin_fetch(title="질문 제목 예시입니다", body="본문 설명 내용입니다", link="L"):
+    """지식인 fetch mock — sim/date 양쪽 호출에 같은 1건 반환(테스트 단순화)."""
+    return MagicMock(return_value=[{"title": title, "description": body, "link": link}])
+
+
+def test_batch_cap_processes_only_n_of_many_empty_rows():
+    """빈 행 100개 중 MAX=25면 25개만 '실제 수집' 대상, 나머지 75는 이번 실행 스킵(다음 실행 몫)."""
+    rows = [
+        {"키워드": f"kw{i}", "키워드 분류(단계)": "3 증상", "_row": i + 2}
+        for i in range(100)
+    ]
+    client = _client_with({"대량.카외": rows})
+    fetch_j = _jisikin_fetch()
+
+    summary = run_collection(
+        client, fetch_jisikin=fetch_j, fetch_reviews=MagicMock(),
+        naver_client_id="id", naver_client_secret="sec",
+        apify_token="t", apify_actor_id="a~b", today="2026-06-20",
+        max_keywords_per_run=25,
+    )
+
+    # 정확히 25개 행만 '수집상태' 표시(=실제 수집됨), 나머지 75는 표시 안 됨.
+    writes = _status_writes(client)
+    assert len(writes) == 25
+    written_rows = sorted(r for _tab, r, _s in writes)
+    assert written_rows == list(range(2, 27))  # 앞에서부터 25개(_row 2..26)
+    # 채널별 카운트 + 남은 빈 행.
+    assert summary["processed_jisikin"] == 25
+    assert summary["processed_review"] == 0
+    assert summary["remaining_empty"] == 75      # 75개는 다음 실행 몫(스킵 카운트 아님)
+    assert summary["collected"] == 25            # 각 키워드 1건
+    assert summary["skipped"] == 0               # 상한 초과분은 skipped 가 아니다(다음 실행 재개)
+    assert summary["stopped_by_time"] is False
+    # fetch 도 25개 키워드 × 2회(sim+date)만 호출 — 나머지 75는 네트워크 호출 자체가 없다.
+    assert fetch_j.call_count == 25 * 2
+
+
+def test_batch_cap_per_channel_separate_count():
+    """채널별 분리 카운트 — 지식인 25 + 리뷰 25 가 서로 상한을 잡아먹지 않는다."""
+    jisikin_rows = [
+        {"키워드": f"증상{i}", "키워드 분류(단계)": "3 증상", "_row": i + 2}
+        for i in range(40)
+    ]
+    review_rows = [
+        {"키워드": f"브랜드{i}", "키워드 분류(단계)": "5 브랜드",
+         "링크": f"https://smartstore.naver.com/x/products/{i}", "_row": i + 50}
+        for i in range(40)
+    ]
+    client = _client_with({"a.카외": jisikin_rows, "b.카외": review_rows})
+    fetch_j = _jisikin_fetch()
+    fetch_r = MagicMock(return_value=[{"star": 1, "content": "별로", "source": "u", "date": "d"}])
+
+    summary = run_collection(
+        client, fetch_jisikin=fetch_j, fetch_reviews=fetch_r,
+        naver_client_id="id", naver_client_secret="sec",
+        apify_token="t", apify_actor_id="a~b", today="2026-06-20",
+        max_keywords_per_run=25,
+    )
+
+    # 각 채널 독립적으로 25개씩(합 50) 처리, 남은 빈 행 = (40-25)*2 = 30.
+    assert summary["processed_jisikin"] == 25
+    assert summary["processed_review"] == 25
+    assert summary["remaining_empty"] == 30
+    assert summary["skipped"] == 0
+
+
+def test_batch_cap_skips_already_filled_rows_regression():
+    """회귀: '수집상태' 채워진 행은 상한과 무관하게 여전히 스킵(증분 유지)."""
+    rows = [
+        {"키워드": "이미함1", "키워드 분류(단계)": "3 증상",
+         HEADER_COLLECT_STATUS: "✅ 2026-06-10 수집(5건)", "_row": 2},
+        {"키워드": "새거1", "키워드 분류(단계)": "3 증상", "_row": 3},
+        {"키워드": "새거2", "키워드 분류(단계)": "3 증상", "_row": 4},
+    ]
+    client = _client_with({"x.카외": rows})
+    fetch_j = _jisikin_fetch()
+
+    summary = run_collection(
+        client, fetch_jisikin=fetch_j, fetch_reviews=MagicMock(),
+        naver_client_id="id", naver_client_secret="sec",
+        apify_token="t", apify_actor_id="a~b", today="2026-06-20",
+        max_keywords_per_run=25,
+    )
+
+    written_rows = sorted(r for _tab, r, _s in _status_writes(client))
+    assert written_rows == [3, 4]            # 빈 행 2개만 수집
+    assert summary["skipped"] == 1           # 이미함1 은 스킵(상한 무관)
+    assert summary["processed_jisikin"] == 2
+    assert summary["remaining_empty"] == 0   # 빈 행 2개를 상한(25) 안에서 다 처리
+
+
+def test_batch_cap_default_from_env(monkeypatch):
+    """인자 미지정 시 env MAX_KEYWORDS_PER_RUN 적용(없으면 기본 25)."""
+    monkeypatch.setenv("MAX_KEYWORDS_PER_RUN", "3")
+    rows = [
+        {"키워드": f"kw{i}", "키워드 분류(단계)": "3 증상", "_row": i + 2}
+        for i in range(10)
+    ]
+    client = _client_with({"대량.카외": rows})
+    fetch_j = _jisikin_fetch()
+
+    summary = run_collection(
+        client, fetch_jisikin=fetch_j, fetch_reviews=MagicMock(),
+        naver_client_id="id", naver_client_secret="sec",
+        apify_token="t", apify_actor_id="a~b", today="2026-06-20",
+        # max_keywords_per_run 미지정 → env(3) 사용.
+    )
+
+    assert summary["processed_jisikin"] == 3
+    assert summary["remaining_empty"] == 7
+
+
+def test_time_guard_stops_loop_after_budget_exceeded():
+    """시간 가드: 누적 시간이 예산을 넘으면 현재 키워드까지만 마치고 루프 중단(부분 결과 저장)."""
+    rows = [
+        {"키워드": f"kw{i}", "키워드 분류(단계)": "3 증상", "_row": i + 2}
+        for i in range(10)
+    ]
+    client = _client_with({"x.카외": rows})
+    fetch_j = _jisikin_fetch()
+
+    # 가짜 시계: 호출마다 10초씩 증가. start=0, 키워드1 끝=10, 키워드2 끝=20...
+    #   _within_time_budget 은 각 키워드 끝에서 1회 clock() 호출. 예산 25초 → 키워드 3개 처리 후
+    #   누적 30초 ≥ 25 → 중단(키워드 3까지 저장, 4~10 미처리).
+    ticks = iter(range(0, 1000, 10))
+    fake_clock = lambda: next(ticks)  # noqa: E731
+
+    summary = run_collection(
+        client, fetch_jisikin=fetch_j, fetch_reviews=MagicMock(),
+        naver_client_id="id", naver_client_secret="sec",
+        apify_token="t", apify_actor_id="a~b", today="2026-06-20",
+        max_keywords_per_run=100,   # 상한은 넉넉(시간가드만 작동하게)
+        max_run_seconds=25,
+        time_fn=fake_clock,
+    )
+
+    assert summary["stopped_by_time"] is True
+    # 부분 결과: 일부만 수집되고 표시됨(전부 10개는 아님).
+    writes = _status_writes(client)
+    assert 0 < len(writes) < 10
+    assert summary["collected"] == len(writes)        # 부분 결과가 실제 적재됨
+    # 미처리 빈 행은 remaining_empty 로 집계(다음 실행 몫). 처리+남음 = 전체 후보(10).
+    assert summary["processed_jisikin"] + summary["remaining_empty"] == 10
+    assert summary["remaining_empty"] > 0
+
+
+def test_time_guard_disabled_when_budget_zero():
+    """예산 0(또는 음수)이면 시간 가드 비활성 — 전부 처리(상한만 작동)."""
+    rows = [
+        {"키워드": f"kw{i}", "키워드 분류(단계)": "3 증상", "_row": i + 2}
+        for i in range(5)
+    ]
+    client = _client_with({"x.카외": rows})
+    fetch_j = _jisikin_fetch()
+    # 시계가 폭증해도 예산 0 이면 무시.
+    ticks = iter(range(0, 100000, 10000))
+    fake_clock = lambda: next(ticks)  # noqa: E731
+
+    summary = run_collection(
+        client, fetch_jisikin=fetch_j, fetch_reviews=MagicMock(),
+        naver_client_id="id", naver_client_secret="sec",
+        apify_token="t", apify_actor_id="a~b", today="2026-06-20",
+        max_keywords_per_run=100, max_run_seconds=0, time_fn=fake_clock,
+    )
+
+    assert summary["stopped_by_time"] is False
+    assert summary["processed_jisikin"] == 5
+    assert summary["remaining_empty"] == 0
+
+
+def test_format_summary_includes_batch_info():
+    """format_summary 가 이번 배치 처리/남은/누적 정보를 노출(사장님 가시성)."""
+    summary = {
+        "collected": 30, "failed": 0, "skipped": 2, "tabs": 1,
+        "processed_jisikin": 25, "processed_review": 0,
+        "remaining_empty": 32, "elapsed_sec": 1500.0, "stopped_by_time": False,
+    }
+    line = ir.format_summary(summary)
+    assert "키워드 25개 처리" in line
+    assert "남은 빈 행 32개" in line
+    assert "누적 1500.0초" in line
+
+
+def test_format_summary_marks_time_guard_stop():
+    """시간가드로 중단됐으면 요약에 '(시간가드 중단)' 표식."""
+    summary = {
+        "collected": 10, "failed": 0, "skipped": 0, "tabs": 1,
+        "processed_jisikin": 10, "processed_review": 0,
+        "remaining_empty": 47, "elapsed_sec": 3010.0, "stopped_by_time": True,
+    }
+    line = ir.format_summary(summary)
+    assert "시간가드 중단" in line
