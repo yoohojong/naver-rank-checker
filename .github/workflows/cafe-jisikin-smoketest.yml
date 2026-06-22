@@ -2,13 +2,29 @@ name: cafe-jisikin-smoketest
 # 지식인 수집 '키 작동' 확인용 (수동 전용). 고정/입력 키워드로 fetch_jisikin 을 직접 1회 호출해
 # 네이버 Open API 키가 실제로 작동하는지 + 실제 지식인 Q&A 제목이 들어오는지 즉시 확인.
 # (cafe-material-collect 는 시트에 '3 증상' 태깅된 키워드가 있어야 수집 → 이건 그것과 무관하게 키만 검증.)
+#
+# [feat/review-lowstar-pw 한정] run 27928928282(1h 타임아웃) 원인 규명용 review_timing 잡 추가.
+#   review_timing=true 로 dispatch → 저점리뷰(Playwright)를 소수 키워드로 돌려 키워드/완료/예외마다
+#   타임스탬프 로그 출력. (a)키워드량 느림 vs (b)네이버 GHA IP 차단 판별. 라이브 시트 미접근.
 on:
   workflow_dispatch:
     inputs:
       keyword:
-        description: '테스트할 증상 키워드'
+        description: '테스트할 증상 키워드(지식인 잡)'
         required: false
         default: '두피 가려움'
+      review_timing:
+        description: '저점리뷰 시간측정 진단 실행(true/false)'
+        required: false
+        default: 'false'
+      review_keywords:
+        description: '저점리뷰 키워드(쉼표구분, 대표 타사 브랜드)'
+        required: false
+        default: '니조랄,헤드앤숄더,도브'
+      review_max:
+        description: '저점리뷰 키워드당 목표 건수'
+        required: false
+        default: '5'
 
 concurrency:
   group: cafe-jisikin-smoketest
@@ -19,6 +35,7 @@ permissions:
 
 jobs:
   smoke:
+    if: ${{ inputs.review_timing != 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -60,4 +77,70 @@ jobs:
           print(f"✅ 키워드 '{kw}' → 지식인 {len(r)}건 수집 성공 (= 네이버 키 작동 확인)")
           for i, x in enumerate(r[:8], 1):
               print(f"  {i}. {x['title']}")
+          PY
+
+  review_timing:
+    if: ${{ inputs.review_timing == 'true' }}
+    runs-on: ubuntu-latest
+    # 진단용 — 과속 차단 시 무한대기 방지. material(60)보다 짧게.
+    timeout-minutes: 25
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6.0.2
+        with:
+          token: ${{ secrets.ACTIONS_PAT || github.token }}
+
+      - name: Setup Python 3.13
+        uses: actions/setup-python@v6.2.0
+        with:
+          python-version: '3.13'
+
+      - name: Setup venv + install deps
+        shell: bash
+        run: |
+          python -m venv .venv
+          ./.venv/bin/python -m pip install --upgrade pip
+          ./.venv/bin/python -m pip install -r requirements.txt
+
+      - name: Install Playwright chromium
+        shell: bash
+        run: |
+          ./.venv/bin/python -m playwright install --with-deps chromium
+
+      - name: 저점리뷰 실동작 + 시간측정
+        shell: bash
+        env:
+          KEYWORDS: ${{ inputs.review_keywords }}
+          MAXREV: ${{ inputs.review_max }}
+          PYTHONIOENCODING: 'utf-8'
+        run: |
+          ./.venv/bin/python -u - <<'PY'
+          import os, time, traceback
+          from src.review_lowstar import fetch_low_star_reviews
+
+          kws = [k.strip() for k in (os.environ.get("KEYWORDS") or "").split(",") if k.strip()]
+          if not kws:
+              kws = ["니조랄", "헤드앤숄더", "도브"]
+          try:
+              maxrev = int(os.environ.get("MAXREV") or "5")
+          except ValueError:
+              maxrev = 5
+
+          print(f"=== 저점리뷰 진단 시작: 키워드 {len(kws)}개 {kws}, 키워드당 목표 {maxrev}건 ===", flush=True)
+          t0 = time.time()
+          for i, kw in enumerate(kws, 1):
+              ts = time.time()
+              print(f"[{i}/{len(kws)}] '{kw}' 시작 (경과 {ts - t0:.0f}s)", flush=True)
+              try:
+                  rows = fetch_low_star_reviews(kw, max_reviews=maxrev)
+                  dt = time.time() - ts
+                  print(f"[{i}/{len(kws)}] '{kw}' 완료: {len(rows)}건 / {dt:.0f}s", flush=True)
+                  for j, r in enumerate(rows[:3], 1):
+                      c = (r.get("content") or "")[:60].replace("\n", " ")
+                      print(f"      {j}. ({r.get('score')}점) {c}", flush=True)
+              except Exception as e:
+                  dt = time.time() - ts
+                  print(f"[{i}/{len(kws)}] '{kw}' 예외: {type(e).__name__}: {e} ({dt:.0f}s)", flush=True)
+                  traceback.print_exc()
+          print(f"=== 진단 종료: 총 {time.time() - t0:.0f}s ===", flush=True)
           PY
