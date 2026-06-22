@@ -77,6 +77,10 @@ on:
         description: '화해 검증 대상(키워드 또는 제품 id). 기본 헤드앤숄더.'
         required: false
         default: '헤드앤숄더'
+      deposit_check:
+        description: '드라이브 자동저장 트리거 작동 확인 — 수집결과 탭 "적재완료" 칸 채움여부로 역추적. true/false'
+        required: false
+        default: 'false'
 
 concurrency:
   group: cafe-jisikin-smoketest
@@ -772,8 +776,57 @@ jobs:
               br.close()
           PY
 
+  # 드라이브 자동저장 트리거 작동 확인 — depositMaterials 는 적재 후 '적재완료' 칸에 날짜를 남긴다.
+  #   그 칸이 채워져 있으면 = 트리거가 돌아 드라이브 적재됨. 비어 있으면 = 아직 안 돎(트리거 OFF).
+  deposit_check:
+    if: ${{ inputs.deposit_check == 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6.0.2
+        with:
+          token: ${{ secrets.ACTIONS_PAT || github.token }}
+      - name: Setup Python 3.13
+        uses: actions/setup-python@v6.2.0
+        with:
+          python-version: '3.13'
+      - name: Setup venv + install deps
+        shell: bash
+        run: |
+          python -m venv .venv
+          ./.venv/bin/python -m pip install --upgrade pip
+          ./.venv/bin/python -m pip install -r requirements.txt
+      - name: 적재완료 칸 확인(드라이브 트리거 작동 역추적)
+        shell: bash
+        env:
+          SPREADSHEET_ID: ${{ secrets.SPREADSHEET_ID }}
+          SERVICE_ACCOUNT_JSON: ${{ secrets.SERVICE_ACCOUNT_JSON }}
+          PYTHONIOENCODING: 'utf-8'
+        run: |
+          ./.venv/bin/python -u - <<'PY'
+          from collections import Counter
+          from src.config import SERVICE_ACCOUNT_JSON, SPREADSHEET_ID
+          from src.sheets import SheetsClient
+          client = SheetsClient(spreadsheet_id=SPREADSHEET_ID, service_account_json=SERVICE_ACCOUNT_JSON)
+          for tab in ("수집결과_리뷰", "수집결과_지식인"):
+              try:
+                  recs = client.read_tab_records(tab)
+              except Exception as e:
+                  print(f"=== {tab}: read 실패 {type(e).__name__} ===", flush=True); continue
+              n = len(recs or [])
+              done = sum(1 for r in (recs or []) if (r.get("적재완료") or "").strip())
+              days = Counter((r.get("적재완료") or "").strip() for r in (recs or []) if (r.get("적재완료") or "").strip())
+              print(f"=== {tab}: 총 {n}행 / 적재완료 채워짐 {done}행 / 빈칸 {n-done}행 ===", flush=True)
+              if done:
+                  print(f"    적재완료 날짜분포: {dict(days)}", flush=True)
+                  print("    → 트리거 작동함(드라이브 적재됨) ✅", flush=True)
+              else:
+                  print("    → 적재완료 전부 빈칸 = 드라이브 자동저장 트리거 아직 안 돎(OFF) ❌", flush=True)
+          PY
+
   smoke:
-    if: ${{ inputs.review_timing != 'true' && inputs.count_keywords != 'true' && inputs.matrix_probe != 'true' && inputs.yield_probe != 'true' && inputs.shop_probe != 'true' && inputs.hwahae_probe != 'true' && inputs.recon_probe != 'true' && inputs.gp_verify != 'true' && inputs.material_export != 'true' && inputs.hw_verify != 'true' }}
+    if: ${{ inputs.review_timing != 'true' && inputs.count_keywords != 'true' && inputs.matrix_probe != 'true' && inputs.yield_probe != 'true' && inputs.shop_probe != 'true' && inputs.hwahae_probe != 'true' && inputs.recon_probe != 'true' && inputs.gp_verify != 'true' && inputs.material_export != 'true' && inputs.hw_verify != 'true' && inputs.deposit_check != 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
