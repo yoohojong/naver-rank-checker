@@ -27,6 +27,7 @@
 from __future__ import annotations
 
 import os
+import re
 import time
 from datetime import datetime, timedelta, timezone
 
@@ -82,8 +83,17 @@ COLLECT_STATUS_FLUSH_EVERY = 20
 #     조용한 스킵은 카운트하지 않는다(빈 행 N개를 확실히 소화하기 위함).
 MAX_KEYWORDS_PER_RUN_DEFAULT = 25
 # ⑧ 시간 가드(이중 안전) — 누적 처리시간이 이 초를 넘으면 현재 키워드까지만 마치고 루프 중단.
-#   25개로도 혹시 느릴 때 대비(부분 결과 저장 + 종료, 다음 실행이 이어서). 기본 50분(=3000초).
-MAX_RUN_SECONDS_DEFAULT = 3000
+#   25개로도 혹시 느릴 때 대비(부분 결과 저장 + 종료, 다음 실행이 이어서). GHA 60분보다 낮은 45분(=2700초).
+MAX_RUN_SECONDS_DEFAULT = 2700
+
+# 키워드당 enrich detail fetch 상한 — integration_runner 에서 enrich_jisikin 호출 시 주입.
+ENRICH_MAX_DETAIL = 30
+
+# 0건 수집 재시도 최대 횟수 — 이 이상이면 '진짜 없는 키워드'로 확정(✅ 0건확정).
+ZERO_COLLECT_MAX_RETRIES = 3
+
+# 0건 재시도 마커 정규식 — '⏳ YYYY-MM-DD 0건(K회)' 형식에서 K 파싱용.
+_ZERO_RETRY_RE = re.compile(r"^⏳\s+\S+\s+0건\((\d+)회\)\s*$")
 
 
 def _stage_value(row: dict) -> str:
@@ -116,11 +126,16 @@ def _today_kst() -> str:
 
 
 def _already_collected(row: dict) -> bool:
-    """메인 시트 행의 '수집상태' 칸이 채워졌으면(이미 수집됨) True.
+    """메인 시트 행의 '수집상태' 칸이 '완료'로 채워졌으면(이미 수집됨) True.
 
-    증분/재개의 핵심 판정 — 칸이 비어 있는 행만 수집 대상.
+    증분/재개의 핵심 판정:
+    - '✅'로 시작하는 값만 완료(True).
+    - 빈 값 또는 '⏳'로 시작하는 재시도 마커는 미완료(False) — 수집 대상으로 취급.
     """
-    return bool((row.get(COL_COLLECT_STATUS) or "").strip())
+    status = (row.get(COL_COLLECT_STATUS) or "").strip()
+    if not status:
+        return False
+    return status.startswith("✅")
 
 
 def _refresh_requested(row: dict) -> bool:
@@ -168,6 +183,33 @@ def _count_collectable(data: dict, naver_on: bool, apify_on: bool) -> int:
 def _format_collect_status(day: str, n: int) -> str:
     """'수집상태' 칸에 기록할 첫 수집 문구 — '✅ YYYY-MM-DD 수집(N건)'."""
     return f"✅ {day} 수집({n}건)"
+
+
+def _format_zero_retry(day: str, prev_status: str) -> str:
+    """0건 수집 시 '수집상태' 칸에 기록할 재시도 마커 — '⏳ YYYY-MM-DD 0건(K회)'.
+
+    이전 상태 문자열에서 K(이전 시도 횟수)를 파싱해 +1 한다.
+    K가 ZERO_COLLECT_MAX_RETRIES 이상이면 '✅ YYYY-MM-DD 0건확정' 을 반환해 더 이상 시도하지 않는다.
+
+    Args:
+        day: 오늘 날짜 'YYYY-MM-DD'.
+        prev_status: 현재 '수집상태' 칸 값(빈 문자열도 허용).
+
+    Returns:
+        '⏳ YYYY-MM-DD 0건(K회)' 또는 '✅ YYYY-MM-DD 0건확정'.
+    """
+    prev = (prev_status or "").strip()
+    k = 0
+    m = _ZERO_RETRY_RE.match(prev)
+    if m:
+        try:
+            k = int(m.group(1))
+        except (ValueError, TypeError):
+            k = 0
+    k += 1
+    if k >= ZERO_COLLECT_MAX_RETRIES:
+        return f"✅ {day} 0건확정"
+    return f"⏳ {day} 0건({k}회)"
 
 
 def _format_refresh_status(day: str, n: int) -> str:
@@ -346,10 +388,15 @@ def run_collection(
     clock = time_fn or time.monotonic
     start_ts = clock()
 
+    # RateLimitError 를 여기서 import — 무거운 의존성(curl_cffi)은 main 에서만 로드되지만
+    # run_collection 은 테스트에서도 직접 호출되므로 local import 로 순환/무거움 방지.
+    from src.jisikin_collect import RateLimitError as _RateLimitError
+
     summary = {
         "collected": 0, "failed": 0, "skipped": 0, "tabs": 0,
         "processed_jisikin": 0, "processed_review": 0,
         "remaining_empty": 0, "elapsed_sec": 0.0, "stopped_by_time": False,
+        "rate_limited": False,
     }
 
     # ④ 갱신 시 기존 스테이징 link 중복 제외용 캐시(스테이징 탭당 1회 read). run 전체에서 공유.
@@ -450,9 +497,18 @@ def run_collection(
                     #   주입식(⑥) — enrich_jisikin 미주입(None)이면 보강 생략(본문=description 폴백).
                     #   detail 실패/빈 값이면 enrich 가 body_full=description 로 폴백(회귀 안전).
                     #   enrich 자체가 통째로 실패해도(예외) description 폴백으로 격리(전체 비차단).
+                    #   max_detail + deadline 주입 — 키워드당 detail 상한 + 잔여 시간 예산으로 조기종료.
                     if enrich_jisikin is not None and merged:
                         try:
-                            enrich_jisikin(merged)
+                            # 잔여 시간 예산이 있으면 deadline 으로 전달 — 없으면 None(무제한).
+                            enrich_deadline: float | None = None
+                            if time_budget > 0:
+                                enrich_deadline = start_ts + time_budget
+                            enrich_jisikin(
+                                merged,
+                                max_detail=ENRICH_MAX_DETAIL,
+                                deadline=enrich_deadline,
+                            )
                         except Exception as e:  # noqa: BLE001 — enrich 실패 시 description 폴백.
                             print(f"[본문보강실패] 키워드 '{keyword}': "
                                   f"{type(e).__name__}: {e} — description 으로 폴백")
@@ -466,11 +522,17 @@ def run_collection(
                         for it in merged
                     ]
                     chunk_jisikin.extend(new_rows)
-                    summary["collected"] += len(new_rows)
+                    n_collected = len(new_rows)
+                    summary["collected"] += n_collected
                     if row_num:
-                        # 첫 수집·갱신 모두 '수집상태' 칸에 기록(병합). 갱신은 시점 문구로 같은 칸 덮음.
-                        status = (_format_refresh_status(day, len(new_rows)) if is_refresh
-                                  else _format_collect_status(day, len(new_rows)))
+                        if n_collected == 0:
+                            # 0건 수집 — 재시도 마커 기록(K회 누적). K >= ZERO_COLLECT_MAX_RETRIES 면 확정.
+                            prev_status = (row.get(COL_COLLECT_STATUS) or "").strip()
+                            status = _format_zero_retry(day, prev_status)
+                        elif is_refresh:
+                            status = _format_refresh_status(day, n_collected)
+                        else:
+                            status = _format_collect_status(day, n_collected)
                         pending_collect.append((row_num, status))
                         if refresh_flag_set:
                             pending_refresh_rows.append(row_num)  # 사장님 '갱신' 표시 clear.
@@ -519,11 +581,17 @@ def run_collection(
                         for rv in review_list
                     ]
                     chunk_review.extend(new_rows)
-                    summary["collected"] += len(new_rows)
+                    n_collected = len(new_rows)
+                    summary["collected"] += n_collected
                     if row_num:
-                        # 첫 수집·갱신 모두 '수집상태' 칸에 기록(병합). 갱신은 시점 문구로 같은 칸 덮음.
-                        status = (_format_refresh_status(day, len(new_rows)) if is_refresh
-                                  else _format_collect_status(day, len(new_rows)))
+                        if n_collected == 0:
+                            # 0건 수집 — 재시도 마커 기록(K회 누적).
+                            prev_status = (row.get(COL_COLLECT_STATUS) or "").strip()
+                            status = _format_zero_retry(day, prev_status)
+                        elif is_refresh:
+                            status = _format_refresh_status(day, n_collected)
+                        else:
+                            status = _format_collect_status(day, n_collected)
                         pending_collect.append((row_num, status))
                         if refresh_flag_set:
                             pending_refresh_rows.append(row_num)  # 사장님 '갱신' 표시 clear.
@@ -534,6 +602,20 @@ def run_collection(
                     # 1/2 정보 등 라우팅 대상 외 단계 → 스킵.
                     summary["skipped"] += 1
 
+            except _RateLimitError as e:
+                # API 429 한도 초과 — 지식인 채널 즉시 circuit-break(이 탭의 나머지 지식인 행도 중단).
+                # 남은 대상은 remaining_empty 로 집계(다음 실행이 재개). 다른 채널(리뷰)은 계속.
+                summary["rate_limited"] = True
+                print(f"[한도초과] 탭 '{tab_name}' 키워드 '{keyword}': {e} — 지식인 채널 중단.")
+                # 현재 탭의 남은 행 중 지식인 수집 대상을 remaining_empty 에 합산.
+                # (간이 집계 — 현재 행 이후 행을 순회하지 않고 부분 flush 후 채널 break)
+                _flush_chunk(client, tab_name, chunk_jisikin, chunk_review,
+                             pending_collect, pending_refresh_rows, summary)
+                chunk_jisikin, chunk_review = [], []
+                pending_collect, pending_refresh_rows = [], []
+                processed_in_chunk = 0
+                # 지식인 채널 상한을 cap_jisikin 으로 올려 이후 행이 remaining_empty 로 빠지게.
+                cap_jisikin = summary["processed_jisikin"]
             except Exception as e:  # noqa: BLE001 — ② 키워드 단위 격리(전체는 계속).
                 summary["failed"] += 1
                 print(f"[수집실패] 탭 '{tab_name}' 키워드 '{keyword}' (단계 {stage_raw}): "
@@ -589,6 +671,8 @@ def format_summary(summary: dict) -> str:
     )
     if summary.get("stopped_by_time"):
         batch += " (시간가드 중단)"
+    if summary.get("rate_limited"):
+        batch += " ⚠️ 한도초과로 중단"
     return (
         "[카페외부 재료수집] "
         f"수집 {summary.get('collected', 0)}건 / "

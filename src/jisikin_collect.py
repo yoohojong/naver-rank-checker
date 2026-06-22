@@ -10,10 +10,18 @@ from __future__ import annotations
 
 import html as _html
 import re
+import time as _time
 
 from curl_cffi import requests
 
 KIN_API_URL = "https://openapi.naver.com/v1/search/kin.json"
+
+# 키워드 1건당 detail fetch 기본 상한 — 초과분은 description 폴백(GHA 60분 timeout 안전장치).
+MAX_DETAIL_PER_KEYWORD = 30
+
+
+class RateLimitError(RuntimeError):
+    """네이버 API 429(rate-limit) 응답 시 raise — 일반 RuntimeError 와 구분해 채널 circuit-break용."""
 
 # detail 페이지 GET 시 쓰는 브라우저 UA 위장(_proto_kin_material.py 와 동일 — anti-bot 완화).
 _DETAIL_UA = (
@@ -125,7 +133,14 @@ def fetch_kin_detail(link: str, *, timeout: int = 10) -> dict:
     return {"question_body": blocks[0], "answers": blocks[1:]}
 
 
-def enrich_jisikin(items: list[dict], *, timeout: int = 10, max_items=None) -> list[dict]:
+def enrich_jisikin(
+    items: list[dict],
+    *,
+    timeout: int = 10,
+    max_items=None,
+    max_detail: int = MAX_DETAIL_PER_KEYWORD,
+    deadline: float | None = None,
+) -> list[dict]:
     """fetch_jisikin 결과 각 item 에 detail(질문+답변) 본문을 붙여 'body_full' 을 만든다.
 
     각 item 의 link 로 fetch_kin_detail 을 순차 호출(서버 부담↓ — 과한 동시성 X)해
@@ -136,13 +151,29 @@ def enrich_jisikin(items: list[dict], *, timeout: int = 10, max_items=None) -> l
         items: fetch_jisikin 이 돌려준 [{title, link, description}, ...].
         timeout: 각 detail GET 타임아웃(초).
         max_items: detail 을 실제로 긁을 최대 건수(None=전부). 초과분은 폴백만 적용.
+            (하위호환용 — 새 코드는 max_detail 을 쓴다.)
+        max_detail: 키워드당 detail fetch 상한(기본 MAX_DETAIL_PER_KEYWORD=30).
+            max_items 와 동시 지정 시 더 작은 값이 우선.
+        deadline: time.monotonic() 기준 절대 시각(초). 이 시각을 넘으면 남은 link 는
+            description 폴백으로 조기 종료(누적 시간 예산 초과 시 호출부가 주입).
+            None 이면 시간 체크 비활성.
 
     Returns:
         같은 item 들(in-place 로 body_full 추가)의 리스트.
     """
+    # max_items(하위호환)와 max_detail 중 더 제한적인 값을 실효 상한으로.
+    effective_max = max_detail
+    if max_items is not None:
+        effective_max = min(effective_max, max_items)
+
     for idx, item in enumerate(items or []):
         fallback = item.get("description", "") or ""
-        if max_items is not None and idx >= max_items:
+        # 상한 초과 — description 폴백만 적용하고 detail fetch 생략.
+        if idx >= effective_max:
+            item["body_full"] = fallback
+            continue
+        # 시간 예산 초과 — 남은 link 를 description 폴백으로 조기 종료.
+        if deadline is not None and _time.monotonic() >= deadline:
             item["body_full"] = fallback
             continue
         detail = fetch_kin_detail(item.get("link", ""), timeout=timeout)
@@ -206,6 +237,9 @@ def fetch_jisikin(
         for _secret in (client_secret, client_id):
             if _secret:
                 body = body.replace(_secret, "[가림]")
+        # 429(rate-limit) — 채널 circuit-break 용 별도 예외(integration_runner 에서 잡아 처리).
+        if r.status_code == 429:
+            raise RateLimitError(f"지식iN Open API 429 한도초과: {body}")
         raise RuntimeError(f"지식iN Open API 오류 {r.status_code}: {body}")
 
     items = (r.json() or {}).get("items", []) or []
