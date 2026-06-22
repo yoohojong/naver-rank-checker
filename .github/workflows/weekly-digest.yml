@@ -3,13 +3,13 @@ name: weekly-digest
 # M11 (2026-06-23): 카페외부 주간 총괄 다이제스트 (총괄자용). 일일 telegram-report 와 별개.
 # 데이터는 rank-check 의 sheet-backup artifact 재가공(시트 read·서비스계정 키 불필요).
 #
-# ✅ 자동발송 ON (사장님 "켜" 2026-06-23): 매주 월요일 07:00 KST 자동 발송.
-#   - 수동 실행(workflow_dispatch)은 기본 dry-run(로그만), 'send=true' 입력 시 텔레그램 발송.
-#   - 끄려면 아래 schedule 두 줄 다시 주석 처리.
+# ⏸ 자동발송 OFF (2026-06-23): '노출만' 버전 → 매출 포함 통합 보고(team project margin-auto/
+#   weekly_cafe_report.py, 마진봇, 매주 월 7시 schtask CafeWeeklyReport)로 대체. 중복 방지 위해 끔.
+#   되살리려면 아래 schedule 주석 해제. 수동 점검은 workflow_dispatch 로 여전히 가능.
 
 on:
-  schedule:
-    - cron: '0 22 * * 0'   # 월요일 07:00 KST (일요일 22:00 UTC)
+  # schedule:
+  #   - cron: '0 22 * * 0'   # 월요일 07:00 KST — 통합보고로 대체하며 중단(2026-06-23)
   workflow_dispatch:
     inputs:
       send:
