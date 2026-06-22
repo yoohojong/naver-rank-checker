@@ -27,6 +27,7 @@
 """
 from __future__ import annotations
 
+import hashlib
 import os
 from datetime import datetime, timedelta, timezone
 
@@ -117,6 +118,23 @@ def _existing_keywords(client, tab_name: str) -> set:
     return kws
 
 
+def _keyword_in_shard(keyword: str, shard) -> bool:
+    """병렬(matrix) 분할용 — 키워드가 이 shard 몫인지 판정(결정적·disjoint).
+
+    shard = (index, total). md5(키워드) % total == index 인 키워드만 True.
+    같은 키워드는 어느 run 에서든 항상 같은 shard 로 가므로(해시 결정적),
+    여러 matrix job 이 서로 겹치지 않는 키워드 집합을 나눠 갖는다(중복수집 0).
+    shard 가 None 이거나 total<=1 이면 분할 없음(전부 True = 기존 단일 run 동작).
+    """
+    if not shard:
+        return True
+    index, total = shard
+    if total <= 1:
+        return True
+    h = int(hashlib.md5(keyword.encode("utf-8")).hexdigest(), 16)
+    return (h % total) == index
+
+
 def run_collection(
     client,
     *,
@@ -129,6 +147,7 @@ def run_collection(
     review_max_score: int = 3,
     review_brand_whitelist=(),
     review_keyword_budget: int = 0,
+    review_shard=None,
     today: str | None = None,
     tab_filter=None,
 ) -> dict:
@@ -152,6 +171,9 @@ def run_collection(
             나머지 미수집 4·5단계 행은 스킵(다음 run 이 이어받음). 키워드당 약 2분 × 예산이
             GHA 50~55분 안에 끝나도록 사장님이 환경변수(REVIEW_KEYWORD_BUDGET)로 조정.
             이미 수집결과_리뷰에 적재된 키워드는 (수집일 무관) 항상 건너뜀 = 미수집분만 이어받음.
+        review_shard: 병렬(matrix) 분할용 (index, total) 또는 None. 설정 시 4·5단계 키워드를
+            md5 해시로 total 등분하고 그중 index 몫만 이 run 이 처리한다(나머지는 다른 matrix job).
+            None(기본)이면 분할 없음 = 단일 run 동작. 506개를 N개 job 으로 나눠 동시 수집할 때 사용.
         today: 'YYYY-MM-DD' (테스트 주입용). None 이면 오늘 KST.
         tab_filter: 탭 이름 → bool. None 이면 이름에 '카외' 포함 탭만.
 
@@ -270,6 +292,11 @@ def run_collection(
                     # 브랜드 한정(실증용): 화이트리스트 설정 시 '키워드'에 그 브랜드명을 포함한 행만.
                     #   비면 한정 없음(기존 동작). 대표 소수 브랜드만 1회 실증 → GHA timeout 회피.
                     if brand_whitelist and not any(b in keyword for b in brand_whitelist):
+                        summary["skipped"] += 1
+                        continue
+                    # 병렬(matrix) 분할: 이 키워드가 이 shard 몫이 아니면 다른 job 이 처리 → 스킵.
+                    #   N개 matrix job 이 키워드를 해시로 disjoint 분할 → 전체를 한 run 시간에 동시 수집.
+                    if not _keyword_in_shard(keyword, review_shard):
                         summary["skipped"] += 1
                         continue
                     # 이어받기: 이 키워드가 리뷰 탭에 이미(어느 날이든) 적재됐으면 건너뜀(미수집분만).
@@ -405,11 +432,26 @@ def main() -> int:
               f"({len(REVIEW_BRAND_WHITELIST)}개) 포함 키워드만 수집.")
 
     # 이어받기 예산: 한 run 처리할 새 리뷰 키워드 수 상한(GHA 50~55분 안전). 0=무제한.
-    #   키워드당 약 2분 → 22개 ≈ 44분(+검색·셋업 여유). 사장님이 REVIEW_KEYWORD_BUDGET 로 조정.
+    #   실측(2026-06-22, 키워드당 100건 목표): 성공 ~26~63s, 0건 ~8~10s, 평균 ~27s.
+    #   → 한 run(50분)에 ~60개 처리 가능. 단일 run 기본 22는 보수값. matrix 분할 시 0(무제한) 권장.
     try:
         review_keyword_budget = max(0, int(os.environ.get("REVIEW_KEYWORD_BUDGET", "22")))
     except ValueError:
         review_keyword_budget = 22
+
+    # 병렬(matrix) 분할: REVIEW_SHARD="i/N" (예: "3/12") 면 키워드를 N등분해 i 몫만 처리.
+    #   matrix 워크플로(cafe-review-lowstar-matrix.yml)가 job 마다 다른 i 를 주입 → 전체 동시 수집.
+    #   미설정/형식오류면 None(분할 없음 = 단일 run). i 는 0..N-1.
+    review_shard = None
+    shard_env = os.environ.get("REVIEW_SHARD", "").strip()
+    if shard_env and "/" in shard_env:
+        try:
+            _i, _n = (int(x) for x in shard_env.split("/", 1))
+            if _n > 1 and 0 <= _i < _n:
+                review_shard = (_i, _n)
+                print(f"[integration_runner] 🧩 matrix 분할 — shard {_i+1}/{_n} (이 job 은 {_n}분의 1만 수집).")
+        except ValueError:
+            review_shard = None
     # 키워드당 저점리뷰 목표 건수(직전 실증은 총 20건으로 적었음 → 상향). 사장님이 REVIEW_MAX 로 조정.
     try:
         review_max = max(1, int(os.environ.get("REVIEW_MAX", "40")))
@@ -441,6 +483,7 @@ def main() -> int:
         review_max=review_max,
         review_brand_whitelist=REVIEW_BRAND_WHITELIST,
         review_keyword_budget=review_keyword_budget,
+        review_shard=review_shard,
     )
 
     line = format_summary(summary)

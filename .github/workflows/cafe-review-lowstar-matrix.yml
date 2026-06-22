@@ -1,0 +1,112 @@
+name: cafe-review-lowstar-matrix
+# 카페외부 저점리뷰 '전수수집' 병렬 가속 (4·5단계 키워드 약 506개 × 키워드당 N건).
+#
+# 왜 이 워크플로?  단일 run 은 GHA 50분 한도 탓에 키워드를 한 번에 다 못 돈다(이어받기로 여러 번
+#   수동 dispatch = 느림). 이 워크플로는 키워드를 shards 개로 해시 분할(disjoint)해 matrix job 으로
+#   '동시에' 돌린다 → 전체가 거의 한 run 의 시간 안에 끝난다.
+#   부수효과: GitHub 러너는 job 마다 새 VM·다른 egress IP → 네이버 부하가 shards 개 IP 로 분산(더 안전).
+#
+# 실측 근거(2026-06-22, 키워드당 100건 목표): 성공 키워드 ~26~63s / 0건 ~8~10s / 평균 ~27s, 차단 없음.
+#   → shards=12 면 키워드 ~42개/shard × ~40s ≈ 28분 + 셋업 ≈ 30분 wall-clock 으로 506개 전부.
+#   shards=20 이면 ~25개/shard ≈ 19분(단, Free 동시 job 한도 20을 다 써 다른 워크플로가 대기할 수 있음).
+#
+# 안전:
+#   - 수동(workflow_dispatch) 전용 — cron 자동 가동 없음(사장님 go 전까지).
+#   - 이어받기(이미 적재된 키워드 스킵)·shard disjoint → 여러 번/동시 돌려도 중복수집 0(멱등).
+#   - 지식인(NAVER 키)은 일부러 주입 안 함 → matrix 의 모든 job 이 지식인 중복수집 하는 사고 방지(리뷰만).
+on:
+  workflow_dispatch:
+    inputs:
+      shards:
+        description: '동시 분할 수(=동시 matrix job 수). Free 동시한도 20. 기본 12(다른 워크플로 여유).'
+        required: false
+        default: '12'
+      review_max:
+        description: '키워드당 저점리뷰 목표 건수(기본 100).'
+        required: false
+        default: '100'
+      review_brands:
+        description: '(선택) 브랜드 한정 — 콤마구분. 비우면 4·5단계 전수. 소수 실증할 때만 채움.'
+        required: false
+        default: ''
+
+# matrix job 들은 서로 독립(다른 키워드) → 그룹 직렬화 안 함. 단 같은 워크플로 재dispatch 끼리는 대기.
+concurrency:
+  group: cafe-review-lowstar-matrix
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  # 입력 shards 수 → [0,1,...,N-1] JSON 배열로 변환(matrix 동적 생성용).
+  prep:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    outputs:
+      shards: ${{ steps.mk.outputs.shards }}
+    steps:
+      - name: shard 인덱스 배열 생성
+        id: mk
+        shell: bash
+        env:
+          N: ${{ github.event.inputs.shards }}
+        run: |
+          python3 -c "import json,os; n=max(1,int(os.environ.get('N') or '12')); print('shards='+json.dumps(list(range(n))))" >> "$GITHUB_OUTPUT"
+          python3 -c "import os; n=max(1,int(os.environ.get('N') or '12')); print(f'분할 수 = {n} (shard 0..{n-1})')"
+
+  collect:
+    needs: prep
+    runs-on: ubuntu-latest
+    # 분할당 키워드 수가 적어 한참 남지만, 변동·재시도 여유로 55분(Free 60 한도 안전마진).
+    timeout-minutes: 55
+    strategy:
+      fail-fast: false   # 한 shard 실패가 나머지를 취소하지 않게.
+      max-parallel: 20   # 계정 동시 job 한도(Free 20)까지. shards 가 이보다 작으면 shards 가 상한.
+      matrix:
+        shard: ${{ fromJSON(needs.prep.outputs.shards) }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6.0.2
+        with:
+          token: ${{ secrets.ACTIONS_PAT || github.token }}
+
+      # 러너 egress IP 기록 — matrix job 들이 서로 다른 IP 인지 실증(네이버 부하 분산 확인용).
+      - name: 러너 egress IP 확인
+        shell: bash
+        run: |
+          echo "shard=${{ matrix.shard }} / egress IP = $(curl -s --max-time 10 https://api.ipify.org || echo unknown)"
+
+      - name: Setup Python 3.13
+        uses: actions/setup-python@v6.2.0
+        with:
+          python-version: '3.13'
+
+      - name: Setup venv + install deps
+        shell: bash
+        run: |
+          python -m venv .venv
+          ./.venv/bin/python -m pip install --upgrade pip
+          ./.venv/bin/python -m pip install -r requirements.txt
+
+      - name: Install Playwright chromium
+        shell: bash
+        run: |
+          ./.venv/bin/python -m playwright install --with-deps chromium
+
+      - name: 저점리뷰 수집 (이 shard 몫만)
+        shell: bash
+        env:
+          SPREADSHEET_ID: ${{ secrets.SPREADSHEET_ID }}
+          SERVICE_ACCOUNT_JSON: ${{ secrets.SERVICE_ACCOUNT_JSON }}
+          # ⚠️ 지식인(NAVER) 키는 일부러 주입 안 함 → 리뷰 채널만(지식인 중복수집 방지).
+          # 이 job 이 처리할 분할: "i/N".
+          REVIEW_SHARD: ${{ matrix.shard }}/${{ github.event.inputs.shards }}
+          # 분할이 키워드 수를 이미 제한 → 예산은 무제한(0)으로 두고 shard 몫을 끝까지 처리.
+          REVIEW_KEYWORD_BUDGET: '0'
+          REVIEW_MAX: ${{ github.event.inputs.review_max }}
+          REVIEW_BRAND_WHITELIST: ${{ github.event.inputs.review_brands }}
+          # 텔레그램은 matrix 에서 끔(shard 마다 알림 폭주 방지). 요약은 run 로그로 확인.
+          PYTHONIOENCODING: 'utf-8'
+        run: |
+          ./.venv/bin/python -u -m src.integration_runner

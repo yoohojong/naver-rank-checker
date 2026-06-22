@@ -625,3 +625,72 @@ def test_format_summary_basic_no_filter_wording():
     text = ir.format_summary({"collected": 5, "failed": 0, "skipped": 2, "tabs": 1})
     assert "수집 5건" in text
     assert "쓰레기" not in text
+
+
+# ── 병렬(matrix) 분할(review_shard) ───────────────────────────────────────────
+
+def test_keyword_in_shard_is_deterministic_and_partitions():
+    """_keyword_in_shard: 같은 키워드는 항상 같은 shard(결정적), 전체 키워드는 N개 shard 로 분할."""
+    keywords = [f"브랜드{i}샴푸" for i in range(60)]
+    total = 5
+    # 각 키워드가 정확히 1개 shard 에만 속한다(disjoint + 완전 덮음).
+    for kw in keywords:
+        owners = [s for s in range(total) if ir._keyword_in_shard(kw, (s, total))]
+        assert len(owners) == 1, f"{kw} 가 {len(owners)}개 shard 에 속함(1이어야 함)"
+    # 결정적: 두 번 호출해도 동일.
+    assert ir._keyword_in_shard("니조랄", (2, 7)) == ir._keyword_in_shard("니조랄", (2, 7))
+    # shard 없음/total<=1 이면 전부 True(분할 없음 = 단일 run).
+    assert ir._keyword_in_shard("아무거나", None) is True
+    assert ir._keyword_in_shard("아무거나", (0, 1)) is True
+
+
+def test_review_shard_processes_only_its_partition_and_union_is_complete():
+    """matrix 분할: 각 shard 는 자기 몫만 수집하고, 모든 shard 를 합치면 전체 키워드를 빠짐없이/중복없이 덮는다."""
+    rows_data = [
+        {"키워드": f"kw{i}", "키워드 분류(단계)": "5 브랜드", "_row": i + 2}
+        for i in range(40)
+    ]
+    total = 4
+    processed_per_shard = []
+    for shard_idx in range(total):
+        client = _client_with({"x.카외": [dict(r) for r in rows_data]})
+        fetch_r = MagicMock(return_value=[
+            {"score": 1, "content": "c", "product_name": "P", "date": "d", "source_url": "u"}
+        ])
+        run_collection(
+            client, fetch_jisikin=MagicMock(), fetch_reviews=fetch_r,
+            naver_client_id="id", naver_client_secret="sec",
+            review_shard=(shard_idx, total),
+            today="2026-06-20",
+        )
+        processed_per_shard.append([c.args[0] for c in fetch_r.call_args_list])
+
+    all_processed = [kw for shard in processed_per_shard for kw in shard]
+    expected = {f"kw{i}" for i in range(40)}
+    # 완전 덮음: 모든 키워드가 처리됨.
+    assert set(all_processed) == expected
+    # 중복 없음: 어떤 키워드도 두 shard 에서 처리되지 않음.
+    assert len(all_processed) == len(expected)
+    # 분할 균형(대략): 각 shard 가 0개는 아님(40/4 분포).
+    assert all(len(s) > 0 for s in processed_per_shard)
+
+
+def test_review_shard_none_processes_all_keywords():
+    """review_shard=None(기본) 이면 분할 없이 전부 처리(기존 단일 run 동작 보존)."""
+    client = _client_with(
+        {"x.카외": [
+            {"키워드": "a", "키워드 분류(단계)": "4 대안", "_row": 2},
+            {"키워드": "b", "키워드 분류(단계)": "5 브랜드", "_row": 3},
+            {"키워드": "c", "키워드 분류(단계)": "5 브랜드", "_row": 4},
+        ]}
+    )
+    fetch_r = MagicMock(return_value=[
+        {"score": 1, "content": "c", "product_name": "P", "date": "d", "source_url": "u"}
+    ])
+    run_collection(
+        client, fetch_jisikin=MagicMock(), fetch_reviews=fetch_r,
+        naver_client_id="id", naver_client_secret="sec",
+        review_shard=None,
+        today="2026-06-20",
+    )
+    assert sorted(c.args[0] for c in fetch_r.call_args_list) == ["a", "b", "c"]
