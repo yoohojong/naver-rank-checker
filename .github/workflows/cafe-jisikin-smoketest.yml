@@ -29,6 +29,10 @@ on:
         description: '라이브 시트 카외 탭 단계별 키워드 개수만 카운트(읽기전용, true/false)'
         required: false
         default: 'false'
+      matrix_probe:
+        description: 'matrix 병렬 실증(4 job 동시 + job별 egress IP + 실측, 시트 미접근). true/false'
+        required: false
+        default: 'false'
 
 concurrency:
   group: cafe-jisikin-smoketest
@@ -38,8 +42,59 @@ permissions:
   contents: read
 
 jobs:
+  # matrix 병렬 실증 — 4개 job 을 동시에 띄워 (a)정말 병렬로 도는가 (b)job 마다 egress IP 가 다른가
+  #   (c)실측 시간 을 시트 접근 없이 증명. cafe-review-lowstar-matrix.yml 본운영의 축소 사전검증.
+  review_matrix_probe:
+    if: ${{ inputs.matrix_probe == 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6.0.2
+        with:
+          token: ${{ secrets.ACTIONS_PAT || github.token }}
+      - name: 러너 egress IP (shard 별)
+        shell: bash
+        run: |
+          echo "PROBE shard=${{ matrix.shard }} egress_ip=$(curl -s --max-time 10 https://api.ipify.org || echo unknown)"
+      - name: Setup Python 3.13
+        uses: actions/setup-python@v6.2.0
+        with:
+          python-version: '3.13'
+      - name: Setup venv + install deps
+        shell: bash
+        run: |
+          python -m venv .venv
+          ./.venv/bin/python -m pip install --upgrade pip
+          ./.venv/bin/python -m pip install -r requirements.txt
+      - name: Install Playwright chromium
+        shell: bash
+        run: |
+          ./.venv/bin/python -m playwright install --with-deps chromium
+      - name: 저점리뷰 실측 (shard별 1키워드, 시트 미접근)
+        shell: bash
+        env:
+          SHARD: ${{ matrix.shard }}
+          PYTHONIOENCODING: 'utf-8'
+        run: |
+          ./.venv/bin/python -u - <<'PY'
+          import os, time
+          from src.review_lowstar import fetch_low_star_reviews
+          # shard 마다 다른 키워드(병렬로 서로 다른 일을 함을 확인).
+          kws = ["헤드앤숄더", "쿤달", "케라시스", "려"]
+          s = int(os.environ.get("SHARD") or "0")
+          kw = kws[s % len(kws)]
+          t = time.time()
+          rows = fetch_low_star_reviews(kw, max_reviews=100)
+          print(f"PROBE shard={s} kw='{kw}' 결과={len(rows)}건 / {time.time()-t:.0f}s", flush=True)
+          PY
+
   smoke:
-    if: ${{ inputs.review_timing != 'true' && inputs.count_keywords != 'true' }}
+    if: ${{ inputs.review_timing != 'true' && inputs.count_keywords != 'true' && inputs.matrix_probe != 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
