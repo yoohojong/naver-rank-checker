@@ -1,0 +1,90 @@
+name: cafe-review-smoketest
+# 저점리뷰(review_lowstar, Playwright) '실동작 + 시간측정' 진단용 (수동 전용).
+# run 27928928282 가 1h 타임아웃된 원인 규명: (a)키워드량 느림 vs (b)네이버가 GHA IP 차단.
+# 핵심: cafe-material-collect 와 달리 키워드를 소수(기본 3개)로 고정하고, 키워드/상품/페이지마다
+# 타임스탬프 로그를 찍어 '어디서 얼마나 걸리는지'를 노출한다(실제 수집은 silent 라 진단 불가했음).
+# 라이브 시트 미접근(시트 호출 0). feat 브랜치 전용. main 무관.
+on:
+  workflow_dispatch:
+    inputs:
+      keywords:
+        description: '쉼표구분 키워드(기본=대표 타사 브랜드 3개)'
+        required: false
+        default: '니조랄,헤드앤숄더,도브'
+      max_reviews:
+        description: '키워드당 수집 목표 건수'
+        required: false
+        default: '5'
+
+concurrency:
+  group: cafe-review-smoketest
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    # 진단용 — 키워드당 과속 차단 시 무한대기 방지. material(60)보다 짧게.
+    timeout-minutes: 25
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6.0.2
+        with:
+          token: ${{ secrets.ACTIONS_PAT || github.token }}
+
+      - name: Setup Python 3.13
+        uses: actions/setup-python@v6.2.0
+        with:
+          python-version: '3.13'
+
+      - name: Setup venv + install deps
+        shell: bash
+        run: |
+          python -m venv .venv
+          ./.venv/bin/python -m pip install --upgrade pip
+          ./.venv/bin/python -m pip install -r requirements.txt
+
+      - name: Install Playwright chromium
+        shell: bash
+        run: |
+          ./.venv/bin/python -m playwright install --with-deps chromium
+
+      - name: 저점리뷰 실동작 + 시간측정
+        shell: bash
+        env:
+          KEYWORDS: ${{ inputs.keywords }}
+          MAXREV: ${{ inputs.max_reviews }}
+          PYTHONIOENCODING: 'utf-8'
+        run: |
+          ./.venv/bin/python -u - <<'PY'
+          import os, time, traceback
+          from src.review_lowstar import fetch_low_star_reviews
+
+          kws = [k.strip() for k in (os.environ.get("KEYWORDS") or "").split(",") if k.strip()]
+          if not kws:
+              kws = ["니조랄", "헤드앤숄더", "도브"]
+          try:
+              maxrev = int(os.environ.get("MAXREV") or "5")
+          except ValueError:
+              maxrev = 5
+
+          print(f"=== 저점리뷰 진단 시작: 키워드 {len(kws)}개 {kws}, 키워드당 목표 {maxrev}건 ===", flush=True)
+          t0 = time.time()
+          for i, kw in enumerate(kws, 1):
+              ts = time.time()
+              print(f"[{i}/{len(kws)}] '{kw}' 시작 (경과 {ts - t0:.0f}s)", flush=True)
+              try:
+                  rows = fetch_low_star_reviews(kw, max_reviews=maxrev)
+                  dt = time.time() - ts
+                  print(f"[{i}/{len(kws)}] '{kw}' 완료: {len(rows)}건 / {dt:.0f}s", flush=True)
+                  for j, r in enumerate(rows[:3], 1):
+                      c = (r.get("content") or "")[:60].replace("\n", " ")
+                      print(f"      {j}. ({r.get('score')}점) {c}", flush=True)
+              except Exception as e:
+                  dt = time.time() - ts
+                  print(f"[{i}/{len(kws)}] '{kw}' 예외: {type(e).__name__}: {e} ({dt:.0f}s)", flush=True)
+                  traceback.print_exc()
+          print(f"=== 진단 종료: 총 {time.time() - t0:.0f}s ===", flush=True)
+          PY
