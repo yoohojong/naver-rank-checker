@@ -456,6 +456,22 @@ jobs:
                       for mth, u, b in hits[:6]:
                           print(f"   [{mth}] {u[:130]}", flush=True)
                           print(f"      ▷ {b[:280]}", flush=True)
+                      # 글로우픽: 후기 아이템 DOM 선택자 정찰(class 에 review 포함).
+                      if name == "글로우픽":
+                          samp = pg.evaluate(
+                              "() => Array.from(document.querySelectorAll('[class*=review i],[class*=Review]')).slice(0,4).map(e => e.tagName+'.'+(e.className||'').slice(0,60)+' :: '+(e.innerText||'').replace(/\\s+/g,' ').slice(0,80))"
+                          )
+                          for s in samp:
+                              print(f"      DOM: {s}", flush=True)
+                      # 화해: 후기 관련 링크/버튼/경로 탐색.
+                      if name == "화해":
+                          links = pg.evaluate(
+                              "() => Array.from(document.querySelectorAll('a,button')).map(e => (e.getAttribute('href')||'')+' | '+(e.innerText||'').replace(/\\s+/g,' ').slice(0,30)).filter(t => /리뷰|후기|평점|review/i.test(t)).slice(0,8)"
+                          )
+                          for s in links:
+                              print(f"      화해링크: {s}", flush=True)
+                          body_samp = pg.inner_text("body")[:500].replace("\n", " ")
+                          print(f"      화해본문샘플: {body_samp}", flush=True)
                   except Exception as e:
                       print(f"=== {name}: ERROR {type(e).__name__}: {e} ===", flush=True)
                   ctx.close()
