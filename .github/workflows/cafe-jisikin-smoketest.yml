@@ -136,7 +136,7 @@ jobs:
           ./.venv/bin/python -u - <<'PY'
           import os, re, time
           from playwright.sync_api import sync_playwright
-          from src.review_lowstar import parse_product_urls, _UA, fetch_low_star_reviews
+          from src.review_lowstar import parse_product_urls, _UA, _IDPICK_JS
 
           kws = [k.strip() for k in (os.environ.get("YIELD_KWS") or "").split(",") if k.strip()]
           if not kws:
@@ -151,11 +151,12 @@ jobs:
           SSMAIN = re.compile(r"https?://smartstore\.naver\.com/main/products/\d+")
           SSOTHER = re.compile(r"https?://smartstore\.naver\.com/(?!main/)[A-Za-z0-9_\-]+/products/\d+")
 
+          # 중첩 sync_playwright 금지 → 하나의 컨텍스트에서 검색 계측 + 첫 상품 ID해소까지 직접 수행.
           with sync_playwright() as p:
               br = p.chromium.launch(headless=True, args=["--disable-blink-features=AutomationControlled"])
               ctx = br.new_context(user_agent=_UA, locale="ko-KR", viewport={"width":1366,"height":2200})
               pg = ctx.new_page()
-              print("kw | brand | ss/main(skip) | ss/other | code_usable | 실수집후기", flush=True)
+              print("kw | brand | ss/main(skip) | ss/other | code_usable | 첫상품ID해소", flush=True)
               for kw in kws:
                   try:
                       pg.goto("https://search.naver.com/search.naver?query="+kw.replace(" ","+"),
@@ -168,10 +169,17 @@ jobs:
                       b = len(set(BRAND.findall(blob)))
                       m = len(set(SSMAIN.findall(blob)))
                       o = len(set(SSOTHER.findall(blob)))
-                      usable = len(parse_product_urls(blob))
-                      # 실제 코드 경로로도 몇 건 나오는지(짧게 20건 목표)
-                      n = len(fetch_low_star_reviews(kw, max_reviews=20))
-                      print(f"{kw} | {b} | {m} | {o} | {usable} | {n}", flush=True)
+                      usable = parse_product_urls(blob)
+                      idok = "-"
+                      if usable:
+                          try:
+                              pg.goto(usable[0], wait_until="domcontentloaded", timeout=45000)
+                              time.sleep(5)
+                              ids = pg.evaluate(_IDPICK_JS)
+                              idok = "OK" if (ids.get("origin") and ids.get("merchant")) else "FAIL"
+                          except Exception as e2:
+                              idok = f"ERR:{type(e2).__name__}"
+                      print(f"{kw} | {b} | {m} | {o} | {len(usable)} | {idok}", flush=True)
                   except Exception as e:
                       print(f"{kw} | ERROR {type(e).__name__}: {e}", flush=True)
                   time.sleep(2)
