@@ -49,6 +49,10 @@ on:
         description: '우회 테스트 키워드(콤마). 비우면 스마트스토어로만 팔던 0건 제품 샘플.'
         required: false
         default: ''
+      hwahae_probe:
+        description: '화해 실브라우저 테스트 — 검색→상품상세가 실브라우저면 403 뚫리고 후기 보이는지. true/false'
+        required: false
+        default: 'false'
 
 concurrency:
   group: cafe-jisikin-smoketest
@@ -299,8 +303,81 @@ jobs:
               br.close()
           PY
 
+  # 화해 실브라우저 테스트 — WebFetch 는 제품상세 403(봇UA차단)이었음. 진짜 크롬(실브라우저)이면
+  #   403 뚫리고 후기 본문·별점이 보이는지 = '셋 다(네이버·화해·글로우픽)' 중 화해의 현실성 확정.
+  hwahae_probe:
+    if: ${{ inputs.hwahae_probe == 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6.0.2
+        with:
+          token: ${{ secrets.ACTIONS_PAT || github.token }}
+      - name: Setup Python 3.13
+        uses: actions/setup-python@v6.2.0
+        with:
+          python-version: '3.13'
+      - name: Setup venv + install deps
+        shell: bash
+        run: |
+          python -m venv .venv
+          ./.venv/bin/python -m pip install --upgrade pip
+          ./.venv/bin/python -m pip install -r requirements.txt
+      - name: Install Playwright chromium
+        shell: bash
+        run: |
+          ./.venv/bin/python -m playwright install --with-deps chromium
+      - name: 화해 실브라우저 접근 테스트
+        shell: bash
+        env:
+          PYTHONIOENCODING: 'utf-8'
+        run: |
+          ./.venv/bin/python -u - <<'PY'
+          import re, time
+          from playwright.sync_api import sync_playwright
+          from src.review_lowstar import _UA
+
+          kws = ["헤드앤숄더", "케라시스", "려"]
+          PROD = re.compile(r"hwahae\.co\.kr/products/(\d+)")
+
+          with sync_playwright() as p:
+              br = p.chromium.launch(headless=True, args=["--disable-blink-features=AutomationControlled"])
+              ctx = br.new_context(user_agent=_UA, locale="ko-KR", viewport={"width":1366,"height":2200})
+              pg = ctx.new_page()
+              for kw in kws:
+                  try:
+                      # 1) 검색 → 상품 ID 확보
+                      pg.goto("https://www.hwahae.co.kr/search?q="+kw, wait_until="domcontentloaded", timeout=45000)
+                      time.sleep(4)
+                      for _ in range(2):
+                          pg.mouse.wheel(0, 2000); time.sleep(1)
+                      blob = "\n".join(pg.eval_on_selector_all("a","els=>els.map(e=>e.href).filter(Boolean)")) + "\n" + pg.content()
+                      ids = list(dict.fromkeys(PROD.findall(blob)))
+                      print(f"=== {kw}: 검색 상품 {len(ids)}개 (예: {ids[:3]}) ===", flush=True)
+                      if not ids:
+                          print("   (상품 ID 못 찾음)", flush=True); continue
+                      # 2) 상품 상세 — 실브라우저면 403 뚫리나?
+                      resp = pg.goto(f"https://www.hwahae.co.kr/products/{ids[0]}", wait_until="domcontentloaded", timeout=45000)
+                      status = resp.status if resp else "?"
+                      time.sleep(5)
+                      txt = pg.inner_text("body")[:4000]
+                      has_star = ("점" in txt) or ("별점" in txt) or ("리뷰" in txt) or ("후기" in txt)
+                      print(f"   상세 /products/{ids[0]} → HTTP {status} / 후기·별점 흔적={has_star} / 본문길이={len(pg.inner_text('body'))}", flush=True)
+                      # 후기 페이지 직접 시도
+                      r2 = pg.goto(f"https://www.hwahae.co.kr/products/{ids[0]}/reviews", wait_until="domcontentloaded", timeout=45000)
+                      time.sleep(4)
+                      s2 = r2.status if r2 else "?"
+                      t2 = pg.inner_text("body")
+                      print(f"   리뷰탭 /reviews → HTTP {s2} / 본문길이={len(t2)} / 샘플: {t2[:160].strip()[:160]}", flush=True)
+                  except Exception as e:
+                      print(f"=== {kw}: ERROR {type(e).__name__}: {e} ===", flush=True)
+                  time.sleep(3)
+              br.close()
+          PY
+
   smoke:
-    if: ${{ inputs.review_timing != 'true' && inputs.count_keywords != 'true' && inputs.matrix_probe != 'true' && inputs.yield_probe != 'true' && inputs.shop_probe != 'true' }}
+    if: ${{ inputs.review_timing != 'true' && inputs.count_keywords != 'true' && inputs.matrix_probe != 'true' && inputs.yield_probe != 'true' && inputs.shop_probe != 'true' && inputs.hwahae_probe != 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
