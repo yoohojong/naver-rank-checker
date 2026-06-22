@@ -540,6 +540,13 @@ jobs:
               for k in ['reviewScore','reviewContent','goodContent','"score"','"contents"','"rating"','"reviews"','starScore']:
                   print(f"      key {k}: {html.count(k)}", flush=True)
               print(f"   날짜패턴 수={len(re.findall(r'20[0-9][0-9].[0-9][0-9].[0-9][0-9]', html))}", flush=True)
+              for k in ['starRed','starHalf','starGray','star','점</','점<','aria-label','itemprop','ratingValue','data-score']:
+                  print(f"      별점단서 {k}: {html.count(k)}", flush=True)
+              dm = re.search(r'20\d\d.\d\d.\d\d', html)
+              if dm:
+                  st = max(0, dm.start()-400)
+                  snip = re.sub(r'\s+',' ', html[st:dm.start()+120])
+                  print(f"   날짜앞 HTML: {snip[-400:]}", flush=True)
               if m:
                   try:
                       nd = json.loads(m.group(1))
