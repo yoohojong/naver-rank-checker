@@ -542,38 +542,39 @@ jobs:
           PYTHONIOENCODING: 'utf-8'
         run: |
           ./.venv/bin/python -u - <<'PY'
-          import os, re, json
+          import os, re
+          from curl_cffi import requests as creq
+          from bs4 import BeautifulSoup
           tgt = os.environ.get("GP_TARGET") or "161538"
           url = f"https://www.glowpick.com/products/{tgt}/reviews"
-          # ── 1) curl_cffi 로 서버 HTML 받아 후기 데이터(JSON) 박혀있는지 정찰 ──
-          try:
-              from curl_cffi import requests as creq
-              r = creq.get(url, impersonate="chrome", timeout=30)
-              html = r.text
-              print(f"   [curl] status={r.status_code} html_len={len(html)}", flush=True)
-              m = re.search(r'id="__NEXT_DATA__"[^>]*>(.*?)</script>', html, re.S)
-              print(f"   __NEXT_DATA__: {bool(m)} len={len(m.group(1)) if m else 0}", flush=True)
-              for k in ['reviewScore','reviewContent','goodContent','"score"','"contents"','"rating"','"reviews"','starScore']:
-                  print(f"      key {k}: {html.count(k)}", flush=True)
-              print(f"   날짜패턴 수={len(re.findall(r'20[0-9][0-9].[0-9][0-9].[0-9][0-9]', html))}", flush=True)
-              for k in ['starRed','starHalf','starGray','star','점</','점<','aria-label','itemprop','ratingValue','data-score']:
-                  print(f"      별점단서 {k}: {html.count(k)}", flush=True)
-              dm = re.search(r'20\d\d.\d\d.\d\d', html)
-              if dm:
-                  st = max(0, dm.start()-400)
-                  snip = re.sub(r'\s+',' ', html[st:dm.start()+120])
-                  print(f"   날짜앞 HTML: {snip[-400:]}", flush=True)
-              if m:
-                  try:
-                      nd = json.loads(m.group(1))
-                      s = json.dumps(nd, ensure_ascii=False)
-                      i = s.find('reviewContent')
-                      if i < 0: i = s.find('content')
-                      print(f"   NEXT_DATA 후기영역 샘플: {s[max(0,i-40):i+260] if i>=0 else '없음'}", flush=True)
-                  except Exception as e:
-                      print(f"   NEXT_DATA 파싱오류: {type(e).__name__}", flush=True)
-          except Exception as e:
-              print(f"   [curl] 오류: {type(e).__name__}: {e}", flush=True)
+          r = creq.get(url, impersonate="chrome", timeout=30)
+          soup = BeautifulSoup(r.text, "html.parser")
+          DATE = re.compile(r"20\d\d\.\d\d\.\d\d")
+          STARRED = re.compile(r"starRed")
+          HALF = re.compile(r"[Hh]alf")
+          # 후기 카드 = starRed(채워진별) 자손 + 날짜 텍스트 보유, 가장 안쪽(타이트).
+          cand = [el for el in soup.find_all(True)
+                  if el.find(class_=STARRED) and DATE.search(el.get_text(" ", strip=True))
+                  and 20 < len(el.get_text(" ", strip=True)) < 900]
+          cards = [el for el in cand if not any(o is not el and (o in el.descendants) for o in cand)]
+          rows = []
+          for el in cards:
+              red = len(el.find_all(class_=STARRED))
+              half = len(el.find_all(class_=HALF))
+              score = red + (0.5 if half else 0)
+              t = el.get_text(" ", strip=True)
+              m = DATE.search(t)
+              body = re.sub(r"\s+", " ", t[m.end():]).strip() if m else t
+              if len(body) < 10:
+                  continue
+              rows.append((score, body))
+          low = [x for x in rows if x[0] <= 2]
+          print(f"=== 글로우픽 '{tgt}' (서버HTML파싱) 후기 {len(rows)}건 / 저점(<=2) {len(low)}건 ===", flush=True)
+          for sc, body in low[:8]:
+              print(f"   ({sc}점) {body[:110]}", flush=True)
+          print("   --- 별점분포 ---", flush=True)
+          from collections import Counter
+          print(f"   {dict(Counter(round(x[0]) for x in rows))}", flush=True)
           import sys as _s; _s.exit(0)
           import time
           from playwright.sync_api import sync_playwright
