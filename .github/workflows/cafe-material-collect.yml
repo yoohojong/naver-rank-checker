@@ -13,9 +13,17 @@ on:
   workflow_dispatch:  # 수동 전용 (cron 비활성 — 사장님 활성화 결정 전까지)
     inputs:
       review_brands:
-        description: '저점리뷰 대상 브랜드 한정(콤마구분, 예: 니조랄,헤드앤숄더,도브). 비우면 한정 없음(4·5단계 전부). 대표 소수 브랜드만 1회 실증/소량 수집용.'
+        description: '저점리뷰 대상 브랜드 한정(콤마구분, 예: 니조랄,헤드앤숄더,도브). 비우면 한정 없음(4·5단계 전부=전수). 대표 소수 브랜드만 1회 실증할 때만 채움.'
         required: false
         default: ''
+      review_keyword_budget:
+        description: '이어받기: 이 run 에서 처리할 새 리뷰 키워드 수 상한(GHA 타임아웃 회피). 0=무제한. 기본 22(≈키워드당 2분 × 22 = 44분).'
+        required: false
+        default: '22'
+      review_max:
+        description: '키워드당 저점리뷰 목표 건수(직전 실증 20건 → 상향). 기본 40.'
+        required: false
+        default: '40'
 
 # 순위체커(naver-rank-check)와 별도 그룹 — 서로 취소/대기 영향 없음.
 concurrency:
@@ -28,7 +36,9 @@ permissions:
 jobs:
   collect:
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    # 50분 = GHA job 한도(60분) 안전마진. 이어받기라 review_keyword_budget 예산만큼만 처리하고
+    # 매 run 스스로 종료 → 타임아웃 강제종료(=데이터 유실) 회피. 여러 번 dispatch 로 506개 누적.
+    timeout-minutes: 50
 
     steps:
       - name: Checkout
@@ -74,8 +84,12 @@ jobs:
           NAVER_OPENAPI_CLIENT_SECRET: ${{ secrets.NAVER_OPENAPI_CLIENT_SECRET }}
           APIFY_TOKEN: ${{ secrets.APIFY_TOKEN }}
           APIFY_ACTOR_ID: ${{ secrets.APIFY_ACTOR_ID }}
-          # 저점리뷰 브랜드 한정(실증/소량). 비우면 한정 없음(기존 동작). dispatch inputs 로 1회 주입.
+          # 저점리뷰 브랜드 한정(실증/소량). 비우면 한정 없음(=전수, 기존 동작). dispatch inputs 로 1회 주입.
           REVIEW_BRAND_WHITELIST: ${{ github.event.inputs.review_brands }}
+          # 이어받기: 이 run 처리할 새 리뷰 키워드 수 상한(타임아웃 회피). 0=무제한. 미지정 시 코드 기본(22).
+          REVIEW_KEYWORD_BUDGET: ${{ github.event.inputs.review_keyword_budget }}
+          # 키워드당 저점리뷰 목표 건수(직전 20건 → 상향). 미지정 시 코드 기본(40).
+          REVIEW_MAX: ${{ github.event.inputs.review_max }}
           # C9: 요약 텔레그램 전송용 (integration_runner 가 끝에 send_report 호출).
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}

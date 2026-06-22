@@ -172,6 +172,134 @@ def test_review_brand_whitelist_empty_collects_all():
     assert summary["collected"] == 2
 
 
+# ── 이어받기(미수집분) + run당 키워드 예산 ─────────────────────────────────
+
+
+def test_review_resume_skips_keyword_already_in_staging_any_day():
+    """이어받기: 리뷰 탭에 이미 적재된 키워드는 수집일이 달라도(과거 적재) 건너뛴다."""
+    client = _client_with(
+        {"x.카외": [
+            {"키워드": "이미한거", "키워드 분류(단계)": "4 대안", "_row": 2},
+            {"키워드": "아직안한거", "키워드 분류(단계)": "5 브랜드", "_row": 3},
+        ]},
+        # 어제(2026-06-19) '이미한거' 가 적재됨 → 오늘(2026-06-20) run 에서 건너뛰어야 함.
+        existing={STAGING_TAB_REVIEW: [
+            {"키워드": "이미한거", "수집일": "2026-06-19", "_row": 2}
+        ]},
+    )
+    fetch_r = MagicMock(return_value=[
+        {"score": 1, "content": "별로", "product_name": "P", "date": "d", "source_url": "u"}
+    ])
+
+    summary = run_collection(
+        client, fetch_jisikin=MagicMock(), fetch_reviews=fetch_r,
+        naver_client_id="id", naver_client_secret="sec",
+        today="2026-06-20",
+    )
+
+    # '아직안한거' 만 호출(과거 다른 날 적재된 '이미한거' 는 이어받기로 스킵).
+    fetch_r.assert_called_once()
+    assert fetch_r.call_args.args[0] == "아직안한거"
+    assert summary["collected"] == 1
+    assert summary["skipped"] == 1
+    # 진행도: 전체 2개 중 1개(과거)+1개(이번)=2개 완료, 남은 0.
+    assert summary["review_keywords_total"] == 2
+    assert summary["review_keywords_this_run"] == 1
+    assert summary["review_keywords_done"] == 2
+    assert summary["review_keywords_remaining"] == 0
+
+
+def test_review_keyword_budget_limits_per_run():
+    """run당 예산만큼만 새 키워드를 처리하고 나머지 미수집분은 다음 run 으로 스킵한다."""
+    client = _client_with(
+        {"x.카외": [
+            {"키워드": "kw1", "키워드 분류(단계)": "4 대안", "_row": 2},
+            {"키워드": "kw2", "키워드 분류(단계)": "4 대안", "_row": 3},
+            {"키워드": "kw3", "키워드 분류(단계)": "4 대안", "_row": 4},
+        ]}
+    )
+    fetch_r = MagicMock(return_value=[
+        {"score": 2, "content": "별로", "product_name": "P", "date": "d", "source_url": "u"}
+    ])
+
+    summary = run_collection(
+        client, fetch_jisikin=MagicMock(), fetch_reviews=fetch_r,
+        naver_client_id="id", naver_client_secret="sec",
+        review_keyword_budget=2,        # 한 run 에 2개만
+        today="2026-06-20",
+    )
+
+    # 예산 2 → kw1, kw2 만 처리. kw3 는 다음 run 으로 스킵.
+    assert fetch_r.call_count == 2
+    assert [c.args[0] for c in fetch_r.call_args_list] == ["kw1", "kw2"]
+    assert summary["review_keywords_this_run"] == 2
+    assert summary["review_keywords_total"] == 3
+    assert summary["review_keywords_remaining"] == 1
+    assert summary["skipped"] == 1  # kw3
+
+
+def test_review_zero_result_keyword_leaves_marker_and_counts_processed():
+    """저점리뷰 0건 키워드도 '시도함' 마커 1행을 남기고 이번 run 처리로 센다(다음 run 재시도 방지)."""
+    client = _client_with(
+        {"x.카외": [{"키워드": "리뷰없는키워드", "키워드 분류(단계)": "5 브랜드", "_row": 2}]}
+    )
+    fetch_r = MagicMock(return_value=[])     # 저점리뷰 0건
+
+    summary = run_collection(
+        client, fetch_jisikin=MagicMock(), fetch_reviews=fetch_r,
+        naver_client_id="id", naver_client_secret="sec",
+        today="2026-06-20",
+    )
+
+    fetch_r.assert_called_once()
+    # 0건이어도 마커 행이 append 된다(다음 run 의 시트 read 가 이 키워드를 '완료'로 인식).
+    rows = client.append_staging_rows.call_args.args[2]
+    assert len(rows) == 1
+    assert rows[0][0] == "리뷰없는키워드"
+    assert rows[0][2] == "0건"
+    # collected 는 0(실제 후기 0건). 그러나 처리 키워드(this_run)는 1로 카운트.
+    assert summary["collected"] == 0
+    assert summary["review_keywords_this_run"] == 1
+    assert summary["review_keywords_done"] == 1
+
+
+def test_review_budget_zero_means_unlimited():
+    """예산 0(기본)이면 무제한 — 미수집 4·5단계 전부 처리(기존 동작 보존)."""
+    client = _client_with(
+        {"x.카외": [
+            {"키워드": "a", "키워드 분류(단계)": "4 대안", "_row": 2},
+            {"키워드": "b", "키워드 분류(단계)": "5 브랜드", "_row": 3},
+            {"키워드": "c", "키워드 분류(단계)": "4 대안", "_row": 4},
+        ]}
+    )
+    fetch_r = MagicMock(return_value=[
+        {"score": 1, "content": "x", "product_name": "P", "date": "d", "source_url": "u"}
+    ])
+
+    summary = run_collection(
+        client, fetch_jisikin=MagicMock(), fetch_reviews=fetch_r,
+        naver_client_id="id", naver_client_secret="sec",
+        review_keyword_budget=0,        # 무제한
+        today="2026-06-20",
+    )
+
+    assert fetch_r.call_count == 3
+    assert summary["review_keywords_this_run"] == 3
+    assert summary["review_keywords_remaining"] == 0
+
+
+def test_format_summary_includes_resume_progress_when_review_total_present():
+    """리뷰 진행도가 있으면 요약에 '이어받기 ... 누적 N/M개 완료 / 남은 K개' 가 붙는다."""
+    text = ir.format_summary({
+        "collected": 120, "failed": 0, "skipped": 480, "tabs": 5,
+        "review_keywords_this_run": 22, "review_keywords_total": 506,
+        "review_keywords_done": 22, "review_keywords_remaining": 484,
+    })
+    assert "수집 120건" in text          # 기존 첫 줄 보존
+    assert "이어받기" in text
+    assert "22" in text and "506" in text and "484" in text
+
+
 def test_review_uses_link_when_present():
     """시트 '링크' 칸에 상품 URL이 있으면 키워드 대신 그 URL을 review_lowstar 에 넘긴다."""
     client = _client_with(

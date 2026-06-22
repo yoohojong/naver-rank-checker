@@ -97,6 +97,26 @@ def _existing_keys(client, tab_name: str) -> set:
     return keys
 
 
+def _existing_keywords(client, tab_name: str) -> set:
+    """스테이징 탭에 이미 적재된 '키워드' 집합 — 수집일 무관(이어받기용).
+
+    리뷰 전수수집(약 506개)은 한 run(GHA 60분)에 다 못 한다. 그래서 이미 한 번이라도
+    적재된 키워드는 (어느 날 적재됐든) 다시 안 한다 = '미수집분 이어받기'.
+    매 run 이 아직 안 한 키워드만 예산만큼 처리 → 여러 번 돌리면 506개 전부 누적.
+    읽기 실패는 빈 집합(최악: 한 번 더 수집 — 데이터 손실은 없음).
+    """
+    try:
+        records = client.read_tab_records(tab_name)
+    except Exception:  # noqa: BLE001 — 읽기 실패해도 수집은 계속.
+        return set()
+    kws = set()
+    for rec in records or []:
+        kw = (rec.get("키워드") or "").strip()
+        if kw:
+            kws.add(kw)
+    return kws
+
+
 def run_collection(
     client,
     *,
@@ -108,6 +128,7 @@ def run_collection(
     review_max: int = 20,
     review_max_score: int = 3,
     review_brand_whitelist=(),
+    review_keyword_budget: int = 0,
     today: str | None = None,
     tab_filter=None,
 ) -> dict:
@@ -126,6 +147,11 @@ def run_collection(
             브랜드명 문자열 시퀀스. 비면(기본) 한정 없음(종전대로 단계 4·5 전부 — 기존 동작 보존).
             설정되면 '키워드'에 화이트리스트 브랜드명 중 하나라도 포함된 4·5단계 행만 리뷰 수집,
             나머지 4·5단계 행은 스킵(전수 수집 시 GHA 60분 timeout 회피 — 대표 소수만 1회 실증).
+        review_keyword_budget: 한 run 에서 처리할 '새 리뷰 키워드' 수 상한(이어받기/전수수집용).
+            0(기본)이면 무제한(기존 동작). >0 이면 이번 run 에서 그 수만큼 새 키워드를 처리하면
+            나머지 미수집 4·5단계 행은 스킵(다음 run 이 이어받음). 키워드당 약 2분 × 예산이
+            GHA 50~55분 안에 끝나도록 사장님이 환경변수(REVIEW_KEYWORD_BUDGET)로 조정.
+            이미 수집결과_리뷰에 적재된 키워드는 (수집일 무관) 항상 건너뜀 = 미수집분만 이어받음.
         today: 'YYYY-MM-DD' (테스트 주입용). None 이면 오늘 KST.
         tab_filter: 탭 이름 → bool. None 이면 이름에 '카외' 포함 탭만.
 
@@ -144,7 +170,14 @@ def run_collection(
     # 저점리뷰 브랜드 한정(실증용). 정규화: 공백 제거 + 빈 값 제외. 비면 한정 없음.
     brand_whitelist = tuple(b.strip() for b in (review_brand_whitelist or ()) if b and b.strip())
 
-    summary = {"collected": 0, "failed": 0, "skipped": 0, "tabs": 0}
+    summary = {
+        "collected": 0, "failed": 0, "skipped": 0, "tabs": 0,
+        # 이어받기 진행도(리뷰 채널): 이번 run 처리 키워드 수 / 누적 완료 / 전체 4·5단계 / 잔여.
+        "review_keywords_this_run": 0,
+        "review_keywords_done": 0,
+        "review_keywords_total": 0,
+        "review_keywords_remaining": 0,
+    }
 
     data = client.load_all_data_tabs(tab_filter=tab_filter)
     summary["tabs"] = len(data)
@@ -152,6 +185,17 @@ def run_collection(
     # 중복방지 키 — 스테이징 탭별 1회만 읽음(행마다 재조회 회피).
     seen_jisikin = _existing_keys(client, STAGING_TAB_JISIKIN)
     seen_review = _existing_keys(client, STAGING_TAB_REVIEW)
+
+    # 이어받기: 리뷰 탭에 이미 적재된 키워드(수집일 무관)는 이번 run 에서 건너뜀(미수집분만 처리).
+    # done_review 는 _existing_keys(seen_review)와 같은 read 를 재사용해 키워드만 추린 집합.
+    done_review_keywords = {kw for (kw, _day) in seen_review if kw}
+    # 진행도 보고용: run 시작 시점의 누적 완료 키워드 집합(스냅샷). 처리 중 done_review_keywords 는 늘어남.
+    done_at_start = set(done_review_keywords)
+    # 전체 4·5단계 고유 키워드 집합(이번 시트 read 기준) — 진행도/잔여 추산용.
+    review_keyword_universe: set[str] = set()
+    # 한 run 당 새로 처리한 리뷰 키워드 수(예산 소진 추적). budget<=0 이면 무제한.
+    review_processed = 0
+    review_budget = max(0, int(review_keyword_budget or 0))
 
     # 적재 버퍼 — 채널별로 모았다가 마지막에 한 번에 append(시트 호출 최소화).
     buf_jisikin: list[list] = []
@@ -217,6 +261,8 @@ def run_collection(
                     summary["collected"] += len(new_rows)
 
                 elif digit in STAGE_REVIEW:
+                    # 진행도 추산: 채널 on/off·예산과 무관하게 전체 4·5단계 고유 키워드를 센다.
+                    review_keyword_universe.add(keyword)
                     if not reviews_on:
                         # ⑤ 리뷰 채널 비활성 → 스킵.
                         summary["skipped"] += 1
@@ -224,6 +270,14 @@ def run_collection(
                     # 브랜드 한정(실증용): 화이트리스트 설정 시 '키워드'에 그 브랜드명을 포함한 행만.
                     #   비면 한정 없음(기존 동작). 대표 소수 브랜드만 1회 실증 → GHA timeout 회피.
                     if brand_whitelist and not any(b in keyword for b in brand_whitelist):
+                        summary["skipped"] += 1
+                        continue
+                    # 이어받기: 이 키워드가 리뷰 탭에 이미(어느 날이든) 적재됐으면 건너뜀(미수집분만).
+                    if keyword in done_review_keywords:
+                        summary["skipped"] += 1
+                        continue
+                    # 한 run 예산 소진(>0): 이번 run 새 키워드 수가 예산에 도달하면 나머지는 다음 run 으로.
+                    if review_budget and review_processed >= review_budget:
                         summary["skipped"] += 1
                         continue
                     if (keyword, day) in seen_review:
@@ -246,8 +300,19 @@ def run_collection(
                         ]
                         for rv in (reviews or [])
                     ]
+                    # 이어받기 영속화: 저점리뷰 0건이어도 '시도함' 마커 1행을 남긴다.
+                    #   목적 — 다음 run 의 _existing_keywords(시트 read)에 이 키워드가 잡혀 재시도 안 됨.
+                    #   마커가 없으면 0건 키워드를 매 run 다시 긁느라 예산이 새 키워드로 진행 못 함(정체).
+                    #   마커 행 = [키워드 | 단계 | "0건" | "" | 수집일 | "" | ""]. collected 로 세지 않음(0건이므로).
+                    if not new_rows:
+                        buf_review.append([keyword, stage_raw, "0건", "", day, "", ""])
                     buf_review.extend(new_rows)
                     seen_review.add((keyword, day))
+                    # 이어받기/예산: 이번 run 에 처리한 키워드로 표시(0건 나와도 '처리함' = 다음 run 재시도 방지).
+                    #   ⚠️ 0건이어도 done 처리 → 같은 빈 키워드를 매 run 재시도하느라 예산 낭비하는 무한정체 방지.
+                    #   (저점리뷰가 0건인 키워드는 그 run 에 '시도했고 없었다'로 보고 다음 키워드로 진행.)
+                    done_review_keywords.add(keyword)
+                    review_processed += 1
                     summary["collected"] += len(new_rows)
 
                 else:
@@ -271,18 +336,41 @@ def run_collection(
         summary["collected"] = max(0, summary["collected"] - n)
         print(f"[적재실패] 스테이징 append 중 오류: {type(e).__name__}: {e}")
 
+    # 이어받기 진행도(리뷰 채널) — 사장님 보고용. 전체 4·5단계 중 몇 개 끝났고 몇 개 남았는지.
+    total_review = len(review_keyword_universe)
+    # 이번 run 시작 시점에 '이미 완료'였던 것 중 실제 4·5단계 universe 에 속한 것만 카운트(노이즈 제거).
+    done_before = len(done_at_start & review_keyword_universe)
+    done_now = done_before + review_processed
+    summary["review_keywords_this_run"] = review_processed
+    summary["review_keywords_total"] = total_review
+    summary["review_keywords_done"] = min(done_now, total_review) if total_review else done_now
+    summary["review_keywords_remaining"] = max(0, total_review - summary["review_keywords_done"])
+
     return summary
 
 
 def format_summary(summary: dict) -> str:
-    """사람이 읽는 한 줄 요약(stdout + 텔레그램용). 비개발 사장님용 한글."""
-    return (
+    """사람이 읽는 한 줄 요약(stdout + 텔레그램용). 비개발 사장님용 한글.
+
+    리뷰 전수수집(이어받기) 진행도가 있으면 둘째 줄에 '키워드 N/총M개 완료, 남은 K개' 를 덧붙인다.
+    """
+    line = (
         "[카페외부 재료수집] "
         f"수집 {summary.get('collected', 0)}건 / "
         f"실패 {summary.get('failed', 0)}건 / "
         f"스킵 {summary.get('skipped', 0)}건 "
         f"(대상 탭 {summary.get('tabs', 0)}개)"
     )
+    total = summary.get("review_keywords_total", 0)
+    if total:
+        this_run = summary.get("review_keywords_this_run", 0)
+        done = summary.get("review_keywords_done", 0)
+        remaining = summary.get("review_keywords_remaining", 0)
+        line += (
+            f"\n[저점리뷰 이어받기] 이번 run 키워드 {this_run}개 처리 / "
+            f"누적 {done}/{total}개 완료 / 남은 {remaining}개"
+        )
+    return line
 
 
 def main() -> int:
@@ -316,6 +404,22 @@ def main() -> int:
         print(f"[integration_runner] 🔖 저점리뷰 브랜드 한정 ON — {', '.join(REVIEW_BRAND_WHITELIST)} "
               f"({len(REVIEW_BRAND_WHITELIST)}개) 포함 키워드만 수집.")
 
+    # 이어받기 예산: 한 run 처리할 새 리뷰 키워드 수 상한(GHA 50~55분 안전). 0=무제한.
+    #   키워드당 약 2분 → 22개 ≈ 44분(+검색·셋업 여유). 사장님이 REVIEW_KEYWORD_BUDGET 로 조정.
+    try:
+        review_keyword_budget = max(0, int(os.environ.get("REVIEW_KEYWORD_BUDGET", "22")))
+    except ValueError:
+        review_keyword_budget = 22
+    # 키워드당 저점리뷰 목표 건수(직전 실증은 총 20건으로 적었음 → 상향). 사장님이 REVIEW_MAX 로 조정.
+    try:
+        review_max = max(1, int(os.environ.get("REVIEW_MAX", "40")))
+    except ValueError:
+        review_max = 40
+    if reviews_on:
+        budget_txt = "무제한" if review_keyword_budget == 0 else f"{review_keyword_budget}개/run"
+        print(f"[integration_runner] 🔁 저점리뷰 이어받기 — 새 키워드 예산 {budget_txt}, "
+              f"키워드당 목표 {review_max}건.")
+
     # 무거운 의존성(gspread/playwright)은 main 실행 시에만 import(테스트 import 가벼움 유지).
     from src.jisikin_collect import fetch_jisikin
     from src.review_lowstar import fetch_low_star_reviews
@@ -334,7 +438,9 @@ def main() -> int:
         naver_client_id=NAVER_OPENAPI_CLIENT_ID,
         naver_client_secret=NAVER_OPENAPI_CLIENT_SECRET,
         reviews_on=reviews_on,
+        review_max=review_max,
         review_brand_whitelist=REVIEW_BRAND_WHITELIST,
+        review_keyword_budget=review_keyword_budget,
     )
 
     line = format_summary(summary)
