@@ -389,8 +389,22 @@ jobs:
           print(f"=== 저장 현황(수집결과_리뷰): 적재 행 {len(recs or [])} ===", flush=True)
           print(f"=== 처리완료 키워드(0건 마커 포함) = {len(done_in_target)}/{len(target_kw)} / 남은 {len(remaining)}개 ===", flush=True)
           print(f"=== 실제 후기 있는 키워드 = {len(with_reviews & target_kw)}개 ===", flush=True)
-          if remaining:
-              print("    아직 안 한 키워드(최대 30개):", flush=True)
-              for k in list(remaining)[:30]:
-                  print(f"      - {k}", flush=True)
+
+          # ★ 키워드별 실제 후기 건수(0건 마커 제외) — 내림차순 전체.
+          per_kw = Counter()
+          for r in (recs or []):
+              kw = (r.get("키워드") or "").strip()
+              title = (r.get("제목") or "").strip()
+              if kw and title not in ("", "0건"):
+                  per_kw[kw] += 1
+          total_reviews = sum(per_kw.values())
+          print(f"=== 후기 총 건수 = {total_reviews}건 / 후기 나온 키워드 {len(per_kw)}개 ===", flush=True)
+          print("--- 키워드별 후기 건수(많은 순) ---", flush=True)
+          for kw, c in per_kw.most_common():
+              print(f"   {c:>4}건  {kw}", flush=True)
+          # 0건(처리했으나 후기 없음) 키워드 표본 — 단계/유형 감 잡게 30개.
+          zero_kw = [k for k in (target_kw & done_all) if k not in per_kw]
+          print(f"--- 0건 키워드 = {len(zero_kw)}개 (표본 30) ---", flush=True)
+          for k in zero_kw[:30]:
+              print(f"      - {k}", flush=True)
           PY
