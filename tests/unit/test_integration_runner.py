@@ -52,8 +52,6 @@ def test_routes_symptom_keyword_to_jisikin():
         fetch_reviews=fetch_r,
         naver_client_id="id",
         naver_client_secret="sec",
-        apify_token="t",
-        apify_actor_id="a~b",
         today="2026-06-20",
     )
 
@@ -82,12 +80,16 @@ def test_routes_symptom_keyword_to_jisikin():
 
 @pytest.mark.parametrize("stage", ["4 대안", "5 브랜드"])
 def test_routes_alternative_and_brand_to_reviews(stage):
+    """4 대안/5 브랜드 → review_lowstar 로 키워드 기반 저점리뷰 수집('링크' 칸 없어도 동작)."""
     client = _client_with(
-        {"x.카외": [{"키워드": "경쟁상품", "키워드 분류(단계)": stage,
-                     "링크": "https://smartstore.naver.com/x/products/1", "_row": 2}]}
+        {"x.카외": [{"키워드": "경쟁상품", "키워드 분류(단계)": stage, "_row": 2}]}
     )
     fetch_j = MagicMock()
-    fetch_r = MagicMock(return_value=[{"star": 1, "content": "최악", "source": "u1", "date": "d"}])
+    # review_lowstar.fetch_low_star_reviews 반환 스키마: score/content/product_name/date/source_url
+    fetch_r = MagicMock(return_value=[
+        {"score": 1, "content": "최악", "product_name": "P", "date": "d",
+         "source_url": "https://brand.naver.com/x/products/1"}
+    ])
 
     summary = run_collection(
         client,
@@ -95,25 +97,41 @@ def test_routes_alternative_and_brand_to_reviews(stage):
         fetch_reviews=fetch_r,
         naver_client_id="id",
         naver_client_secret="sec",
-        apify_token="t",
-        apify_actor_id="a~b",
         today="2026-06-20",
     )
 
     fetch_j.assert_not_called()
     fetch_r.assert_called_once()
-    # 리뷰는 URL 리스트로 호출
-    assert fetch_r.call_args.args[0] == ["https://smartstore.naver.com/x/products/1"]
+    # 입력 = 키워드(URL 아님). review_lowstar 가 통합검색으로 URL 자동 확보.
+    assert fetch_r.call_args.args[0] == "경쟁상품"
+    assert fetch_r.call_args.kwargs["max_score"] == 3
     call = client.append_staging_rows.call_args
     assert call.args[0] == STAGING_TAB_REVIEW
     row = call.args[2][0]
-    # 리뷰: 제목=별점, 본문=리뷰내용
+    # 리뷰: 제목=별점(score), 본문=리뷰내용(content), source_url=상품 URL
     assert row[0] == "경쟁상품"
     assert row[1] == stage
     assert row[2] == "1"          # 별점 문자열
     assert row[3] == "최악"
-    assert row[5] == "u1"
+    assert row[5] == "https://brand.naver.com/x/products/1"
     assert summary["collected"] == 1
+
+
+def test_review_uses_link_when_present():
+    """시트 '링크' 칸에 상품 URL이 있으면 키워드 대신 그 URL을 review_lowstar 에 넘긴다."""
+    client = _client_with(
+        {"x.카외": [{"키워드": "경쟁상품", "키워드 분류(단계)": "4 대안",
+                     "링크": "https://brand.naver.com/x/products/9", "_row": 2}]}
+    )
+    fetch_r = MagicMock(return_value=[])
+
+    run_collection(
+        client, fetch_jisikin=MagicMock(), fetch_reviews=fetch_r,
+        naver_client_id="id", naver_client_secret="sec", today="2026-06-20",
+    )
+
+    fetch_r.assert_called_once()
+    assert fetch_r.call_args.args[0] == "https://brand.naver.com/x/products/9"
 
 
 def test_skips_duplicate_keyword_same_day():
@@ -128,7 +146,7 @@ def test_skips_duplicate_keyword_same_day():
     summary = run_collection(
         client, fetch_jisikin=fetch_j, fetch_reviews=MagicMock(),
         naver_client_id="id", naver_client_secret="sec",
-        apify_token="t", apify_actor_id="a~b", today="2026-06-20",
+        today="2026-06-20",
     )
 
     fetch_j.assert_not_called()                 # 이미 오늘 수집됨 → API 호출 X
@@ -152,7 +170,7 @@ def test_does_not_skip_same_keyword_different_day():
     summary = run_collection(
         client, fetch_jisikin=fetch_j, fetch_reviews=MagicMock(),
         naver_client_id="id", naver_client_secret="sec",
-        apify_token="t", apify_actor_id="a~b", today="2026-06-20",
+        today="2026-06-20",
     )
 
     assert fetch_j.call_count == 2  # sim + date 2회 호출
@@ -179,7 +197,7 @@ def test_failure_in_one_keyword_isolated():
     summary = run_collection(
         client, fetch_jisikin=fetch_j, fetch_reviews=MagicMock(),
         naver_client_id="id", naver_client_secret="sec",
-        apify_token="t", apify_actor_id="a~b", today="2026-06-20",
+        today="2026-06-20",
     )
 
     # 터지는키워드: sim 호출 1회(예외) → date 호출 안 함(try/except 전체 감쌈)
@@ -203,7 +221,7 @@ def test_skips_rows_without_keyword_or_stage():
     summary = run_collection(
         client, fetch_jisikin=fetch_j, fetch_reviews=fetch_r,
         naver_client_id="id", naver_client_secret="sec",
-        apify_token="t", apify_actor_id="a~b", today="2026-06-20",
+        today="2026-06-20",
     )
 
     fetch_j.assert_not_called()
@@ -226,7 +244,7 @@ def test_stage_header_variants_resolve():
         summary = run_collection(
             client, fetch_jisikin=fetch_j, fetch_reviews=MagicMock(),
             naver_client_id="id", naver_client_secret="sec",
-            apify_token="", apify_actor_id="", today="2026-06-20",
+            today="2026-06-20",
         )
         assert fetch_j.called, f"헤더 '{header}' 에서 단계 인식 실패"
         assert summary["collected"] == 1
@@ -242,7 +260,7 @@ def test_jisikin_skipped_when_naver_key_missing():
     summary = run_collection(
         client, fetch_jisikin=fetch_j, fetch_reviews=MagicMock(),
         naver_client_id="", naver_client_secret="",     # 키 없음
-        apify_token="t", apify_actor_id="a~b", today="2026-06-20",
+        today="2026-06-20",
     )
 
     fetch_j.assert_not_called()
@@ -250,18 +268,17 @@ def test_jisikin_skipped_when_naver_key_missing():
     assert summary["skipped"] == 1
 
 
-def test_reviews_skipped_when_apify_token_missing():
-    """APIFY 토큰 없으면 리뷰 채널 통째로 스킵(에러 아님)."""
+def test_reviews_skipped_when_channel_off():
+    """reviews_on=False 면 리뷰 채널 통째로 스킵(에러 아님). Playwright 는 토큰 불필요."""
     client = _client_with(
-        {"x.카외": [{"키워드": "경쟁", "키워드 분류(단계)": "4 대안",
-                     "링크": "https://smartstore.naver.com/x/products/1", "_row": 2}]}
+        {"x.카외": [{"키워드": "경쟁", "키워드 분류(단계)": "4 대안", "_row": 2}]}
     )
     fetch_r = MagicMock()
 
     summary = run_collection(
         client, fetch_jisikin=MagicMock(), fetch_reviews=fetch_r,
         naver_client_id="id", naver_client_secret="sec",
-        apify_token="", apify_actor_id="",               # 토큰 없음
+        reviews_on=False,
         today="2026-06-20",
     )
 
@@ -269,21 +286,27 @@ def test_reviews_skipped_when_apify_token_missing():
     assert summary["skipped"] == 1
 
 
-def test_review_row_without_url_skipped():
-    """리뷰 단계인데 상품 URL 이 없으면 스킵(스타트 URL 없으면 코어가 빈 결과 = 무의미)."""
+def test_review_row_without_link_still_collects_by_keyword():
+    """리뷰 단계에 '링크' 칸이 없어도 스킵하지 않는다 — 키워드로 통합검색해 수집(URL 자동 확보)."""
     client = _client_with(
         {"x.카외": [{"키워드": "경쟁", "키워드 분류(단계)": "5 브랜드", "링크": "", "_row": 2}]}
     )
-    fetch_r = MagicMock()
+    fetch_r = MagicMock(return_value=[
+        {"score": 2, "content": "별로", "product_name": "P", "date": "d",
+         "source_url": "https://brand.naver.com/x/products/1"}
+    ])
 
     summary = run_collection(
         client, fetch_jisikin=MagicMock(), fetch_reviews=fetch_r,
         naver_client_id="id", naver_client_secret="sec",
-        apify_token="t", apify_actor_id="a~b", today="2026-06-20",
+        today="2026-06-20",
     )
 
-    fetch_r.assert_not_called()
-    assert summary["skipped"] == 1
+    # '링크' 빈칸 → 키워드로 호출(URL 강제 요구 없음)
+    fetch_r.assert_called_once()
+    assert fetch_r.call_args.args[0] == "경쟁"
+    assert summary["collected"] == 1
+    assert summary["skipped"] == 0
 
 
 def test_empty_fetch_result_counts_as_zero_collected_not_failed():
@@ -296,7 +319,7 @@ def test_empty_fetch_result_counts_as_zero_collected_not_failed():
     summary = run_collection(
         client, fetch_jisikin=fetch_j, fetch_reviews=MagicMock(),
         naver_client_id="id", naver_client_secret="sec",
-        apify_token="t", apify_actor_id="a~b", today="2026-06-20",
+        today="2026-06-20",
     )
 
     assert fetch_j.call_count == 2  # sim + date 2회 호출
@@ -325,7 +348,7 @@ def test_multiple_jisikin_items_become_multiple_rows():
     summary = run_collection(
         client, fetch_jisikin=fetch_j, fetch_reviews=MagicMock(),
         naver_client_id="id", naver_client_secret="sec",
-        apify_token="t", apify_actor_id="a~b", today="2026-06-20",
+        today="2026-06-20",
     )
 
     rows = client.append_staging_rows.call_args.args[2]
@@ -347,7 +370,7 @@ def test_jisikin_fetched_twice_sim_and_date():
     run_collection(
         client, fetch_jisikin=fetch_j, fetch_reviews=MagicMock(),
         naver_client_id="id", naver_client_secret="sec",
-        apify_token="t", apify_actor_id="a~b", today="2026-06-20",
+        today="2026-06-20",
     )
 
     assert fetch_j.call_count == 2
@@ -381,7 +404,7 @@ def test_jisikin_link_dedup_sim_priority():
     summary = run_collection(
         client, fetch_jisikin=fetch_j, fetch_reviews=MagicMock(),
         naver_client_id="id", naver_client_secret="sec",
-        apify_token="t", apify_actor_id="a~b", today="2026-06-20",
+        today="2026-06-20",
     )
 
     rows = client.append_staging_rows.call_args.args[2]
@@ -404,7 +427,7 @@ def test_jisikin_no_auto_filter_keeps_everything():
     summary = run_collection(
         client, fetch_jisikin=fetch_j, fetch_reviews=MagicMock(),
         naver_client_id="id", naver_client_secret="sec",
-        apify_token="t", apify_actor_id="a~b", today="2026-06-20",
+        today="2026-06-20",
     )
 
     rows = client.append_staging_rows.call_args.args[2]

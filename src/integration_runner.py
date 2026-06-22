@@ -4,20 +4,26 @@
 수집 코어를 호출하고, 결과를 **수집 전용 스테이징 탭**에 쌓는다. 직원 수작업 0.
 
 단계 라우팅:
-  - '3 증상'         → 지식iN Open API(fetch_jisikin)  → '수집결과_지식인' 탭
-  - '4 대안'/'5 브랜드' → Apify 스마트스토어 리뷰(fetch_reviews) → '수집결과_리뷰' 탭
+  - '3 증상'         → 지식iN Open API(fetch_jisikin)              → '수집결과_지식인' 탭
+  - '4 대안'/'5 브랜드' → 네이버 저점리뷰(review_lowstar, Playwright) → '수집결과_리뷰' 탭
 
 스테이징 스키마(고정): [키워드 | 단계 | 제목 | 본문 | 수집일 | source_url | 적재완료]
   - 지식인: 제목=질문 제목, 본문=질문 요약(description)
   - 리뷰  : 제목=별점,      본문=리뷰 내용
+
+리뷰 경로(2026-06-22 교체): 과거 Apify(review_collect) 경로는 리뷰 본문이 Pro 유료잠금이라 0건이었다.
+  → src/review_lowstar.fetch_low_star_reviews(Playwright 실브라우저)로 교체.
+  입력은 '상품 URL'이 아니라 **키워드**다(review_lowstar 가 통합검색으로 상품 URL을 자동 확보).
+  단, 시트 '링크' 칸에 상품 URL이 직접 적혀 있으면 그 URL을 우선 사용(키워드 검색 생략).
 
 설계 원칙(비개발 사장님 운영 → 안전 우선):
   ① 중복방지   — 같은 키워드 + 같은 수집일이 스테이징 탭에 이미 있으면 그 키워드는 스킵.
   ② 격리       — 키워드 한 건이 실패해도 try/except 로 격리, 전체는 계속 진행.
   ③ 요약 반환  — 수집/실패/스킵 카운트를 담은 summary dict 반환(C9 모니터링·텔레그램용).
   ④ 안전 스킵  — 키워드/단계 미지정 행, 라우팅 대상 외 단계는 조용히 건너뜀(실패 아님).
-  ⑤ 키 없으면 비활성 — 네이버 키 없으면 지식인 채널, APIFY 토큰 없으면 리뷰 채널 통째 스킵.
-  ⑥ 주입식     — SheetsClient·fetch_* 전부 인자로 받아 테스트에서 mock 가능(실 API 호출 0).
+  ⑤ 채널 토글  — 네이버 키 없으면 지식인 채널 비활성. 리뷰 채널은 reviews_on 플래그로 토글
+                 (Playwright 는 토큰 불필요 — 기본 활성, 끄려면 reviews_on=False).
+  ⑥ 주입식     — SheetsClient·fetch_* 전부 인자로 받아 테스트에서 mock 가능(실 수집 호출 0).
 """
 from __future__ import annotations
 
@@ -42,7 +48,9 @@ COL_KEYWORD = "키워드"
 COL_STAGE = "키워드 분류"
 # 헤더 변형(괄호/별칭)에도 견고하도록 후보 순차 탐색 + '분류' 포함 키 폴백.
 _STAGE_HEADER_CANDIDATES = ("키워드 분류", "키워드 분류(단계)", "단계")
-COL_LINK = "링크"  # 리뷰 단계용 상품 URL(있으면). 없으면 리뷰 스킵.
+# 리뷰 단계: 시트 '링크' 칸에 상품 URL이 있으면 그 URL을 우선 사용(키워드 검색 생략).
+# 없으면 키워드로 통합검색 → 상품 URL 자동 확보(review_lowstar). 즉, '링크'는 선택사항이다.
+COL_LINK = "링크"
 
 
 def _stage_value(row: dict) -> str:
@@ -96,10 +104,9 @@ def run_collection(
     fetch_reviews,
     naver_client_id: str,
     naver_client_secret: str,
-    apify_token: str,
-    apify_actor_id: str,
-    apify_input_field: str = "startUrls",
-    apify_extra_input: dict | None = None,
+    reviews_on: bool = True,
+    review_max: int = 20,
+    review_max_score: int = 3,
     today: str | None = None,
     tab_filter=None,
 ) -> dict:
@@ -108,9 +115,12 @@ def run_collection(
     Args:
         client: SheetsClient (load_all_data_tabs / read_tab_records / append_staging_rows).
         fetch_jisikin: fetch_jisikin(keyword, *, client_id, client_secret) → [{title,link,description}].
-        fetch_reviews: fetch_low_star_reviews(urls, *, apify_token, actor_id) → [{star,content,source,date}].
+        fetch_reviews: review_lowstar.fetch_low_star_reviews(keyword_or_url, max_reviews, max_score)
+            → [{score, content, product_name, date, source_url}]. 키워드(또는 상품 URL)로 통합검색→저점리뷰.
         naver_*: 네이버 Open API 키(없으면 지식인 채널 스킵).
-        apify_*: Apify 토큰/액터(없으면 리뷰 채널 스킵).
+        reviews_on: 리뷰 채널 토글. 기본 True(Playwright 는 토큰 불필요). False 면 리뷰 단계 전부 스킵.
+        review_max: 리뷰 단계 키워드당 수집 목표 건수(fetch_reviews max_reviews 로 전달).
+        review_max_score: 이 별점 이하만 수집(기본 3 = 저점 1~3점).
         today: 'YYYY-MM-DD' (테스트 주입용). None 이면 오늘 KST.
         tab_filter: 탭 이름 → bool. None 이면 이름에 '카외' 포함 탭만.
 
@@ -118,14 +128,13 @@ def run_collection(
         {"collected": int, "failed": int, "skipped": int, "tabs": int}
         - collected: 스테이징에 적재한 행 수.
         - failed:    fetch/append 예외로 처리 못 한 키워드 행 수.
-        - skipped:   키/단계 미지정·라우팅 외·중복·키 미설정·URL 없음으로 건너뛴 행 수.
+        - skipped:   키/단계 미지정·라우팅 외·중복·채널 비활성으로 건너뛴 행 수.
     """
     day = today or _today_kst()
     if tab_filter is None:
         tab_filter = lambda name: "카외" in name  # noqa: E731
 
     naver_on = bool(naver_client_id and naver_client_secret)
-    apify_on = bool(apify_token)
 
     summary = {"collected": 0, "failed": 0, "skipped": 0, "tabs": 0}
 
@@ -200,29 +209,27 @@ def run_collection(
                     summary["collected"] += len(new_rows)
 
                 elif digit in STAGE_REVIEW:
-                    if not apify_on:
-                        summary["skipped"] += 1
-                        continue
-                    urls = [u for u in [(row.get(COL_LINK) or "").strip()] if u]
-                    if not urls:
-                        # ⑤ 상품 URL 없으면 리뷰 수집 무의미 → 스킵.
+                    if not reviews_on:
+                        # ⑤ 리뷰 채널 비활성 → 스킵.
                         summary["skipped"] += 1
                         continue
                     if (keyword, day) in seen_review:
                         summary["skipped"] += 1
                         continue
+                    # 입력 = 키워드(review_lowstar 가 통합검색으로 상품 URL 자동 확보).
+                    # 단, 시트 '링크' 칸에 상품 URL이 직접 적혀 있으면 그 URL을 우선 사용.
+                    link = (row.get(COL_LINK) or "").strip()
+                    target = link or keyword
                     reviews = fetch_reviews(
-                        urls,
-                        apify_token=apify_token,
-                        actor_id=apify_actor_id,
-                        input_field=apify_input_field,
-                        extra_input=apify_extra_input,
+                        target,
+                        max_reviews=review_max,
+                        max_score=review_max_score,
                     )
                     new_rows = [
                         [
                             keyword, stage_raw,
-                            str(rv.get("star", "")), rv.get("content", ""),
-                            day, rv.get("source", ""), "",
+                            str(rv.get("score", "")), rv.get("content", ""),
+                            day, rv.get("source_url", ""), "",
                         ]
                         for rv in (reviews or [])
                     ]
@@ -274,11 +281,6 @@ def main() -> int:
     - 항상 0 반환(워크플로 비차단 — 실패는 요약으로 통보).
     """
     from src.config import (
-        APIFY_ACTOR_ID,
-        APIFY_INCLUDE_REVIEWS,
-        APIFY_INPUT_FIELD,
-        APIFY_MAX_REVIEW_PAGES,
-        APIFY_TOKEN,
         NAVER_OPENAPI_CLIENT_ID,
         NAVER_OPENAPI_CLIENT_SECRET,
         SERVICE_ACCOUNT_JSON,
@@ -291,12 +293,15 @@ def main() -> int:
 
     if not (NAVER_OPENAPI_CLIENT_ID and NAVER_OPENAPI_CLIENT_SECRET):
         print("[integration_runner] ⚠️ 네이버 Open API 키 미설정 — 지식인 수집 비활성.")
-    if not APIFY_TOKEN:
-        print("[integration_runner] ⚠️ APIFY_TOKEN 미설정 — 리뷰 수집 비활성.")
 
-    # 무거운 의존성(gspread/curl_cffi)은 main 실행 시에만 import(테스트 import 가벼움 유지).
+    # 리뷰 채널 토글(기본 활성 — Playwright 는 토큰 불필요). 'false' 면 리뷰 단계 전부 스킵.
+    reviews_on = os.environ.get("CAFE_REVIEWS_ON", "true").strip().lower() != "false"
+    if not reviews_on:
+        print("[integration_runner] ⚠️ CAFE_REVIEWS_ON=false — 저점리뷰 수집 비활성.")
+
+    # 무거운 의존성(gspread/playwright)은 main 실행 시에만 import(테스트 import 가벼움 유지).
     from src.jisikin_collect import fetch_jisikin
-    from src.review_collect import fetch_low_star_reviews
+    from src.review_lowstar import fetch_low_star_reviews
     from src.sheets import SheetsClient
 
     client = SheetsClient(
@@ -305,20 +310,13 @@ def main() -> int:
     )
 
     print("=== 카페외부 재료수집 사이클 시작 ===")
-    apify_extra = {
-        "includeReviews": APIFY_INCLUDE_REVIEWS,
-        "maxReviewPages": APIFY_MAX_REVIEW_PAGES,
-    }
     summary = run_collection(
         client,
         fetch_jisikin=fetch_jisikin,
         fetch_reviews=fetch_low_star_reviews,
         naver_client_id=NAVER_OPENAPI_CLIENT_ID,
         naver_client_secret=NAVER_OPENAPI_CLIENT_SECRET,
-        apify_token=APIFY_TOKEN,
-        apify_actor_id=APIFY_ACTOR_ID,
-        apify_input_field=APIFY_INPUT_FIELD,
-        apify_extra_input=apify_extra,
+        reviews_on=reviews_on,
     )
 
     line = format_summary(summary)

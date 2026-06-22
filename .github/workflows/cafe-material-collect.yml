@@ -50,6 +50,14 @@ jobs:
           ./.venv/bin/python -m pip install --upgrade pip
           ./.venv/bin/python -m pip install -r requirements.txt
 
+      # 저점리뷰 수집(review_lowstar)은 Playwright 실브라우저(chromium) 필요.
+      # requirements.txt 에 playwright 패키지는 있으나, 브라우저 바이너리는 별도 설치가 필요하다.
+      # --with-deps 로 우분투 런너에 chromium + OS 의존 라이브러리까지 한 번에 설치.
+      - name: Install Playwright chromium
+        shell: bash
+        run: |
+          ./.venv/bin/python -m playwright install --with-deps chromium
+
       - name: Run cafe material collection
         id: collect
         shell: bash
