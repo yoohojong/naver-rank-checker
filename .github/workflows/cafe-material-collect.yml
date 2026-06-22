@@ -36,6 +36,10 @@ on:
         description: '분할 시 shard 시작 지연(초) — 동시 시트읽기 429 회피. shard_index×이 값 만큼 대기. 기본 8.'
         required: false
         default: '8'
+      review_ignore_done:
+        description: '이미 수집한 키워드도 다시 수집(깊이 보강=더 채우기). true 면 이어받기 무시. 기본 false.'
+        required: false
+        default: 'false'
 
 # 순위체커(naver-rank-check)와 별도 그룹 — 서로 취소/대기 영향 없음.
 concurrency:
@@ -126,6 +130,8 @@ jobs:
           REVIEW_SHARD: ${{ matrix.shard }}/${{ github.event.inputs.shards }}
           # shard 시작 지연(초) — 동시 시트읽기 429 분산. shard_index × 이 값.
           REVIEW_SHARD_STAGGER_SEC: ${{ github.event.inputs.shard_stagger_sec }}
+          # 이어받기 무시(이미 한 키워드도 다시 수집 = 깊이 보강). true 일 때만.
+          REVIEW_IGNORE_DONE: ${{ github.event.inputs.review_ignore_done }}
           # 예산: 분할 모드선 0(무제한 — shard 가 이미 키워드 수를 제한). 단일 모드선 입력값(기본 22).
           REVIEW_KEYWORD_BUDGET: ${{ github.event.inputs.shards == '1' && github.event.inputs.review_keyword_budget || '0' }}
           REVIEW_MAX: ${{ github.event.inputs.review_max }}

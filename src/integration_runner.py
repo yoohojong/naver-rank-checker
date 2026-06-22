@@ -148,6 +148,7 @@ def run_collection(
     review_brand_whitelist=(),
     review_keyword_budget: int = 0,
     review_shard=None,
+    review_ignore_done: bool = False,
     today: str | None = None,
     tab_filter=None,
 ) -> dict:
@@ -301,7 +302,8 @@ def run_collection(
                         summary["skipped"] += 1
                         continue
                     # 이어받기: 이 키워드가 리뷰 탭에 이미(어느 날이든) 적재됐으면 건너뜀(미수집분만).
-                    if keyword in done_review_keywords:
+                    #   review_ignore_done=True 면 이미 한 키워드도 다시 수집(깊이 보강 = '더 채우기').
+                    if not review_ignore_done and keyword in done_review_keywords:
                         summary["skipped"] += 1
                         continue
                     # 한 run 예산 소진(>0): 이번 run 새 키워드 수가 예산에 도달하면 나머지는 다음 run 으로.
@@ -500,6 +502,7 @@ def main() -> int:
         review_brand_whitelist=REVIEW_BRAND_WHITELIST,
         review_keyword_budget=review_keyword_budget,
         review_shard=review_shard,
+        review_ignore_done=(os.environ.get("REVIEW_IGNORE_DONE", "").strip().lower() == "true"),
     )
 
     line = format_summary(summary)
