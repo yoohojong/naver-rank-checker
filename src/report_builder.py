@@ -44,6 +44,14 @@ def _all_type_dist(reports: list[TabReport]) -> Counter:
     return c
 
 
+def _all_type_change_dirs(reports: list[TabReport]) -> Counter:
+    """탭 전체의 '바뀐 방향' 합산 {'AB→인기글': n}."""
+    c: Counter = Counter()
+    for t in reports:
+        c.update(t.type_change_dirs)
+    return c
+
+
 def _sum(reports: list[TabReport], attr: str) -> int:
     return sum(getattr(t, attr) for t in reports)
 
@@ -106,15 +114,25 @@ def _build_full_report(reports: list[TabReport], kst: str, status_line: str, tit
         L.append(f"   {t.tab}: {t.total}개 중 {t.exposed_now}개{tail}")
     L.append("")
 
-    # 대표 노출 유형
+    # 대표 노출 유형 (총 비율 + 어제→오늘 바뀐 방향)
     td = _all_type_dist(reports)
     if td:
-        seg = " · ".join(f"{k} {td[k]}" for k in ["AB", "스마트블록", "인기글"] if td.get(k))
+        tot_t = sum(td.values())
+        seg = " · ".join(
+            f"{k} {td[k]}개({round(td[k] * 100 / tot_t)}%)"
+            for k in ["AB", "스마트블록", "인기글"]
+            if td.get(k)
+        )
         L.append("[대표 노출 유형]")
-        L.append(f"   {seg}")
+        L.append(f"   전체 {tot_t}개 — {seg}")
         tch = _sum(reports, "type_changes")
         if tch:
             L.append(f"   유형 바뀐 키워드: {tch}개")
+            dirs = _all_type_change_dirs(reports)
+            for d, n in dirs.most_common(5):
+                L.append(f"      {d.replace('→', ' → ')}: {n}개")
+            if len(dirs) > 5:
+                L.append(f"      그 외 {len(dirs) - 5}종")
         L.append("")
 
     # 지식인
