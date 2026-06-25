@@ -839,7 +839,7 @@ jobs:
   harvest_urls:
     if: ${{ inputs.harvest_urls == 'true' }}
     runs-on: ubuntu-latest
-    timeout-minutes: 50
+    timeout-minutes: 180  # 4·5단계 전체(limit=0) 상품주소 수집 = 50분 초과 → 취소되던 것(2026-06-25)
     steps:
       - name: Checkout
         uses: actions/checkout@v6.0.2
