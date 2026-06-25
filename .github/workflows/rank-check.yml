@@ -149,6 +149,20 @@ jobs:
           fi
           exit $rc
 
+      # 폴더누락 근본해결(2026-06-26): team-project cafe-auto-collect 의 일1회 cron 이 schedule 실제 0회 발동
+      #   → 카외 보관함 폴더 누락 누적(바디워시 70개 사건). 확실히 도는 이 cron(8회/일+외부 cron-job.org 백업)이
+      #   매번 '카외 전수 폴더보장' 브리지(ensureAllFolders: 시트 스스로 스캔→링크없는 태깅키워드 폴더생성, 멱등)를
+      #   호출 → 불안정한 cron 누락과 무관하게 폴더가 채워짐. 비차단(순위체크 본작업 영향 0).
+      - name: Ensure 카외 보관함 folders (폴더누락 근본해결)
+        if: always()
+        continue-on-error: true
+        shell: bash
+        run: |
+          curl -sS -L --max-time 300 -X POST \
+            "https://script.google.com/macros/s/AKfycbx-SDZ4upXCBARovOpwEqBy7-eCmuTo00iQjr9QRVu20I1KxKJpXFekcKMzwbpi3z2y/exec" \
+            -H "Content-Type: application/json" \
+            -d '{"mode":"ensureAllFolders","token":"cafe-deposit-2026"}' || true
+
       - name: Post summary to issue #1
         if: always()
         shell: bash
