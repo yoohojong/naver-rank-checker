@@ -140,12 +140,17 @@ jobs:
           set +e
           ./.venv/bin/python -u -m src.main
           rc=$?
-          if [ $rc -ne 0 ]; then
-            echo "[SELF-HEAL] 1차 실패(rc=$rc) — 90초 후 1회 자동 재시도"
+          # rc=2 = '코드/사이트 변경 의심'(bulk-guard hold 등) = 결정적 → 재시도해도 같은 결과.
+          #   2026-06-30 fix: 이전엔 rc=2 도 전체 사이클(약 77분)을 통째 재실행해 매 run 2.5~4시간
+          #   헛돌이 + 네이버/구글 API 중복 부하. 이제 rc=2 는 재시도 생략(빨강 알림은 유지).
+          if [ $rc -ne 0 ] && [ $rc -ne 2 ]; then
+            echo "[SELF-HEAL] 1차 실패(rc=$rc, 예기치 못한 크래시) — 90초 후 1회 자동 재시도"
             sleep 90
             ./.venv/bin/python -u -m src.main
             rc=$?
             [ $rc -eq 0 ] && echo "[SELF-HEAL] 재시도 성공" || echo "[SELF-HEAL] 재시도도 실패(rc=$rc)"
+          elif [ $rc -eq 2 ]; then
+            echo "[SELF-HEAL] rc=2 (코드/사이트 변경 의심 — 결정적) → 재시도 생략. 사람(Claude) 검토 필요."
           fi
           exit $rc
 
