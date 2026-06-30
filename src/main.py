@@ -1040,7 +1040,13 @@ def run_cycle() -> dict:
 
 if __name__ == "__main__":
     s = run_cycle()
-    # GitHub Actions exit code: 코드 변경 의심 시 1 (Actions 빨강 → 사장님 알림)
+    # GitHub Actions exit code:
+    #   0 = 정상.
+    #   2 = '코드/사이트 변경 의심'(bulk-guard hold·K분포 이상 등). Actions 빨강 → 사장님 알림.
+    #       단 이건 '결정적'(재실행해도 같은 결과)이므로 self-heal 이 재시도하면 안 됨(2.5~4h 헛돌이 방지).
+    #       → rank-check.yml self-heal 이 rc=2 는 재시도 생략. 실제 크래시(rc=1 등)만 1회 재시도.
+    #   1(또는 그 외 비0) = 예기치 못한 크래시 → self-heal 1회 재시도 대상.
+    # ⚠️ 순위 데이터(K/L/M/O)는 이 체크 '전에' 이미 시트에 기록됨 → rc=2 여도 순위 갱신은 정상.
     if s.get("code_change_suspected"):
-        sys.exit(1)
+        sys.exit(2)
     sys.exit(0)
