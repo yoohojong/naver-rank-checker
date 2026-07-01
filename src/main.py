@@ -864,10 +864,21 @@ def run_cycle() -> dict:
     type_preview_write_blocked_by_bulk_guard = False
     type_tab_updates: dict[str, list[RowUpdate]] = {}
     if type_preview_write_confirmed:
-        if type_preview_summary.get("type_preview_bulk_guard_triggered") and not type_preview_write_allow_bulk:
+        # 교착 완전봉인(2026-07-01): bulk-guard 는 count(>100) 또는 ratio(>50%)로 트립한다.
+        #   · count 만(정상 대량변경, 예: 날짜롤오버 '중복노출' 재분류 ~12~15%)으로 트립된 건 flush 허용.
+        #     이유: would_update 행은 이미 전부 html_status==SAFE(정상 페이지) 필터를 통과 → 구조적으로 안전.
+        #     C열을 영구 차단하면 backlog(100칸+)가 안 빠져 매 run 재트립 = 교착(9연속 빨강의 근원).
+        #   · ratio>50%(대부분 행이 유형 변경 = 파서 catastrophe 신호)로 트립됐으면 그대로 차단(안전브레이크 유지).
+        #     진짜 파서 드리프트는 이 ratio 가드 + K분포 anomaly(detect_k_anomaly) 로 계속 잡힌다.
+        bulk_tripped = bool(type_preview_summary.get("type_preview_bulk_guard_triggered"))
+        update_ratio = float(type_preview_summary.get("type_preview_update_ratio", 0.0))
+        catastrophe = update_ratio > 0.50   # = TYPE_PREVIEW_BULK_MAX_UPDATE_RATIO
+        if bulk_tripped and not type_preview_write_allow_bulk and catastrophe:
             type_preview_write_blocked_by_bulk_guard = True
-            print("[TYPE-PREVIEW] bulk-change guard triggered; C-column write skipped")
+            print(f"[TYPE-PREVIEW] bulk-change guard: 변경비율 {update_ratio:.0%} > 50% (파서 이상 의심) → C-column write skipped")
         else:
+            if bulk_tripped and not type_preview_write_allow_bulk:
+                print(f"[TYPE-PREVIEW] bulk-change guard: count 트립이나 비율 {update_ratio:.0%} ≤ 50% (정상 대량변경) → C열 flush(교착 방지)")
             type_tab_updates = _build_confirmed_type_updates(type_preview_rows)
             for tab_name, updates in type_tab_updates.items():
                 if updates:
