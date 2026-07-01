@@ -53,6 +53,22 @@ jobs:
           echo "[WATCHDOG] run_attempt=1 — 1회 자동 재시도 시작 (run_id=${RUN_ID})"
           gh run rerun "${RUN_ID}" --repo "${GH_REPO}" --failed
 
+      # P1a(2026-07-01): 최근 연속 실패 수 계산 → 알림 심각도 차등('9일 침묵' 방지).
+      #   상태파일 없이 gh 실행이력으로 무상태 계산. 실패해도 streak=0(기존 문구) 폴백.
+      - name: 연속 실패 수 계산 (에스컬레이션)
+        id: streak
+        continue-on-error: true
+        shell: bash
+        run: |
+          runs=$(gh run list --workflow=naver-rank-check --repo "${GH_REPO}" --limit 15 \
+                 --json conclusion,status -q '.[] | select(.status=="completed") | .conclusion' 2>/dev/null || echo "")
+          streak=0
+          while IFS= read -r c; do
+            [ "$c" = "failure" ] && streak=$((streak+1)) || break
+          done <<< "$runs"
+          echo "streak=$streak" >> "$GITHUB_OUTPUT"
+          echo "[WATCHDOG] 최근 연속 실패=$streak"
+
       - name: 텔레그램 알림 발송
         if: always()
         continue-on-error: true
@@ -62,6 +78,7 @@ jobs:
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           # 재시도가 '실제로' 성공했을 때만 '재시도 중' 알림 — rerun 실패/skip 시 '사람 확인'(code-reviewer CRITICAL fix)
           RETRYING: ${{ steps.rerun_step.outcome == 'success' && '1' || '0' }}
+          STREAK: ${{ steps.streak.outputs.streak || '0' }}
           PYTHONIOENCODING: 'utf-8'
         run: |
           ./.venv/bin/python -u scripts/notify_run_failure.py || true
