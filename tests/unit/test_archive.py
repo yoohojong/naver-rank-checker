@@ -100,6 +100,7 @@ class FakeWorksheet:
     def __init__(self, values=None):
         # values = [[...], ...] (1행 = 헤더 포함 가능)
         self.values = [list(r) for r in (values or [])]
+        self.delete_calls = []  # (start, end) 기록 — 범위삭제(429 fix) 회귀검증용
 
     def row_values(self, row_1based):
         idx = row_1based - 1
@@ -122,10 +123,12 @@ class FakeWorksheet:
         for r in rows:
             self.values.append(list(r))
 
-    def delete_rows(self, row_1based):
-        idx = row_1based - 1
-        if 0 <= idx < len(self.values):
-            self.values.pop(idx)
+    def delete_rows(self, start, end=None):
+        # 실제 gspread 정합: start~end(1-based, inclusive) 를 한 번에 삭제.
+        # end 생략 시 start 한 행만. 호출을 delete_calls 에 기록(범위삭제 검증용).
+        end = start if end is None else end
+        self.delete_calls.append((start, end))
+        del self.values[start - 1:end]
 
 
 class FakeSpreadsheet:
@@ -152,6 +155,46 @@ class FakeClient:
 
 def _rows_for(date_str, keywords):
     return [[date_str, "샴푸 카외", kw, "AB", "1"] for kw in keywords]
+
+
+# ----- 429 fix: 날짜블록 삭제 = 구간당 API 1회 (행마다 X) -----
+
+def test_delete_block_batches_contiguous_range_single_call():
+    """그날 블록(연속 N행)을 지울 때 delete_rows 를 N번이 아니라 '구간 1회'만 호출해야 함.
+    (2026-07-02 회귀: 행마다 삭제 → 수백 API 호출 → 시트 429 → cron 크래시.)"""
+    from src.archive import _delete_date_block
+
+    grid = [ARCHIVE_HEADER]
+    grid += [["2026-07-01", "샴푸 카외", "old1", "AB", "1"],
+             ["2026-07-01", "샴푸 카외", "old2", "AB", "2"]]
+    grid += _rows_for("2026-07-02", ["k1", "k2", "k3", "k4", "k5"])  # 4~8행 연속
+    ws = FakeWorksheet(grid)
+
+    n = _delete_date_block(ws, "2026-07-02")
+
+    assert n == 5                                  # 5행 삭제 보고
+    assert ws.delete_calls == [(4, 8)]             # ★ 단 1회 범위삭제(5회 아님)
+    assert not any(r[0] == "2026-07-02" for r in ws.values)  # 오늘 행 전부 제거
+    assert sum(1 for r in ws.values if r[0] == "2026-07-01") == 2  # 다른날짜 보존
+    assert ws.values[0] == ARCHIVE_HEADER          # 헤더 보존
+
+
+def test_delete_block_fragmented_ranges_bottom_up():
+    """비연속(사이에 다른날짜 낀) 경우: 구간별 1회씩, 아래→위로 지워 행번호 안 밀림."""
+    from src.archive import _delete_date_block
+
+    grid = [ARCHIVE_HEADER,
+            ["2026-07-02", "샴푸 카외", "a", "AB", "1"],   # 2행 (대상)
+            ["2026-07-01", "샴푸 카외", "x", "AB", "1"],   # 3행 (보존)
+            ["2026-07-02", "샴푸 카외", "b", "AB", "2"],   # 4행 (대상)
+            ["2026-07-02", "샴푸 카외", "c", "AB", "3"]]   # 5행 (대상)
+    ws = FakeWorksheet(grid)
+
+    n = _delete_date_block(ws, "2026-07-02")
+
+    assert n == 3
+    assert ws.delete_calls == [(4, 5), (2, 2)]     # 아래 구간부터, 구간당 1회
+    assert [r[2] for r in ws.values[1:]] == ["x"]  # 오늘 전부 제거·다른날짜만 남음
 
 
 def test_append_creates_tab_with_header_when_missing():

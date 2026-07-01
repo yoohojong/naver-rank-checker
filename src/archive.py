@@ -87,7 +87,12 @@ def _delete_date_block(ws, date_str: str) -> int:
     """아카이브 탭에서 date_str(1열) 이 일치하는 행만 삭제(멱등용).
 
     다른 날짜 행은 절대 건드리지 않는다. 헤더행(1행)도 보존.
-    행 삭제로 번호가 밀리는 문제를 피하려 **아래→위** 순으로 지운다.
+
+    ★ 2026-07-02 429 fix: 예전엔 대상 행을 **하나씩** ws.delete_rows(row) 반복 →
+      그날 블록(키워드 수백)을 재실행마다 수백 번 API 호출 → 시트 '분당 쓰기 60회'
+      한도 초과(429)로 아카이브+본 순위체커까지 크래시. 이제 **연속 구간을 묶어**
+      구간당 1회 ws.delete_rows(start, end) 로 삭제 → 호출 수백 → 1~2회로 축소.
+      행번호 밀림 방지 위해 **아래→위(구간 내림차순)** 로 지운다.
 
     Returns:
         삭제한 행 수.
@@ -96,15 +101,26 @@ def _delete_date_block(ws, date_str: str) -> int:
     if not all_values:
         return 0
     # 1행 = 헤더. 2행부터 검사. 1열(날짜) 이 date_str 인 행만 대상.
-    target_rows = [
+    target_rows = sorted(
         row_num
         for row_num, row_values in enumerate(all_values[1:], start=2)
         if row_values and str(row_values[0]).strip() == str(date_str).strip()
-    ]
+    )
     if not target_rows:
         return 0
-    for row_num in sorted(target_rows, reverse=True):
-        ws.delete_rows(row_num)
+    # 연속된 행번호를 [start, end] 구간으로 묶는다(대개 그날 블록은 맨 아래 1구간).
+    ranges: list[tuple[int, int]] = []
+    start = prev = target_rows[0]
+    for row_num in target_rows[1:]:
+        if row_num == prev + 1:
+            prev = row_num
+        else:
+            ranges.append((start, prev))
+            start = prev = row_num
+    ranges.append((start, prev))
+    # 아래 구간부터 지워야 위 구간의 행번호가 안 밀린다.
+    for start, end in sorted(ranges, reverse=True):
+        ws.delete_rows(start, end)  # start~end 한 번에 삭제(구간당 API 1회)
     return len(target_rows)
 
 
