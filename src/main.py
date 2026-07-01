@@ -565,6 +565,25 @@ def run_cycle() -> dict:
         # 백업 실패 = log + 진행 (= cron 자체 중단 X). 사장님 가시성 = summary 안 표시.
         print(f"[T-M81 백업] 실패 = {e} (cron 진행)")
 
+    # 상위노출 실적 일별 아카이빙 (검증판 · OFF 기본). ARCHIVE_ENABLED truthy 일 때만.
+    # 공개 repo 라 데이터는 repo 아닌 비공개 시트 탭에만 남긴다. 날짜별 멱등(하루 1벌).
+    # best-effort: 아카이빙 실패가 cron 을 죽이지 않도록 try/except 로 격리.
+    if _env_truthy("ARCHIVE_ENABLED"):
+        try:
+            from src.archive import build_archive_rows, append_daily_archive
+            archive_date = datetime.now(kst).strftime("%Y-%m-%d")
+            archive_rows = build_archive_rows(data, archive_date)
+            archive_result = append_daily_archive(client, archive_rows, archive_date)
+            if archive_result.get("error"):
+                print(f"[아카이브] 실패 = {archive_result['error']} (cron 진행)")
+            else:
+                print(
+                    f"[아카이브] {archive_result['rows_written']} 행 기록 "
+                    f"(date={archive_result['date']}, 탭생성={archive_result['created_tab']})"
+                )
+        except Exception as e:
+            print(f"[아카이브] 실패 = {e} (cron 진행)")
+
     stale_formula_setup_summary = {"tabs": 0, "headers_added": 0, "rows_backfilled": 0, "formula_rows": 0}
     if stale_formula_mode_enabled:
         for tab_name, rows in data.items():
