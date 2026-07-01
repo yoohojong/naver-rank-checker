@@ -132,6 +132,7 @@ jobs:
           STALE_OUTPUT_FORMULA_MODE: ${{ github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.apply_stale_formula_mode != 'false') }}
           RECHECK_STALE_ONLY: ${{ github.event_name == 'workflow_dispatch' && inputs.recheck_stale_only == 'true' }}
           PYTHONIOENCODING: 'utf-8'
+          ARCHIVE_ENABLED: '1'  # 2026-07-02 사장님 "켜" — 상위노출 실적 일별 아카이빙 활성(비공개 시트 탭 '상위노출_이력')
         run: |
           # 자가복구(2026-06-21 사장님 요청): 1차 실패 시 90초 후 1회 자동 재시도.
           # = 일시적 네트워크/네이버 차단/구글 API 장애는 스스로 복구. 둘 다 실패하면 step 실패
