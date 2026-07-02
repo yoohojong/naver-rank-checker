@@ -28,9 +28,8 @@ def _shampoo() -> TabReport:
 
 def test_evening_words_format():
     out = rb.build_evening_report([_shampoo()], "6/20", "정상")
-    # 한글 라벨 중심
-    assert "[어제 한 작업]" in out
-    assert "샴푸 카외: 3개 작업 → 1개 떴어요" in out
+    # 한글 라벨 중심 (breakdown 미전달 시 날짜별 섹션 생략)
+    assert "[어제 한 작업]" not in out   # 2026-07-02: 날짜별 발행→상위노출 breakdown 으로 교체
     assert "[지금 상위노출]" in out
     assert "전체 3개 중 2개" in out
     assert "신규 노출: 1개" in out
@@ -54,11 +53,26 @@ def test_morning_same_as_evening_except_header():
     # 헤더만 빼면 본문 완전 동일
     assert morning.split("\n", 1)[1] == evening.split("\n", 1)[1]
     # 저녁의 상세 섹션이 아침에도 전부 포함
-    assert "[어제 한 작업]" in morning
     assert "[어제→오늘 변화]" in morning and "신규 노출: 1개" in morning
     assert "[대표 노출 유형]" in morning
     assert "지식인에 뜬 키워드: 2개" in morning
     assert "탈모샴푸 추천" not in morning  # 키워드 나열 X
+
+
+def test_breakdown_section_renders_when_provided():
+    """2026-07-02: build_*_report 에 breakdown 주면 '[날짜별 발행 → 상위노출]' 섹션이 맨 위에.
+    ('어제 한 작업 N→M' 1일 라인의 7일·제품별 업그레이드.)"""
+    bd = [
+        ("7/1", {"샴푸 카외": (5, 2), "바디워시 카외": (3, 1)}, (8, 3)),
+        ("6/30", {"샴푸 카외": (4, 1), "바디워시 카외": (0, 0)}, (4, 1)),
+    ]
+    out = rb.build_evening_report([_shampoo()], "7/2", "정상", breakdown=bd)
+    assert "[날짜별 발행 → 상위노출]" in out
+    assert "7/1  발행 8 → 노출 3" in out
+    assert "샴푸 5→2" in out and "바디워시 3→1" in out
+    assert "6/30" in out and "샴푸 4→1" in out  # 발행0 제품(바디워시)은 생략
+    assert "최근 7일 합계: 발행 12 → 상위노출 4" in out
+    assert "[어제 한 작업]" not in out
 
 
 def test_no_baseline_graceful():

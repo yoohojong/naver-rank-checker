@@ -56,7 +56,7 @@ def _sum(reports: list[TabReport], attr: str) -> int:
     return sum(getattr(t, attr) for t in reports)
 
 
-def _build_full_report(reports: list[TabReport], kst: str, status_line: str, title: str) -> str:
+def _build_full_report(reports: list[TabReport], kst: str, status_line: str, title: str, breakdown: list | None = None) -> str:
     """상세 보고 본문 (저녁/아침 공통 — 헤더 title 만 다름).
 
     사장님 요청(2026-06-21): 아침도 저녁과 동일 형식으로 통일.
@@ -64,8 +64,6 @@ def _build_full_report(reports: list[TabReport], kst: str, status_line: str, tit
     tot = _sum(reports, "total")
     now = _sum(reports, "exposed_now")
     prev = _sum(reports, "exposed_prev")
-    worked = _sum(reports, "worked")
-    worked_exp = _sum(reports, "worked_exposed")
     jis_now = _sum(reports, "jisikin_now")
     has_base = any(t.baseline_available for t in reports)
     kc = _all_kinds(reports)
@@ -73,13 +71,19 @@ def _build_full_report(reports: list[TabReport], kst: str, status_line: str, tit
 
     L = [title, f"프로그램: {status_line}", ""]
 
-    # 어제 한 작업 (제품별)
-    if worked:
-        L.append("[어제 한 작업]")
-        for t in reports:
-            if t.worked:
-                L.append(f"   {t.tab}: {t.worked}개 작업 → {t.worked_exposed}개 떴어요")
-        L.append(f"   합계: {worked}개 작업 → {worked_exp}개 노출")
+    # 날짜별 발행 → 상위노출 (사장님 2026-07-02: '어제 작업 대비 노출' 대신 날짜별·제품별 발행분과 그중 상위노출)
+    if breakdown:
+        L.append("[날짜별 발행 → 상위노출]")
+        for ds, per, (dw, de) in breakdown:
+            pct = round(de / dw * 100) if dw else 0
+            seg = " · ".join(
+                f"{t.replace(' 카외', '')} {w}→{e}"
+                for t, (w, e) in per.items() if w
+            )
+            L.append(f"   {ds}  발행 {dw} → 노출 {de} ({pct}%)   [{seg}]")
+        tw = sum(b[2][0] for b in breakdown)
+        te = sum(b[2][1] for b in breakdown)
+        L.append(f"   ── 최근 7일 합계: 발행 {tw} → 상위노출 {te} ({round(te / tw * 100) if tw else 0}%)")
         L.append("")
 
     # 지금 상위노출
@@ -143,15 +147,15 @@ def _build_full_report(reports: list[TabReport], kst: str, status_line: str, tit
     return "\n".join(L).rstrip()
 
 
-def build_evening_report(reports: list[TabReport], kst: str, status_line: str = "정상") -> str:
+def build_evening_report(reports: list[TabReport], kst: str, status_line: str = "정상", breakdown: list | None = None) -> str:
     """저녁 마감 — 한글 말 중심, 섹션별."""
     if not reports:
         return f"📊 상노체크 · {kst} 저녁\n데이터 없음"
-    return _build_full_report(reports, kst, status_line, f"📊 상노체크 · {kst} 저녁")
+    return _build_full_report(reports, kst, status_line, f"📊 상노체크 · {kst} 저녁", breakdown)
 
 
-def build_morning_report(reports: list[TabReport], kst: str, status_line: str = "정상") -> str:
+def build_morning_report(reports: list[TabReport], kst: str, status_line: str = "정상", breakdown: list | None = None) -> str:
     """아침 보고 — 저녁과 동일 형식(사장님 요청 2026-06-21). 헤더만 ☀️ 아침."""
     if not reports:
         return f"☀️ 상노체크 아침 · {kst}\n데이터 없음"
-    return _build_full_report(reports, kst, status_line, f"☀️ 상노체크 아침 · {kst}")
+    return _build_full_report(reports, kst, status_line, f"☀️ 상노체크 아침 · {kst}", breakdown)

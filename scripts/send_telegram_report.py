@@ -21,6 +21,7 @@ from fetch_yesterday_backup import (  # noqa: E402
 from src import report_builder as rb  # noqa: E402
 from src.notify import send_report  # noqa: E402
 from src.snapshot_diff import diff_backups, load_backup  # noqa: E402
+from src.weekly_digest import daily_product_breakdown  # noqa: E402
 
 
 def _kst_today() -> str:
@@ -40,17 +41,21 @@ def build_report_text(
     kst=None,
     status_line: str = "정상",
     work_date=None,
+    today=None,
 ) -> str:
     """백업 경로 2개 → 보고 텍스트 (순수, 테스트 대상). prev_path None 허용(비교 기준 없음).
-    work_date(M/D) = '어제 작업' 집계 대상일 (기본 = KST 어제)."""
+    work_date(M/D) = 집계 대상일(기본 KST 어제). today = 7일 breakdown 기준일(기본 KST 오늘)."""
     kst = kst or _kst_today()
     work_date = work_date or _kst_yesterday()
+    today = today or datetime.now(timezone(timedelta(hours=9))).date()
     curr = load_backup(curr_path)
     prev = load_backup(prev_path) if prev_path else None
     reports = diff_backups(prev, curr, work_date=work_date)
+    # 최근 7일 날짜별×제품별 발행→상위노출 (사장님 2026-07-02: '어제 작업' 1일 → 7일 업그레이드)
+    breakdown = daily_product_breakdown(curr, today, 7)
     if mode == "morning":
-        return rb.build_morning_report(reports, kst, status_line)
-    return rb.build_evening_report(reports, kst, status_line)
+        return rb.build_morning_report(reports, kst, status_line, breakdown=breakdown)
+    return rb.build_evening_report(reports, kst, status_line, breakdown=breakdown)
 
 
 def main() -> int:
