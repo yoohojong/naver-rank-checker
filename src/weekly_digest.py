@@ -100,13 +100,48 @@ def _sum(reports: list[TabReport], attr: str) -> int:
     return sum(getattr(t, attr) for t in reports)
 
 
+def daily_product_breakdown(curr: dict, today: date, n: int = 7) -> list:
+    """최근 n일 · 날짜별 × 제품(탭)별 (발행 수, 상위노출 수).
+
+    발행 = 작업일==그날 인 키워드 행 수 / 상위노출 = 그중 k_base_of ∈ EXPOSED_VALUES.
+    발행 0인 날은 생략. 최신일이 먼저(오늘→과거).
+
+    Returns:
+        [(date_str, {tab: (발행, 노출)}, (day_발행, day_노출)), ...].
+    """
+    day_strs = [
+        f"{(today - timedelta(days=i)).month}/{(today - timedelta(days=i)).day}"
+        for i in range(n)
+    ]
+    tabs = list((curr.get("tabs") or {}).keys())
+    acc = {ds: {t: [0, 0] for t in tabs} for ds in day_strs}
+    for tab, rows in (curr.get("tabs") or {}).items():
+        for r in rows or []:
+            wd = str(r.get(_H_WORKDATE, "") or "").strip()
+            if wd in acc:
+                cell = acc[wd][tab]
+                cell[0] += 1
+                if k_base_of(r) in EXPOSED_VALUES:
+                    cell[1] += 1
+    out = []
+    for ds in day_strs:  # range(0..)=오늘부터 → 최신일 먼저
+        per = {t: (v[0], v[1]) for t, v in acc[ds].items()}
+        dw = sum(v[0] for v in per.values())
+        de = sum(v[1] for v in per.values())
+        if dw > 0:
+            out.append((ds, per, (dw, de)))
+    return out
+
+
 def build_weekly_text(
     reports: list[TabReport],
     funnel: tuple,
     date_range: str,
     status_line: str = "정상",
+    breakdown: list | None = None,
 ) -> str:
     """주간 총괄 보고 텍스트 (순수 함수 — 테스트 대상). funnel=(worked, exposed).
+    breakdown = daily_product_breakdown 결과(있으면 날짜별 발행→노출 섹션을 맨 위에).
 
     prev(지난주) 없으면 '지난주 대비'·신호는 생략하고 현재 스냅샷만 보고.
     """
@@ -117,6 +152,21 @@ def build_weekly_text(
     kc = _all_kinds(reports)
 
     L = [f"📊 카페외부 주간 총괄 · {date_range}", f"프로그램: {status_line}", ""]
+
+    # 날짜별 발행 → 상위노출 (사장님 2026-07-02: 날짜별·제품별 발행분과 그중 상위노출 수·비율)
+    if breakdown:
+        L.append("[날짜별 발행 → 상위노출]")
+        for ds, per, (dw, de) in breakdown:
+            pct = round(de / dw * 100) if dw else 0
+            seg = " · ".join(
+                f"{t.replace(' 카외', '')} {w}→{e}"
+                for t, (w, e) in per.items() if w
+            )
+            L.append(f"   {ds}  발행 {dw} → 노출 {de} ({pct}%)   [{seg}]")
+        tw = sum(b[2][0] for b in breakdown)
+        te = sum(b[2][1] for b in breakdown)
+        L.append(f"   ── 주간 합계: 발행 {tw} → 상위노출 {te} ({round(te / tw * 100) if tw else 0}%)")
+        L.append("")
 
     # 이번 주 한눈에
     L.append("[이번 주 한눈에]")

@@ -21,6 +21,7 @@ from src.notify import send_report  # noqa: E402
 from src.snapshot_diff import diff_backups, load_backup  # noqa: E402
 from src.weekly_digest import (  # noqa: E402
     build_weekly_text,
+    daily_product_breakdown,
     funnel_last_n_days,
     work_dates_last_n,
 )
@@ -40,7 +41,8 @@ def build_text_from_paths(prev_path, curr_path, today=None) -> str:
     prev = load_backup(prev_path) if prev_path else None
     reports = diff_backups(prev, curr)
     funnel = funnel_last_n_days(curr, work_dates_last_n(today, 7))
-    return build_weekly_text(reports, funnel, _date_range(today))
+    breakdown = daily_product_breakdown(curr, today, 7)
+    return build_weekly_text(reports, funnel, _date_range(today), breakdown=breakdown)
 
 
 def main() -> int:

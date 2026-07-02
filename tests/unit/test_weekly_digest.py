@@ -8,6 +8,7 @@ from datetime import date
 from src.snapshot_diff import diff_backups
 from src.weekly_digest import (
     build_weekly_text,
+    daily_product_breakdown,
     detect_anomalies,
     funnel_last_n_days,
     work_dates_last_n,
@@ -112,3 +113,38 @@ def test_build_weekly_text_no_baseline():
     assert "지난주" not in text              # baseline 없음 → 비교 문구 생략
     assert "[지난주 대비 변화]" not in text
     assert "지난 7일 기록된 작업 없음" in text
+
+
+# ----- 날짜별 × 제품별 발행 → 상위노출 (사장님 2026-07-02) -----
+
+def test_daily_product_breakdown_by_date_and_product():
+    curr = {"tabs": {
+        "샴푸 카외": [
+            _row(2, "a", "AB", workdate="7/1"),       # 발행 + 노출
+            _row(3, "b", "미노출", workdate="7/1"),    # 발행 + 미노출
+            _row(4, "c", "인기글", workdate="6/30"),   # 다른날 발행 + 노출
+        ],
+        "바디워시 카외": [
+            _row(5, "d", "AB", workdate="7/1"),        # 발행 + 노출
+            _row(6, "e", "AB", workdate="6/25"),       # 7일 밖(today=7/2 → 6/26~7/2)
+        ],
+    }}
+    bd = daily_product_breakdown(curr, date(2026, 7, 2), 7)
+    days = {ds: (per, tot) for ds, per, tot in bd}
+    assert "7/1" in days and "6/30" in days
+    assert "6/25" not in days                 # 7일 밖 = 제외
+    per71, tot71 = days["7/1"]
+    assert per71["샴푸 카외"] == (2, 1)        # 발행2 노출1
+    assert per71["바디워시 카외"] == (1, 1)    # 발행1 노출1
+    assert tot71 == (3, 2)                     # 그날 합계 발행3 노출2
+    assert bd[0][0] == "7/1"                   # 최신일 먼저
+
+
+def test_build_weekly_text_includes_breakdown_section():
+    curr = {"tabs": {"샴푸 카외": [_row(2, "a", "AB", workdate="7/1")]}}
+    reports = diff_backups(None, curr)
+    bd = daily_product_breakdown(curr, date(2026, 7, 2), 7)
+    text = build_weekly_text(reports, (1, 1), "6/26~7/2", breakdown=bd)
+    assert "[날짜별 발행 → 상위노출]" in text
+    assert "7/1" in text and "발행 1 → 노출 1" in text
+    assert "주간 합계" in text
