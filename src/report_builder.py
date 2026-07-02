@@ -63,7 +63,6 @@ def _build_full_report(reports: list[TabReport], kst: str, status_line: str, tit
     """
     tot = _sum(reports, "total")
     now = _sum(reports, "exposed_now")
-    prev = _sum(reports, "exposed_prev")
     jis_now = _sum(reports, "jisikin_now")
     has_base = any(t.baseline_available for t in reports)
     kc = _all_kinds(reports)
@@ -73,49 +72,45 @@ def _build_full_report(reports: list[TabReport], kst: str, status_line: str, tit
 
     # 날짜별 발행 → 상위노출 (사장님 2026-07-02: '어제 작업 대비 노출' 대신 날짜별·제품별 발행분과 그중 상위노출)
     if breakdown:
-        L.append("[날짜별 발행 → 상위노출]")
+        L.append("[① 날짜별 발행 → 상위노출]   · 작업한 날 기준(그 날 쓴 글이 지금 몇 개 떴나)")
         for ds, per, (dw, de) in breakdown:
             pct = round(de / dw * 100) if dw else 0
             seg = " · ".join(
                 f"{t.replace(' 카외', '')} {w}→{e}"
                 for t, (w, e) in per.items() if w
             )
-            L.append(f"   {ds}  발행 {dw} → 노출 {de} ({pct}%)   [{seg}]")
+            L.append(f"   {ds}  발행 {dw} → 상위노출 {de} ({pct}%)   [{seg}]")
         tw = sum(b[2][0] for b in breakdown)
         te = sum(b[2][1] for b in breakdown)
         L.append(f"   ── 최근 7일 합계: 발행 {tw} → 상위노출 {te} ({round(te / tw * 100) if tw else 0}%)")
         L.append("")
 
-    # 지금 상위노출
+    # 지금 상위노출 (현재 전체 스냅샷 — 하루 변화는 ②로 분리)
     L.append("[지금 상위노출]")
-    if has_base:
-        L.append(f"   전체 {tot}개 중 {now}개 노출 중 (어제보다 {_delta_word(prev, now)})")
-    else:
-        L.append(f"   전체 {tot}개 중 {now}개 노출 중")
+    L.append(f"   전체 {tot}개 중 {now}개 노출 중")
     L.append("")
 
-    # 어제 → 오늘 변화
+    # ② 어제 → 오늘 변화 (날짜 무관, 하루 사이) — ①(발행 시점 기준)과 확실히 구분 (사장님 2026-07-02)
     if has_base:
-        L.append("[어제→오늘 변화]")
+        L.append("[② 어제 → 오늘 변화]   · 날짜 무관, 어제 대비 하루 사이")
         if kc.get("신규노출"):
-            L.append(f"   신규 노출: {kc['신규노출']}개")
+            L.append(f"   새로 뜸(미노출→상위노출): {kc['신규노출']}개")
+        if kc.get("누락"):
+            L.append(f"   빠짐(상위노출→누락): {kc['누락']}개 (보통 다음 검사에 회복)")
         if kc.get("오름"):
             L.append(f"   순위 상승: {kc['오름']}개")
         if kc.get("내림"):
             L.append(f"   순위 하락: {kc['내림']}개")
-        if kc.get("누락"):
-            L.append(f"   누락: {kc['누락']}개 (보통 다음 검사에 회복)")
         if kc.get("삭제"):
-            L.append(f"   삭제: {kc['삭제']}개  ← 점검!")
+            L.append(f"   삭제(글 사라짐): {kc['삭제']}개  ← 점검")
         if not (kc.get("신규노출") or kc.get("오름") or kc.get("내림") or lost):
             L.append("   변화 없음")
         L.append("")
 
-    # 제품별 노출
+    # 제품별 노출 (현재 스냅샷)
     L.append("[제품별 노출]")
     for t in reports:
-        tail = f" ({_delta_word(t.exposed_prev, t.exposed_now)})" if t.baseline_available else ""
-        L.append(f"   {t.tab}: {t.total}개 중 {t.exposed_now}개{tail}")
+        L.append(f"   {t.tab}: {t.total}개 중 {t.exposed_now}개")
     L.append("")
 
     # 대표 노출 유형 (총 비율 + 어제→오늘 바뀐 방향)
