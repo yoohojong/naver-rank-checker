@@ -33,7 +33,8 @@ def test_evening_words_format():
     assert "[지금 상위노출]" in out
     assert "전체 3개 중 2개" in out
     assert "새로 뜸(미노출→상위노출): 1개" in out
-    assert "삭제(글 사라짐): 1개" in out  # ② 어제→오늘 변화 (라벨 명확화)
+    assert "삭제(글 사라짐): 1개" in out  # ③ 어제→오늘 변화
+    assert "── 정합: 어제 2 + 들어옴 1 − 나감 1 = 오늘 2" in out  # 노출 개수 변화 완전 설명
     assert "[제품별 노출]" in out
     assert "[대표 노출 유형]" in out and "유형 바뀐 키워드: 1개" in out
     assert "지식인에 뜬 키워드: 2개" in out
@@ -53,7 +54,7 @@ def test_morning_same_as_evening_except_header():
     # 헤더만 빼면 본문 완전 동일
     assert morning.split("\n", 1)[1] == evening.split("\n", 1)[1]
     # 저녁의 상세 섹션이 아침에도 전부 포함
-    assert "[② 어제 → 오늘 변화]" in morning and "새로 뜸(미노출→상위노출): 1개" in morning
+    assert "[③ 어제 → 오늘 변화]" in morning and "새로 뜸(미노출→상위노출): 1개" in morning
     assert "[대표 노출 유형]" in morning
     assert "지식인에 뜬 키워드: 2개" in morning
     assert "탈모샴푸 추천" not in morning  # 키워드 나열 X
@@ -85,3 +86,51 @@ def test_no_baseline_graceful():
     out = rb.build_evening_report([tr], "6/20", "정상")
     assert "전체 1개 중 1개" in out
     assert "어제→오늘 변화" not in out  # baseline 없으면 변화 섹션 생략
+
+
+# ----- 2026-07-07: ② 노출 소요일 + ③ 정합(노출 개수 변화 완전 설명) -----
+
+def _rrow(tab, rn, kw, k):
+    return {"_tab": tab, "_row": rn, "키워드": kw, "노출영역": k}
+
+
+def test_reconciliation_balances_and_line_correct():
+    """diff_backups 가 만든 버킷으로 '어제 + 들어옴 − 나감 = 오늘'이 딱 맞아떨어지는지 +
+    새 키워드/사라진 행/기타 이탈이 ③에 표시되는지."""
+    from src.snapshot_diff import diff_backups
+    T = "샴푸 카외"
+    prev = {"tabs": {T: [
+        _rrow(T, 2, "a", "AB"), _rrow(T, 3, "b", "AB"), _rrow(T, 4, "c", "인기글"),
+        _rrow(T, 5, "d", "미노출"), _rrow(T, 6, "e", "AB"),   # e = 사라질 노출행
+    ]}}
+    curr = {"tabs": {T: [
+        _rrow(T, 2, "a", "AB"),       # 유지
+        _rrow(T, 3, "b", "누락"),      # 노출→누락
+        _rrow(T, 4, "c", "미노출"),    # 노출→미노출 = 기타 이탈
+        _rrow(T, 5, "d", "인기글"),    # 미노출→노출 = 신규노출
+        _rrow(T, 7, "f", "AB"),        # 새 행 노출 = new_exposed
+        # row6(e) 사라짐 = vanished_exposed
+    ]}}
+    reports = diff_backups(prev, curr)
+    tr = reports[0]
+    kc = Counter(d.kind for d in tr.diffs)
+    gained = kc.get("신규노출", 0) + tr.new_exposed
+    left = kc.get("누락", 0) + kc.get("삭제", 0) + tr.other_exit + tr.vanished_exposed
+    # ★정합식이 실제로 성립
+    assert tr.exposed_now == tr.exposed_prev + gained - left
+    assert tr.exposed_prev == 4 and tr.exposed_now == 3
+    assert tr.new_exposed == 1 and tr.vanished_exposed == 1 and tr.other_exit == 1
+    out = rb.build_evening_report(reports, "7/7", "정상")
+    assert "── 정합: 어제 4 + 들어옴 2 − 나감 3 = 오늘 3" in out
+    assert "새 키워드 노출(어제 없던 글): 1개" in out
+    assert "기타 이탈(미노출/재검사 등): 1개" in out
+    assert "사라진 행(줄 자체 삭제): 1개" in out
+
+
+def test_lag_section_renders():
+    """② 노출 소요일 섹션이 lag_dist 로 뜨는지(당일/+1일 등)."""
+    lag = Counter({"당일": 139, "+1일": 3, "+7일+": 15})
+    out = rb.build_evening_report([_shampoo()], "7/7", "정상", lag_dist=lag)
+    assert "[② 노출 소요일]" in out
+    assert "당일 139" in out and "+1일 3" in out and "+7일+ 15" in out
+    assert "근사치" in out

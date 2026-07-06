@@ -16,6 +16,7 @@ import json
 import re
 from collections import Counter
 from dataclasses import dataclass, field
+from datetime import date
 from typing import Optional
 
 from src.transitions import EXPOSED_VALUES, parse_K_with_stamp
@@ -83,6 +84,11 @@ class TabReport:
     type_dist_prev: Counter = field(default_factory=Counter)  # 어제 유형(C) 분포
     type_changes: int = 0  # 유형(C) 바뀐 키워드 수
     type_change_dirs: Counter = field(default_factory=Counter)  # {'AB→인기글': n}
+    # 정합용(2026-07-07): '지금 노출 개수' 변화를 완전히 설명하는 버킷.
+    #   exposed_now = exposed_prev + (신규노출 + new_exposed) − (누락 + 삭제 + other_exit + vanished_exposed)
+    new_exposed: int = 0       # 어제 없던 새 키워드가 오늘 상위노출(신규노출 kind엔 안 잡히던 것)
+    vanished_exposed: int = 0  # 어제 노출됐는데 오늘 행 자체가 사라짐(줄 삭제 = 누락과 다름)
+    other_exit: int = 0        # 노출→비노출인데 누락/삭제 아님(미노출/실패/재검사 등, 기존엔 '변화'로 묻힘)
 
     @property
     def total(self) -> int:
@@ -247,10 +253,17 @@ def diff_backups(prev: Optional[dict], curr: dict, work_date: Optional[str] = No
             type_dist_prev=_type_dist((prev.get("tabs") or {}).get(tab, [])) if prev else Counter(),
         )
         if prev is not None:
+            curr_ids = set()
             for row in curr_rows:
-                prev_row = prev_index.get(row_identity(row))
+                rid = row_identity(row)
+                curr_ids.add(rid)
+                prev_row = prev_index.get(rid)
                 if prev_row is None:
-                    continue  # 어제 없던 행 = 변화 아님
+                    # 어제 없던 행 = 변화 목록엔 안 넣음('전부 신규' 오보 방지). 단 정합용으로
+                    # 새 키워드가 오늘 노출이면 new_exposed 로 센다(노출 개수 증가분 설명).
+                    if k_base_of(row) in EXPOSED_VALUES:
+                        tr.new_exposed += 1
+                    continue
                 # 유형(C) 변경 (노출 변화와 별개 — K 동일해도 유형 바뀔 수 있음)
                 pt = str(prev_row.get(_H_TYPE, "") or "").strip()
                 ct = str(row.get(_H_TYPE, "") or "").strip()
@@ -262,6 +275,10 @@ def diff_backups(prev: Optional[dict], curr: dict, work_date: Optional[str] = No
                 pr, cr = rank_of(prev_row), rank_of(row)
                 if pk == ck and pr == cr:
                     continue  # 변화 없음
+                kind = classify(pk, ck, pr, cr)
+                # 정합용: 노출→비노출인데 누락/삭제로 안 잡힌 이탈(미노출/실패/재검사) = other_exit
+                if pk in EXPOSED_VALUES and ck not in EXPOSED_VALUES and kind not in ("누락", "삭제"):
+                    tr.other_exit += 1
                 tr.diffs.append(
                     RowDiff(
                         tab=tab,
@@ -270,9 +287,57 @@ def diff_backups(prev: Optional[dict], curr: dict, work_date: Optional[str] = No
                         curr_k=ck,
                         prev_rank=pr,
                         curr_rank=cr,
-                        kind=classify(pk, ck, pr, cr),
+                        kind=kind,
                         work_date=work_date_of(row),
                     )
                 )
+            # 어제 있다 오늘 사라진 행(줄 삭제) 중 어제 노출이던 것 = vanished_exposed(정합용)
+            for prow in (prev.get("tabs") or {}).get(tab, []):
+                if row_identity(prow) not in curr_ids and k_base_of(prow) in EXPOSED_VALUES:
+                    tr.vanished_exposed += 1
         reports.append(tr)
     return reports
+
+
+# 노출 소요일(발행→노출) 버킷 표시 순서.
+LAG_BUCKETS = ["당일", "+1일", "+2일", "+3~6일", "+7일+", "음수(재노출)", "미상"]
+
+
+def _md_to_date(s: str, year: int):
+    try:
+        m, d = str(s).strip().split("/")[:2]
+        return date(year, int(m), int(d))
+    except Exception:
+        return None
+
+
+def exposure_lag_distribution(curr: dict, today: date) -> Counter:
+    """지금 상위노출된 키워드의 '발행(작업일) → 노출(K스탬프 상태시작일)' 소요일 분포.
+
+    ⚠️ K스탬프 = '현재 노출 상태 시작일'(재노출이면 최초노출보다 늦음) → 근사치.
+    정확판은 아카이브(상위노출_이력) 축적 후. 반환 Counter 키 = LAG_BUCKETS.
+    """
+    out: Counter = Counter()
+    for rows in (curr.get("tabs") or {}).values():
+        for r in rows:
+            if k_base_of(r) not in EXPOSED_VALUES:
+                continue
+            dw = _md_to_date(str(r.get(_H_WORKDATE, "") or "").strip(), today.year)
+            de = _md_to_date(work_date_of(r), today.year)
+            if not dw or not de:
+                out["미상"] += 1
+                continue
+            lag = (de - dw).days
+            if lag < 0:
+                out["음수(재노출)"] += 1
+            elif lag == 0:
+                out["당일"] += 1
+            elif lag == 1:
+                out["+1일"] += 1
+            elif lag == 2:
+                out["+2일"] += 1
+            elif lag <= 6:
+                out["+3~6일"] += 1
+            else:
+                out["+7일+"] += 1
+    return out

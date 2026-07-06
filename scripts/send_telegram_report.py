@@ -20,7 +20,7 @@ from fetch_yesterday_backup import (  # noqa: E402
 )
 from src import report_builder as rb  # noqa: E402
 from src.notify import send_report  # noqa: E402
-from src.snapshot_diff import diff_backups, load_backup  # noqa: E402
+from src.snapshot_diff import diff_backups, exposure_lag_distribution, load_backup  # noqa: E402
 from src.weekly_digest import daily_product_breakdown  # noqa: E402
 
 
@@ -53,9 +53,10 @@ def build_report_text(
     reports = diff_backups(prev, curr, work_date=work_date)
     # 최근 7일 날짜별×제품별 발행→상위노출 (사장님 2026-07-02: '어제 작업' 1일 → 7일 업그레이드)
     breakdown = daily_product_breakdown(curr, today, 7)
+    lag_dist = exposure_lag_distribution(curr, today)
     if mode == "morning":
-        return rb.build_morning_report(reports, kst, status_line, breakdown=breakdown)
-    return rb.build_evening_report(reports, kst, status_line, breakdown=breakdown)
+        return rb.build_morning_report(reports, kst, status_line, breakdown=breakdown, lag_dist=lag_dist)
+    return rb.build_evening_report(reports, kst, status_line, breakdown=breakdown, lag_dist=lag_dist)
 
 
 def main() -> int:

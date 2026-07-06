@@ -56,7 +56,7 @@ def _sum(reports: list[TabReport], attr: str) -> int:
     return sum(getattr(t, attr) for t in reports)
 
 
-def _build_full_report(reports: list[TabReport], kst: str, status_line: str, title: str, breakdown: list | None = None) -> str:
+def _build_full_report(reports: list[TabReport], kst: str, status_line: str, title: str, breakdown: list | None = None, lag_dist: Counter | None = None) -> str:
     """상세 보고 본문 (저녁/아침 공통 — 헤더 title 만 다름).
 
     사장님 요청(2026-06-21): 아침도 저녁과 동일 형식으로 통일.
@@ -66,7 +66,6 @@ def _build_full_report(reports: list[TabReport], kst: str, status_line: str, tit
     jis_now = _sum(reports, "jisikin_now")
     has_base = any(t.baseline_available for t in reports)
     kc = _all_kinds(reports)
-    lost = kc.get("누락", 0) + kc.get("삭제", 0)
 
     L = [title, f"프로그램: {status_line}", ""]
 
@@ -85,26 +84,49 @@ def _build_full_report(reports: list[TabReport], kst: str, status_line: str, tit
         L.append(f"   ── 최근 7일 합계: 발행 {tw} → 상위노출 {te} ({round(te / tw * 100) if tw else 0}%)")
         L.append("")
 
-    # 지금 상위노출 (현재 전체 스냅샷 — 하루 변화는 ②로 분리)
+    # ② 노출 소요일 (발행 후 며칠 만에 떴나 — 지금 노출된 키워드 대상, 근사치=K스탬프 기준)
+    if lag_dist and sum(lag_dist.values()):
+        from src.snapshot_diff import LAG_BUCKETS
+
+        L.append("[② 노출 소요일]   · 발행 후 며칠 만에 떴나 (지금 노출된 키워드 기준)")
+        seg = " · ".join(f"{b} {lag_dist[b]}" for b in LAG_BUCKETS if lag_dist.get(b))
+        L.append(f"   {seg}")
+        L.append("   ※ 근사치(현재 노출상태 시작일 기준) — 이력 쌓이면 정밀해짐")
+        L.append("")
+
+    # 지금 상위노출 (현재 전체 스냅샷 — 하루 변화는 ③으로 분리)
     L.append("[지금 상위노출]")
     L.append(f"   전체 {tot}개 중 {now}개 노출 중")
     L.append("")
 
-    # ② 어제 → 오늘 변화 (날짜 무관, 하루 사이) — ①(발행 시점 기준)과 확실히 구분 (사장님 2026-07-02)
+    # ③ 어제 → 오늘 변화 (날짜 무관) + 정합: 노출 개수 변화를 완전 설명 (사장님 2026-07-07)
     if has_base:
-        L.append("[② 어제 → 오늘 변화]   · 날짜 무관, 어제 대비 하루 사이")
+        prev_now = _sum(reports, "exposed_prev")
+        new_exp = _sum(reports, "new_exposed")
+        vanished = _sum(reports, "vanished_exposed")
+        other_exit = _sum(reports, "other_exit")
+        gained = kc.get("신규노출", 0) + new_exp
+        left = kc.get("누락", 0) + kc.get("삭제", 0) + other_exit + vanished
+        L.append("[③ 어제 → 오늘 변화]   · 날짜 무관, 어제 대비 하루 사이")
         if kc.get("신규노출"):
             L.append(f"   새로 뜸(미노출→상위노출): {kc['신규노출']}개")
+        if new_exp:
+            L.append(f"   새 키워드 노출(어제 없던 글): {new_exp}개")
         if kc.get("누락"):
             L.append(f"   빠짐(상위노출→누락): {kc['누락']}개 (보통 다음 검사에 회복)")
+        if kc.get("삭제"):
+            L.append(f"   삭제(글 사라짐): {kc['삭제']}개  ← 점검")
+        if other_exit:
+            L.append(f"   기타 이탈(미노출/재검사 등): {other_exit}개")
+        if vanished:
+            L.append(f"   사라진 행(줄 자체 삭제): {vanished}개")
         if kc.get("오름"):
             L.append(f"   순위 상승: {kc['오름']}개")
         if kc.get("내림"):
             L.append(f"   순위 하락: {kc['내림']}개")
-        if kc.get("삭제"):
-            L.append(f"   삭제(글 사라짐): {kc['삭제']}개  ← 점검")
-        if not (kc.get("신규노출") or kc.get("오름") or kc.get("내림") or lost):
+        if not (gained or left or kc.get("오름") or kc.get("내림")):
             L.append("   변화 없음")
+        L.append(f"   ── 정합: 어제 {prev_now} + 들어옴 {gained} − 나감 {left} = 오늘 {now}")
         L.append("")
 
     # 제품별 노출 (현재 스냅샷)
@@ -142,15 +164,15 @@ def _build_full_report(reports: list[TabReport], kst: str, status_line: str, tit
     return "\n".join(L).rstrip()
 
 
-def build_evening_report(reports: list[TabReport], kst: str, status_line: str = "정상", breakdown: list | None = None) -> str:
+def build_evening_report(reports: list[TabReport], kst: str, status_line: str = "정상", breakdown: list | None = None, lag_dist: Counter | None = None) -> str:
     """저녁 마감 — 한글 말 중심, 섹션별."""
     if not reports:
         return f"📊 상노체크 · {kst} 저녁\n데이터 없음"
-    return _build_full_report(reports, kst, status_line, f"📊 상노체크 · {kst} 저녁", breakdown)
+    return _build_full_report(reports, kst, status_line, f"📊 상노체크 · {kst} 저녁", breakdown, lag_dist)
 
 
-def build_morning_report(reports: list[TabReport], kst: str, status_line: str = "정상", breakdown: list | None = None) -> str:
+def build_morning_report(reports: list[TabReport], kst: str, status_line: str = "정상", breakdown: list | None = None, lag_dist: Counter | None = None) -> str:
     """아침 보고 — 저녁과 동일 형식(사장님 요청 2026-06-21). 헤더만 ☀️ 아침."""
     if not reports:
         return f"☀️ 상노체크 아침 · {kst}\n데이터 없음"
-    return _build_full_report(reports, kst, status_line, f"☀️ 상노체크 아침 · {kst}", breakdown)
+    return _build_full_report(reports, kst, status_line, f"☀️ 상노체크 아침 · {kst}", breakdown, lag_dist)
