@@ -138,3 +138,17 @@ def test_lag_section_renders():
     assert "일주일 넘게 걸림 : 15개" in out
     assert "애매(뗐다 다시 뜬 것) : 4개" in out
     assert "노출 소요일" not in out                 # 옛 용어 제거
+
+
+def test_trend_section_renders():
+    """[추세] 최근 며칠 상위노출 개수 흐름 + 어제→오늘 델타 (사장님 2026-07-07)."""
+    from collections import OrderedDict
+    trend = OrderedDict([
+        ("2026-07-06", {"합계": 188, "샴푸 카외": 80, "바디워시 카외": 96, "두드러기 카외": 12}),
+        ("2026-07-07", {"합계": 148, "샴푸 카외": 60, "바디워시 카외": 78, "두드러기 카외": 10}),
+    ])
+    out = rb.build_evening_report([_shampoo()], "7/7", "정상", exposure_trend=trend)
+    assert "[추세]" in out and "오른쪽이 오늘" in out
+    assert "188 → 148" in out          # 합계 흐름
+    assert "80 → 60" in out            # 샴푸 흐름
+    assert "어제 188 → 오늘 148 (40개 줄음)" in out

@@ -20,6 +20,7 @@ from fetch_yesterday_backup import (  # noqa: E402
 )
 from src import report_builder as rb  # noqa: E402
 from src.notify import send_report  # noqa: E402
+from src.exposure_history import daily_trend, read_archive_rows  # noqa: E402
 from src.snapshot_diff import diff_backups, exposure_lag_distribution, load_backup  # noqa: E402
 from src.weekly_digest import daily_product_breakdown  # noqa: E402
 
@@ -42,9 +43,11 @@ def build_report_text(
     status_line: str = "정상",
     work_date=None,
     today=None,
+    exposure_trend=None,
 ) -> str:
     """백업 경로 2개 → 보고 텍스트 (순수, 테스트 대상). prev_path None 허용(비교 기준 없음).
-    work_date(M/D) = 집계 대상일(기본 KST 어제). today = 7일 breakdown 기준일(기본 KST 오늘)."""
+    work_date(M/D) = 집계 대상일(기본 KST 어제). today = 7일 breakdown 기준일(기본 KST 오늘).
+    exposure_trend = 아카이브 일별 개수 추세(없으면 [추세] 섹션 생략)."""
     kst = kst or _kst_today()
     work_date = work_date or _kst_yesterday()
     today = today or datetime.now(timezone(timedelta(hours=9))).date()
@@ -55,8 +58,23 @@ def build_report_text(
     breakdown = daily_product_breakdown(curr, today, 7)
     lag_dist = exposure_lag_distribution(curr, today)
     if mode == "morning":
-        return rb.build_morning_report(reports, kst, status_line, breakdown=breakdown, lag_dist=lag_dist)
-    return rb.build_evening_report(reports, kst, status_line, breakdown=breakdown, lag_dist=lag_dist)
+        return rb.build_morning_report(reports, kst, status_line, breakdown=breakdown, lag_dist=lag_dist, exposure_trend=exposure_trend)
+    return rb.build_evening_report(reports, kst, status_line, breakdown=breakdown, lag_dist=lag_dist, exposure_trend=exposure_trend)
+
+
+def _load_exposure_trend(days: int = 6):
+    """환경변수 SERVICE_ACCOUNT_JSON/SPREADSHEET_ID 있으면 아카이브에서 일별 추세. 없으면 None(비차단)."""
+    sid = os.environ.get("SPREADSHEET_ID")
+    sa = os.environ.get("SERVICE_ACCOUNT_JSON")
+    if not sid or not sa:
+        return None
+    try:
+        from src.sheets import SheetsClient
+        client = SheetsClient(sid, sa)
+        return daily_trend(read_archive_rows(client), days=days) or None
+    except Exception as e:
+        print(f"[TG-REPORT] 추세 로드 실패(비차단): {e}")
+        return None
 
 
 def main() -> int:
@@ -78,7 +96,8 @@ def main() -> int:
         return 0
     prev_path = download_backup(prev_id) if prev_id else None
 
-    text = build_report_text(prev_path, curr_path, mode=mode)
+    exposure_trend = _load_exposure_trend(days=6)
+    text = build_report_text(prev_path, curr_path, mode=mode, exposure_trend=exposure_trend)
     return send_report(text)
 
 

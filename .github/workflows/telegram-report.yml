@@ -40,6 +40,9 @@ jobs:
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          # 2026-07-07: [추세] 섹션용 — 아카이브(상위노출_이력) 읽기. 미설정 시 추세 생략(비차단).
+          SPREADSHEET_ID: ${{ secrets.SPREADSHEET_ID }}
+          SERVICE_ACCOUNT_JSON: ${{ secrets.SERVICE_ACCOUNT_JSON }}
           GH_TOKEN: ${{ github.token }}  # D-051: ACTIONS_PAT 만료(401) → 항상 유효한 워크플로 기본 토큰. permissions actions:read 로 타 워크플로 artifact 접근.
           GH_REPO: ${{ github.repository }}
           # ⚠️ 셸 인젝션 차단(code-review CRITICAL): 사용자 입력/이벤트 값은 env 경유로만 참조.
