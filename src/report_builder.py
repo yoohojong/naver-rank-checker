@@ -86,12 +86,19 @@ def _build_full_report(reports: list[TabReport], kst: str, status_line: str, tit
 
     # ② 노출 소요일 (발행 후 며칠 만에 떴나 — 지금 노출된 키워드 대상, 근사치=K스탬프 기준)
     if lag_dist and sum(lag_dist.values()):
-        from src.snapshot_diff import LAG_BUCKETS
-
-        L.append("[② 노출 소요일]   · 발행 후 며칠 만에 떴나 (지금 노출된 키워드 기준)")
-        seg = " · ".join(f"{b} {lag_dist[b]}" for b in LAG_BUCKETS if lag_dist.get(b))
-        L.append(f"   {seg}")
-        L.append("   ※ 근사치(현재 노출상태 시작일 기준) — 이력 쌓이면 정밀해짐")
+        total_exp = sum(lag_dist.values())
+        same = lag_dist.get("당일", 0)
+        wk = lag_dist.get("+1일", 0) + lag_dist.get("+2일", 0) + lag_dist.get("+3~6일", 0)
+        over = lag_dist.get("+7일+", 0)
+        odd = lag_dist.get("음수(재노출)", 0) + lag_dist.get("미상", 0)
+        L.append(f"[② 발행하고 며칠 만에 떴나]   · 지금 떠 있는 글 {total_exp}개 기준")
+        L.append(f"   발행 당일 뜸 : {same}개")
+        if wk:
+            L.append(f"   1~6일 안에 뜸 : {wk}개")
+        if over:
+            L.append(f"   일주일 넘게 걸림 : {over}개")
+        if odd:
+            L.append(f"   애매(뗐다 다시 뜬 것) : {odd}개")
         L.append("")
 
     # 지금 상위노출 (현재 전체 스냅샷 — 하루 변화는 ③으로 분리)

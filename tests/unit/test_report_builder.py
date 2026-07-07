@@ -128,9 +128,13 @@ def test_reconciliation_balances_and_line_correct():
 
 
 def test_lag_section_renders():
-    """② 노출 소요일 섹션이 lag_dist 로 뜨는지(당일/+1일 등)."""
-    lag = Counter({"당일": 139, "+1일": 3, "+7일+": 15})
+    """② 발행하고 며칠 만에 떴나 — 쉬운말·묶음(당일/1~6일/일주일+/애매)·합계."""
+    lag = Counter({"당일": 139, "+1일": 3, "+2일": 2, "+3~6일": 1, "+7일+": 15, "음수(재노출)": 4})
     out = rb.build_evening_report([_shampoo()], "7/7", "정상", lag_dist=lag)
-    assert "[② 노출 소요일]" in out
-    assert "당일 139" in out and "+1일 3" in out and "+7일+ 15" in out
-    assert "근사치" in out
+    assert "[② 발행하고 며칠 만에 떴나]" in out
+    assert "지금 떠 있는 글 164개 기준" in out      # 139+3+2+1+15+4
+    assert "발행 당일 뜸 : 139개" in out
+    assert "1~6일 안에 뜸 : 6개" in out             # 3+2+1
+    assert "일주일 넘게 걸림 : 15개" in out
+    assert "애매(뗐다 다시 뜬 것) : 4개" in out
+    assert "노출 소요일" not in out                 # 옛 용어 제거
