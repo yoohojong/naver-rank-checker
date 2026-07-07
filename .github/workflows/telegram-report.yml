@@ -34,6 +34,11 @@ jobs:
         with:
           python-version: '3.13'
 
+      # 2026-07-07: [추세]/[발행분 변화] 는 아카이브(상위노출_이력) 시트 읽기 필요 → gspread.
+      #   실패해도 비차단(send_telegram_report 가 없으면 두 섹션만 생략). 핵심 보고는 stdlib.
+      - name: Install deps for archive read
+        run: pip install --quiet gspread google-auth
+
       - name: Send Telegram report (저녁/아침 요약)
         continue-on-error: true
         shell: bash
