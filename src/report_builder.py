@@ -69,9 +69,10 @@ def _build_full_report(reports: list[TabReport], kst: str, status_line: str, tit
 
     L = [title, f"프로그램: {status_line}", ""]
 
-    # 날짜별 발행 → 상위노출 (사장님 2026-07-02: '어제 작업 대비 노출' 대신 날짜별·제품별 발행분과 그중 상위노출)
+    # ━━━ 발행 성과 그룹 ━━━ (① 날짜별 / ② 며칠만에 / 발행분 변화)
+    L.append("━━━ 발행 성과 (작업한 날 기준) ━━━")
     if breakdown:
-        L.append("[① 날짜별 발행 → 상위노출]   · 작업한 날 기준(그 날 쓴 글이 지금 몇 개 떴나)")
+        L.append("① 날짜별 발행 → 상위노출")
         for ds, per, (dw, de) in breakdown:
             pct = round(de / dw * 100) if dw else 0
             seg = " · ".join(
@@ -90,26 +91,24 @@ def _build_full_report(reports: list[TabReport], kst: str, status_line: str, tit
         same = lag_dist.get("당일", 0)
         wk = lag_dist.get("+1일", 0) + lag_dist.get("+2일", 0) + lag_dist.get("+3~6일", 0)
         over = lag_dist.get("+7일+", 0)
-        odd = lag_dist.get("음수(재노출)", 0) + lag_dist.get("미상", 0)
-        L.append(f"[② 발행하고 며칠 만에 떴나]   · 지금 떠 있는 글 {total_exp}개 기준")
-        L.append(f"   발행 당일 뜸 : {same}개")
+        parts = [f"당일 {same}"]
         if wk:
-            L.append(f"   1~6일 안에 뜸 : {wk}개")
+            parts.append(f"1~6일 {wk}")
         if over:
-            L.append(f"   일주일 넘게 걸림 : {over}개")
-        if odd:
-            L.append(f"   애매(뗐다 다시 뜬 것) : {odd}개")
+            parts.append(f"일주일+ {over}")
+        L.append(f"② 발행 후 며칠에 뜨나 (지금 뜬 {total_exp}개 중): " + " · ".join(parts) + " (개)")
         L.append("")
 
-    # 지금 상위노출 (현재 전체 스냅샷 — 하루 변화는 ③으로 분리)
-    L.append("[지금 상위노출]")
-    L.append(f"   전체 {tot}개 중 {now}개 노출 중")
+    # ━━━ 지금 · 흐름 그룹 ━━━ (지금 개수+제품별 / 추세 / 발행분 변화)
+    L.append("━━━ 지금 · 흐름 ━━━")
+    prod = " · ".join(f"{t.tab.replace(' 카외', '')} {t.exposed_now}" for t in reports)
+    L.append(f"지금 상위노출 {now}개 / 전체 {tot}" + (f"   ({prod})" if prod else ""))
     L.append("")
 
     # [추세] 최근 며칠 상위노출 개수 흐름 (사장님 2026-07-07: 매일 개수만 말고 흐름을 보고싶다)
     if exposure_trend and len(exposure_trend) >= 2:
         dates = list(exposure_trend.keys())
-        L.append(f"[추세]  최근 {len(dates)}일 상위노출 개수 (→ 오른쪽이 오늘)")
+        L.append(f"추세 — 최근 {len(dates)}일 상위노출 개수 (→ 오른쪽이 오늘)")
         totals = [exposure_trend[d]["합계"] for d in dates]
         L.append("   합계     " + " → ".join(str(x) for x in totals))
         tabs = sorted({t for d in dates for t in exposure_trend[d] if t != "합계"})
@@ -124,7 +123,7 @@ def _build_full_report(reports: list[TabReport], kst: str, status_line: str, tit
 
     # [발행분 변화] 발행일별 코호트가 며칠 뒤 몇 개 떠 있나 (사장님 2026-07-07: 7/6 발행분의 변화)
     if cohort:
-        L.append("[발행분 변화]  발행한 날 글이 며칠 뒤 몇 개 떠 있나")
+        L.append("발행분 변화 — 발행한 날 글이 며칠 뒤 몇 개")
         for md, total, steps in cohort:
             seq = " → ".join(f"{lab} {n}개" for lab, n in steps)
             L.append(f"   {md} 발행 {total}개  →  {seq}")
@@ -138,7 +137,7 @@ def _build_full_report(reports: list[TabReport], kst: str, status_line: str, tit
         other_exit = _sum(reports, "other_exit")
         gained = kc.get("신규노출", 0) + new_exp
         left = kc.get("누락", 0) + kc.get("삭제", 0) + other_exit + vanished
-        L.append("[③ 어제 → 오늘 변화]   · 날짜 무관, 어제 대비 하루 사이")
+        L.append("━━━ 어제 대비 변화 (하루 사이) ━━━")
         if kc.get("신규노출"):
             L.append(f"   새로 뜸(미노출→상위노출): {kc['신규노출']}개")
         if new_exp:
@@ -160,38 +159,24 @@ def _build_full_report(reports: list[TabReport], kst: str, status_line: str, tit
         L.append(f"   ── 정합: 어제 {prev_now} + 들어옴 {gained} − 나감 {left} = 오늘 {now}")
         L.append("")
 
-    # 제품별 노출 (현재 스냅샷)
-    L.append("[제품별 노출]")
-    for t in reports:
-        L.append(f"   {t.tab}: {t.total}개 중 {t.exposed_now}개")
-    L.append("")
-
-    # 대표 노출 유형 (총 비율 + 어제→오늘 바뀐 방향)
+    # ━━━ 참고 그룹 ━━━ : 유형 + 지식인 (한 줄씩, 목록 축소로 가독성)
+    ref = []
     td = _all_type_dist(reports)
     if td:
         tot_t = sum(td.values())
         seg = " · ".join(
-            f"{k} {td[k]}개({round(td[k] * 100 / tot_t)}%)"
+            f"{k} {round(td[k] * 100 / tot_t)}%"
             for k in ["AB", "스마트블록", "인기글"]
             if td.get(k)
         )
-        L.append("[대표 노출 유형]")
-        L.append(f"   전체 {tot_t}개 — {seg}")
         tch = _sum(reports, "type_changes")
-        if tch:
-            L.append(f"   유형 바뀐 키워드: {tch}개")
-            dirs = _all_type_change_dirs(reports)
-            for d, n in dirs.most_common(5):
-                L.append(f"      {d.replace('→', ' → ')}: {n}개")
-            if len(dirs) > 5:
-                L.append(f"      그 외 {len(dirs) - 5}종")
-        L.append("")
-
-    # 지식인
+        ref.append(f"유형: {seg}" + (f"  (유형 바뀜 {tch}개)" if tch else ""))
     if jis_now or _sum(reports, "jisikin_prev"):
-        L.append(f"[지식인]  지식인에 뜬 키워드: {jis_now}개")
+        ref.append(f"지식인: {jis_now}개")
+    if ref:
+        L.append("━━━ 참고 ━━━")
+        L += ref
 
-    L += ["", _LEGEND]
     return "\n".join(L).rstrip()
 
 

@@ -60,7 +60,7 @@ def test_build_report_text_evening_with_baseline():
         _gz(p, _PREV)
         _gz(c, _CURR)
         out = m.build_report_text(p, c, mode="evening", kst="6/20", status_line="✅정상")
-    assert "샴푸 카외" in out
+    assert "샴푸" in out  # 2026-07-07 가독성: 제품명 ' 카외' 접미사 생략 표기
     assert "상위노출" in out
     assert "비듬샴푸" not in out  # 요약형 = 키워드 나열 안 함
 
