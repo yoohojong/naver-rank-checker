@@ -152,3 +152,15 @@ def test_trend_section_renders():
     assert "188 → 148" in out          # 합계 흐름
     assert "80 → 60" in out            # 샴푸 흐름
     assert "어제 188 → 오늘 148 (40개 줄음)" in out
+
+
+def test_cohort_section_renders():
+    """[발행분 변화] 발행일별 코호트가 며칠 뒤 몇 개 떠 있나 (사장님 2026-07-07)."""
+    cohort = [
+        ("7/6", 62, [("당일", 39), ("1일뒤", 22)]),
+        ("7/5", 68, [("당일", 14), ("1일뒤", 30), ("2일뒤", 28)]),
+    ]
+    out = rb.build_evening_report([_shampoo()], "7/7", "정상", cohort=cohort)
+    assert "[발행분 변화]" in out
+    assert "7/6 발행 62개  →  당일 39개 → 1일뒤 22개" in out
+    assert "7/5 발행 68개  →  당일 14개 → 1일뒤 30개 → 2일뒤 28개" in out

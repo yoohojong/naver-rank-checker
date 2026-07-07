@@ -56,7 +56,7 @@ def _sum(reports: list[TabReport], attr: str) -> int:
     return sum(getattr(t, attr) for t in reports)
 
 
-def _build_full_report(reports: list[TabReport], kst: str, status_line: str, title: str, breakdown: list | None = None, lag_dist: Counter | None = None, exposure_trend=None) -> str:
+def _build_full_report(reports: list[TabReport], kst: str, status_line: str, title: str, breakdown: list | None = None, lag_dist: Counter | None = None, exposure_trend=None, cohort=None) -> str:
     """상세 보고 본문 (저녁/아침 공통 — 헤더 title 만 다름).
 
     사장님 요청(2026-06-21): 아침도 저녁과 동일 형식으로 통일.
@@ -120,6 +120,14 @@ def _build_full_report(reports: list[TabReport], kst: str, status_line: str, tit
         diff = today_t - prev_t
         word = f"{diff}개 늘음" if diff > 0 else (f"{-diff}개 줄음" if diff < 0 else "그대로")
         L.append(f"   ▶ 어제 {prev_t} → 오늘 {today_t} ({word})")
+        L.append("")
+
+    # [발행분 변화] 발행일별 코호트가 며칠 뒤 몇 개 떠 있나 (사장님 2026-07-07: 7/6 발행분의 변화)
+    if cohort:
+        L.append("[발행분 변화]  발행한 날 글이 며칠 뒤 몇 개 떠 있나")
+        for md, total, steps in cohort:
+            seq = " → ".join(f"{lab} {n}개" for lab, n in steps)
+            L.append(f"   {md} 발행 {total}개  →  {seq}")
         L.append("")
 
     # ③ 어제 → 오늘 변화 (날짜 무관) + 정합: 노출 개수 변화를 완전 설명 (사장님 2026-07-07)
@@ -187,15 +195,15 @@ def _build_full_report(reports: list[TabReport], kst: str, status_line: str, tit
     return "\n".join(L).rstrip()
 
 
-def build_evening_report(reports: list[TabReport], kst: str, status_line: str = "정상", breakdown: list | None = None, lag_dist: Counter | None = None, exposure_trend=None) -> str:
+def build_evening_report(reports: list[TabReport], kst: str, status_line: str = "정상", breakdown: list | None = None, lag_dist: Counter | None = None, exposure_trend=None, cohort=None) -> str:
     """저녁 마감 — 한글 말 중심, 섹션별."""
     if not reports:
         return f"📊 상노체크 · {kst} 저녁\n데이터 없음"
-    return _build_full_report(reports, kst, status_line, f"📊 상노체크 · {kst} 저녁", breakdown, lag_dist, exposure_trend)
+    return _build_full_report(reports, kst, status_line, f"📊 상노체크 · {kst} 저녁", breakdown, lag_dist, exposure_trend, cohort)
 
 
-def build_morning_report(reports: list[TabReport], kst: str, status_line: str = "정상", breakdown: list | None = None, lag_dist: Counter | None = None, exposure_trend=None) -> str:
+def build_morning_report(reports: list[TabReport], kst: str, status_line: str = "정상", breakdown: list | None = None, lag_dist: Counter | None = None, exposure_trend=None, cohort=None) -> str:
     """아침 보고 — 저녁과 동일 형식(사장님 요청 2026-06-21). 헤더만 ☀️ 아침."""
     if not reports:
         return f"☀️ 상노체크 아침 · {kst}\n데이터 없음"
-    return _build_full_report(reports, kst, status_line, f"☀️ 상노체크 아침 · {kst}", breakdown, lag_dist, exposure_trend)
+    return _build_full_report(reports, kst, status_line, f"☀️ 상노체크 아침 · {kst}", breakdown, lag_dist, exposure_trend, cohort)
