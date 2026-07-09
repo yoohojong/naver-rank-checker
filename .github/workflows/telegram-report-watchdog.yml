@@ -1,0 +1,70 @@
+name: telegram-report-watchdog
+# 카페외부 저녁/아침 보고(telegram-report)가 실패하면 자동으로 1회 재전송.
+# 배경(2026-07-09): telegram-report 저녁분(run 29018177650)이 "The job was not acquired by
+#   Runner"(GitHub 러너 미획득 = 인프라 transient)로 15분 대기 후 실패 → 보고 유실. rank-check 에는
+#   워치독이 있어 회복되는데 보고에는 없어서 그냥 사라졌음(사장님 "오늘 카페외부 보고 안왔다").
+#
+# ★러너 미획득은 잡이 시작조차 안 해 재실행할 failed 잡이 없음 → 'gh run rerun'이 무효.
+#   그래서 'gh workflow run'(workflow_dispatch)으로 아예 새 run 을 던진다.
+#   (workflow_dispatch/repository_dispatch 는 GITHUB_TOKEN 재귀방지 규칙의 '예외'라 새 run 이 실제로 뜬다.)
+#
+# 무한루프 방지: 원래 트리거가 schedule 인 실패에만 1회 재던짐. 재던진 run 은 event=workflow_dispatch 라
+#   그게 또 실패해도 이 워치독이 스킵 → 정확히 1회 재시도로 한정.
+
+on:
+  workflow_run:
+    workflows: ["telegram-report"]
+    types: [completed]
+
+permissions:
+  actions: write   # gh workflow run (재전송 트리거)
+  contents: read
+
+concurrency:
+  group: telegram-report-watchdog
+  cancel-in-progress: false
+
+jobs:
+  recover:
+    # 실패 + 원래 트리거가 schedule 일 때만(재던진 dispatch 실패는 스킵 = 1회 한정).
+    if: ${{ github.event.workflow_run.conclusion == 'failure' && github.event.workflow_run.event == 'schedule' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      RUN_URL: ${{ github.event.workflow_run.html_url }}
+      TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+      TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+
+    steps:
+      - name: 실패한 보고 자동 재전송 (mode = 현재 시각 기준)
+        id: redispatch
+        shell: bash
+        run: |
+          set -euo pipefail
+          # 아침 보고 cron '0 22'(UTC) = 07:00 KST / 저녁 '0 10'(UTC) = 19:00 KST.
+          # 워치독은 실패 직후 발동하므로 현재 UTC 시각으로 어느 쪽인지 판정.
+          #   16시(UTC) 이후 또는 새벽 0~2시(아침분 지연) → morning, 그 외 → evening.
+          H=$(date -u +%H)
+          if [ "$H" -ge 16 ] || [ "$H" -le 2 ]; then MODE="morning"; else MODE="evening"; fi
+          echo "[REPORT-WATCHDOG] telegram-report 실패 감지(UTC ${H}시) → mode=${MODE} 로 1회 재전송"
+          gh workflow run telegram-report.yml --repo "$GH_REPO" -f mode="$MODE"
+
+      - name: 사장님 텔레그램 알림 (비차단)
+        if: always()
+        continue-on-error: true
+        shell: bash
+        run: |
+          # secret 없으면 조용히 건너뜀. 토큰은 인자 로그 노출 없이 env 로만 사용.
+          if [ -n "${TELEGRAM_BOT_TOKEN:-}" ] && [ -n "${TELEGRAM_CHAT_ID:-}" ]; then
+            if [ "${{ steps.redispatch.outcome }}" = "success" ]; then
+              MSG="⚠️ 카페외부 보고가 GitHub 일시장애로 실패해서 자동으로 다시 보냈어요. 잠시 뒤 도착합니다. (원래 기록: ${RUN_URL})"
+            else
+              MSG="🚨 카페외부 보고가 실패했는데 자동 재전송도 안 됐어요. 확인이 필요해요. (기록: ${RUN_URL})"
+            fi
+            curl -s --max-time 20 -X POST \
+              "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+              --data-urlencode "chat_id=${TELEGRAM_CHAT_ID}" \
+              --data-urlencode "text=${MSG}" >/dev/null || true
+          fi
