@@ -22,7 +22,10 @@ jobs:
     timeout-minutes: 10
 
     env:
-      GH_TOKEN: ${{ secrets.ACTIONS_PAT || github.token }}
+      # 2026-07-09: ACTIONS_PAT 만료(401 Bad credentials) → 'gh run rerun' 사망으로 자동재시도가
+      # 조용히 죽어 있었음(run 29007588148 로그: "failed to get run: HTTP 401"). 만료되는 PAT 의존
+      # 제거 — 항상 유효한 워크플로 토큰(위 permissions actions:write 로 rerun 충분). D-051 일이관지.
+      GH_TOKEN: ${{ github.token }}
       GH_REPO: ${{ github.repository }}
       RUN_ID: ${{ github.event.workflow_run.id }}
       RUN_URL: ${{ github.event.workflow_run.html_url }}

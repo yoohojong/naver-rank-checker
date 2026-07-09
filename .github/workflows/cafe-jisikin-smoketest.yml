@@ -25,7 +25,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v6.0.2
         with:
-          token: ${{ secrets.ACTIONS_PAT || github.token }}
+          token: ${{ github.token }}  # 2026-07-09: ACTIONS_PAT 만료 → 워크플로 토큰(read-only checkout, public repo). D-051 일이관지.
 
       - name: Setup Python 3.13
         uses: actions/setup-python@v6.2.0

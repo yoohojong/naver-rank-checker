@@ -72,11 +72,11 @@ jobs:
         uses: actions/checkout@v6.0.2
         continue-on-error: true
         with:
-          # 2026-05-26: hosted Actions GITHUB_TOKEN checkout intermittently returned
-          # "Your account is suspended" / 403 while owner PAT and public clone worked.
-          # Prefer a repo secret PAT so sheet refresh can continue; fall back to
-          # github.token if the secret is not configured.
-          token: ${{ secrets.ACTIONS_PAT || github.token }}
+          # 2026-07-09: ACTIONS_PAT 만료(401 Bad credentials 로그 확보) → 무효 PAT 가 || 좌변으로
+          # 항상 승리해 매 run checkout 1차 실패→fallback 낭비. public repo + contents:read 면
+          # github.token clone 이 안정적이라 만료되는 PAT 의존 제거. 아래 fallback(무인증 public
+          # fetch)은 안전망으로 유지. (2026-05-26 "suspended" 는 intermittent 사건, public repo 무관.)
+          token: ${{ github.token }}
 
       - name: Checkout fallback without token
         if: steps.checkout.outcome != 'success'
@@ -173,7 +173,10 @@ jobs:
         if: always()
         shell: bash
         env:
-          GH_TOKEN: ${{ secrets.ACTIONS_PAT || github.token }}
+          # 2026-07-09: ACTIONS_PAT 만료(401)로 이슈#1 요약이 매 run 조용히 실패 중이었음
+          # (성공 run 로그: "[WARN] gh issue comment 실패: HTTP 401"). 워크플로 토큰(위 permissions
+          # issues:write)으로 통일 — 만료 없는 자격증명. D-051 일이관지.
+          GH_TOKEN: ${{ github.token }}
           RUN_STATUS: ${{ steps.run_cycle.outcome }}
         run: |
           ./.venv/bin/python -u scripts/post_summary_to_issue.py
