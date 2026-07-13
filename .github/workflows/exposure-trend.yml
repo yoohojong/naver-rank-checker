@@ -1,0 +1,63 @@
+name: 상위노출 감소 알림
+
+# 목적: '상위노출_이력' 시트에서 날짜별 노출 건수를 읽어
+#       이전 주 대비 최근 주 평균이 10% 이상 줄면 텔레그램 알림.
+#
+# 격리 원칙:
+#   - 기존 rank-check / rank-check-watchdog 과 완전히 독립된 별도 워크플로.
+#   - continue-on-error: true → 이 job 이 실패해도 다른 워크플로에 영향 없음.
+#   - 시트 읽기 전용. 어떤 시트 / 파일도 수정하지 않음.
+
+on:
+  schedule:
+    # KST 09:00 = UTC 00:00 — 하루 1회, 아침 점검
+    - cron: "0 0 * * *"
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "dry-run 모드 (true: 콘솔만 / false: 이상 시 텔레그램 발송)"
+        required: false
+        default: "true"
+        type: choice
+        options:
+          - "true"
+          - "false"
+
+jobs:
+  exposure-trend-alert:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    continue-on-error: true   # 이 job 실패가 기존 순위체킹/아카이빙에 영향 없음
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python 3.13
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install dependencies
+        shell: bash
+        run: pip install "gspread==6.1.4" "google-auth==2.36.0"
+
+      - name: Run exposure trend alert
+        continue-on-error: true   # 알림 스크립트 실패가 job 전체를 실패로 만들지 않음
+        shell: bash
+        env:
+          SPREADSHEET_ID: ${{ secrets.SPREADSHEET_ID }}
+          SERVICE_ACCOUNT_JSON: ${{ secrets.SERVICE_ACCOUNT_JSON }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          PYTHONIOENCODING: "utf-8"
+        run: |
+          # schedule 트리거: dry_run 입력 없음 → "" → 발송 모드
+          # workflow_dispatch dry_run=true(기본): 콘솔만
+          # workflow_dispatch dry_run=false: 발송 모드
+          DRY_RUN="${{ github.event.inputs.dry_run }}"
+          if [ "$DRY_RUN" = "true" ]; then
+            python scripts/exposure_trend_alert.py --live
+          else
+            python scripts/exposure_trend_alert.py --live --send
+          fi
