@@ -4,6 +4,7 @@ import random
 import re
 import time
 from dataclasses import dataclass
+from datetime import date
 from typing import Optional
 
 import gspread
@@ -50,6 +51,7 @@ def _sheets_api_retry(func, *, ctx: str = ""):
     raise last_error
 
 # 사장님 시트 헤더 명 (2026-05-08 확인 — 정확 매칭 필수)
+HEADER_WORKDATE = "작업일"  # A — 마케터 작업일 (M/D 형식, ~78% 채워짐). 경과일(1일↑) 판정용.
 HEADER_TYPE = "유형"  # C — 사장님 의도 기록 컬럼 (D-024 2026-05-14: 자동 갱신 절대 X)
 HEADER_KEYWORD = "키워드"
 HEADER_AREA = "노출영역"  # K — AB / 인기글 / 삭제 / 빈칸(미노출)
@@ -64,6 +66,14 @@ HEADER_RAW_L = "raw_통합순위"
 HEADER_RAW_M = "raw_카페순위"
 HEADER_RAW_JISIKIN = "raw_지식인탭"
 HEADER_LAST_CHECKED_AT = "마지막검사시각"
+# 2026-07-16: 카페 구좌 1등 노출 실패 '재발행 횟수' 카운터.
+# 재발행(작업일 값이 변경)마다 1일 이상 경과 후에도 1등 실패면 +1. 같은 발행분은 여러 run 돌아도 1회만.
+# 1등(=="1") 이면 0 리셋. 값 자체는 write_stale_formula_results 가 계산해 기록(수식 아님).
+HEADER_RAW_CAFE_FAIL_STREAK = "raw_카페1등실패횟수"
+# 마지막으로 카운터를 +1 한 그 발행의 작업일 (M/D 문자열 그대로). 같은 발행 중복 카운트 방지 게이트.
+HEADER_RAW_CAFE_FAIL_LAST_DATE = "raw_카페실패마지막작업일"
+# 역대 최대 실패 횟수 (단조 비감소, 1등 리셋 시에도 유지). '전적 있으나 현재 1등' 회색 표기 판별용.
+HEADER_RAW_CAFE_FAIL_MAX = "raw_카페실패최대"
 
 STALE_DISPLAY_K = "재검사필요"
 INPUT_KEY_VERSION = "v1"
@@ -75,6 +85,9 @@ STALE_FORMULA_HEADERS = (
     HEADER_RAW_M,
     HEADER_RAW_JISIKIN,
     HEADER_LAST_CHECKED_AT,
+    HEADER_RAW_CAFE_FAIL_STREAK,       # 맨 뒤 append (기존 열 위치 불변, 헤더명 매핑이라 무관)
+    HEADER_RAW_CAFE_FAIL_LAST_DATE,    # 카운터 날짜 게이트 (streak 바로 뒤)
+    HEADER_RAW_CAFE_FAIL_MAX,          # 역대 최대 (단조 비감소, 1등 리셋에도 유지)
 )
 STALE_FORMULA_WRITE_COLUMNS = frozenset({
     HEADER_LAST_CHECKED_INPUT_KEY,
@@ -83,6 +96,9 @@ STALE_FORMULA_WRITE_COLUMNS = frozenset({
     HEADER_RAW_M,
     HEADER_RAW_JISIKIN,
     HEADER_LAST_CHECKED_AT,
+    HEADER_RAW_CAFE_FAIL_STREAK,       # ghost 행 clear 대상 포함 (clear_stale_formula_cells)
+    HEADER_RAW_CAFE_FAIL_LAST_DATE,
+    HEADER_RAW_CAFE_FAIL_MAX,
 })
 
 # D-023 (2026-05-14) 영구 룰: 사장님 시트 사용자 입력 컬럼 = 자동 갱신 절대 X.
@@ -184,6 +200,96 @@ def _background_color_for_k(k_value: str) -> dict:
     if s.startswith(STALE_DISPLAY_K):
         return COLOR_RECHECK
     return COLOR_NONE
+
+
+# 카페 구좌 1등 실패 재발행 횟수 강도 색 — 키워드 셀 배경 (2026-07-16).
+# 실패가 누적될수록 red 채널이 진해진다(연노랑→주황→빨강). K열 노출색과 겹치지 않게 '키워드' 셀에 칠함.
+# 임계: 1회=연노랑, 2회=주황, 3회+=빨강
+COLOR_FAIL_STREAK_1 = {"red": 1.0, "green": 0.94, "blue": 0.6}   # 1회 — 연노랑
+COLOR_FAIL_STREAK_2 = {"red": 1.0, "green": 0.7, "blue": 0.4}    # 2회 — 주황
+COLOR_FAIL_STREAK_3 = {"red": 0.9, "green": 0.4, "blue": 0.4}    # 3회+ — 빨강
+COLOR_FAIL_HISTORY = {"red": 0.88, "green": 0.88, "blue": 0.88}  # 전적 있으나 현재 1등 — 옅은 회색
+
+
+def _parse_checked_date(checked_at: object) -> Optional[date]:
+    """checked_at('YYYY-MM-DD HH:MM KST' 등)에서 오늘 날짜(date) 추출. 실패 시 None."""
+    m = re.search(r"(\d{4})-(\d{1,2})-(\d{1,2})", str(checked_at or ""))
+    if not m:
+        return None
+    try:
+        return date(int(m.group(1)), int(m.group(2)), int(m.group(3)))
+    except ValueError:
+        return None
+
+
+def _parse_fail_streak(value: object) -> int:
+    """숨김 카운터 셀 값 → int(음수/빈칸/비정상 = 0)."""
+    m = re.search(r"-?\d+", str(value or ""))
+    if not m:
+        return 0
+    try:
+        n = int(m.group())
+    except ValueError:
+        return 0
+    return n if n > 0 else 0
+
+
+def _next_cafe_fail_streak(
+    prev_counter: int,
+    cafe_rank: object,
+    workdate_md: object,
+    ref_date: Optional[date],
+    last_count_date_str: str = "",
+) -> tuple[int, str]:
+    """카페 구좌 1등 실패 재발행 횟수 카운터 갱신.
+
+    반환: (new_counter: int, new_last_workdate: str)
+      new_last_workdate = 마지막으로 +1 한 발행의 작업일(M/D) 또는 빈칸(리셋 시).
+      last_count_date_str 는 이전 마지막작업일(M/D) — 같은 발행분 중복 카운트 방지 게이트.
+
+    규칙:
+    - cafe_rank == "1" → (0, "") 리셋 (카페 구좌 1등 = 성공 = 해결).
+    - ref_date 없음 / 작업일 빈칸·파싱불가 → 유지 (경과 계산 불가).
+    - (오늘 − 작업일).days < 1 → 유지 (이 발행 아직 판단 전).
+    - 작업일(M/D) == 마지막작업일(last_count_date_str) → 유지 (이 발행분 이미 카운트함).
+    - 작업일 != 마지막작업일 AND 1일 이상 경과
+      → (prev + 1, 현재 작업일 M/D) — 새 발행분이 또 1등 실패.
+    """
+    if str(cafe_rank or "").strip() == "1":
+        return (0, "")
+    if ref_date is None:
+        return (max(0, int(prev_counter)), last_count_date_str)
+    # 파서 재사용(헤더 drift/포맷 정합) — report_metrics._md_to_date(md, ref).
+    from src.report_metrics import _md_to_date
+
+    wd_str = str(workdate_md or "").strip()
+    wd = _md_to_date(wd_str, ref_date)
+    if wd is None:
+        return (max(0, int(prev_counter)), last_count_date_str)
+    if (ref_date - wd).days < 1:
+        return (max(0, int(prev_counter)), last_count_date_str)
+    # 같은 발행분(작업일 동일)은 이미 카운트 → 유지
+    if wd_str == str(last_count_date_str or "").strip():
+        return (max(0, int(prev_counter)), last_count_date_str)
+    # 새 발행분이 1일 이상 경과 후에도 1등 실패 → 횟수 +1, 마지막작업일 = 현재 작업일
+    return (max(0, int(prev_counter)) + 1, wd_str)
+
+
+def _fail_streak_color(counter: int, max_streak: int = 0) -> Optional[dict]:
+    """실패 재발행 횟수 → 키워드 셀 배경색.
+    - counter >= 1: 1회=연노랑, 2회=주황, 3회+=빨강.
+    - counter == 0 AND max_streak >= 1: 옅은 회색 (전적 있으나 현재 1등).
+    - counter == 0 AND max_streak == 0: None (색 없음, 무전적/판단전).
+    """
+    if counter >= 1:
+        if counter == 1:
+            return COLOR_FAIL_STREAK_1
+        if counter == 2:
+            return COLOR_FAIL_STREAK_2
+        return COLOR_FAIL_STREAK_3
+    if max_streak >= 1:
+        return COLOR_FAIL_HISTORY
+    return None
 
 
 def _exposure_result_alignment_formats(mapping: dict, rows) -> list[dict]:
@@ -297,6 +403,9 @@ class SheetsClient:
                     HEADER_RAW_M: str(row.get(HEADER_M, "") or ""),
                     HEADER_RAW_JISIKIN: str(row.get(HEADER_JISIKIN, "") or ""),
                     HEADER_LAST_CHECKED_AT: "migration",
+                    HEADER_RAW_CAFE_FAIL_STREAK: "0",  # 마이그레이션 시 카운터 0부터
+                    HEADER_RAW_CAFE_FAIL_LAST_DATE: "",  # 마지막카운트일 빈칸으로 시딩
+                    HEADER_RAW_CAFE_FAIL_MAX: "0",     # 역대 최대 0부터 시작
                 }
                 for header, value in values_by_header.items():
                     if header not in newly_created_headers:
@@ -388,6 +497,13 @@ class SheetsClient:
         ws = self.spreadsheet.worksheet(tab_name)
         headers = ws.row_values(1)
         mapping = map_headers_to_columns(headers)
+
+        # 카페 1등 실패 연속 카운터/색칠용 인덱스 (헤더명 매핑, letter 하드코딩 X).
+        streak_idx = mapping.get(HEADER_RAW_CAFE_FAIL_STREAK)
+        last_date_idx = mapping.get(HEADER_RAW_CAFE_FAIL_LAST_DATE)
+        max_streak_idx = mapping.get(HEADER_RAW_CAFE_FAIL_MAX)
+        workdate_idx = mapping.get(HEADER_WORKDATE)
+        ref_date = _parse_checked_date(checked_at)
 
         stats = stats_out if stats_out is not None else {}
         stats.setdefault("relocation_miss_rows", 0)
@@ -566,6 +682,46 @@ class SheetsClient:
                 color_formats.append({
                     "range": gspread.utils.rowcol_to_a1(target_row, mapping[HEADER_AREA] + 1),
                     "format": {"backgroundColor": _background_color_for_k(payload.get(HEADER_RAW_AREA, ""))},
+                })
+            # 카페 구좌 1등 실패 연속 카운터(하루당) 갱신 + 키워드 셀 색 강도 (2026-07-16).
+            # re-read(sheet_rows)에서 이전 카운터·마지막카운트일·작업일을 읽어 계산.
+            # re-read 실패(legacy) 시 건드리지 않음(카운터 유실 방지).
+            # 카운터 0 = 색 없음(중립) = 흰색으로 되돌려 stale 색 잔존 방지.
+            if (
+                sheet_read_ok
+                and sheet_rows is not None
+                and streak_idx is not None
+                and HEADER_KEYWORD in mapping
+                and 0 <= target_row - 1 < len(sheet_rows)
+            ):
+                target_values = sheet_rows[target_row - 1]
+                prev_streak = _parse_fail_streak(_cell(target_values, streak_idx))
+                prev_last_date = _cell(target_values, last_date_idx) if last_date_idx is not None else ""
+                workdate_md = _cell(target_values, workdate_idx) if workdate_idx is not None else ""
+                prev_max = _parse_fail_streak(_cell(target_values, max_streak_idx)) if max_streak_idx is not None else 0
+                new_streak, new_last_date = _next_cafe_fail_streak(
+                    prev_streak, payload.get(HEADER_RAW_M, ""), workdate_md, ref_date,
+                    last_count_date_str=prev_last_date,
+                )
+                new_max = max(prev_max, new_streak)
+                cells.append({
+                    "range": gspread.utils.rowcol_to_a1(target_row, streak_idx + 1),
+                    "values": [[str(new_streak)]],
+                })
+                if last_date_idx is not None:
+                    cells.append({
+                        "range": gspread.utils.rowcol_to_a1(target_row, last_date_idx + 1),
+                        "values": [[new_last_date]],
+                    })
+                if max_streak_idx is not None:
+                    cells.append({
+                        "range": gspread.utils.rowcol_to_a1(target_row, max_streak_idx + 1),
+                        "values": [[str(new_max)]],
+                    })
+                streak_color = _fail_streak_color(new_streak, new_max)
+                color_formats.append({
+                    "range": gspread.utils.rowcol_to_a1(target_row, mapping[HEADER_KEYWORD] + 1),
+                    "format": {"backgroundColor": streak_color if streak_color is not None else COLOR_NONE},
                 })
             alignment_rows.append(target_row)
 
