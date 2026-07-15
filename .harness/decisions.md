@@ -19,7 +19,7 @@
 **대안 안 고른 이유**:
 - Railway: $5 크레딧 기반 = "사실상 무료"지만 사장님 "돈 내기 싫음" 강조
 - Google Apps Script: 개인 구글 계정 일일 90분 한도 → 1000개급에서 빠듯
-- Oracle Cloud Always Free: 진짜 평생 무료지만 Linux 서버 직접 관리 = 비개발자에게 가시밭길
+- Oracle Cloud Always Free: 진짜 평생 무료지만 Linux 서버 직접 관리 = 혼자 하기 어려운 가시밭길
 - Cloudflare Workers: 30초 실행 한도 → 부적합
 
 ### D-003: 코드 구조 = Modular B (6개 모듈)
@@ -73,7 +73,7 @@
 
 ### D-010: 하네스 위치 = per-project (.harness/ in project folder)
 **결정**: `D:\claude code\naver-rank-checker\.harness\` 안에 spec/plan/tasks/decisions
-**근거**: 단일 진실 원천, 백업/이동 시 한 폴더, 비개발자 멘탈 모델 단순, Git 친화적
+**근거**: 단일 진실 원천, 백업/이동 시 한 폴더, 멘탈 모델 단순, Git 친화적
 **대안 안 고른 이유**:
 - 중앙 집중 (`D:\claude code\harnesses\`): 코드/하네스 두 곳 관리, desync 위험, 멘탈 복잡
 
@@ -224,7 +224,7 @@
 
 **근거**:
 - 2026-05-12 KST 08~09 사장님 강한 짜증 신호: "박음이라는 말투는 왜 쓰는거임?" + "박음이라는 말도 쓰지 말라고 했지 지금 너 내가 말하는거 하나도 안지키고 있는데?"
-- Claude 가 사장님 비개발자 한국어 말투 흉내 = 부적절 사용
+- Claude 가 사장님 한국어 말투 흉내 = 부적절 사용
 - 사장님 직접 명시 후도 같은 응답 / 다음 응답에 또 사용 = 명시적 어김
 - 메타 학습 누락 = D-018 룰 (사장님 지적 후 영구 룰 추가) 도 또 위반
 - **사장님 4 지적 (말투 / 색상 / 삭제 / 순위) 종합**:
@@ -648,7 +648,7 @@
 **대안 안 고른 이유**:
 - 옵션 A (P/Q/R 3 컬럼): D-012 위반 + 사장님 = 1 컬럼 1 답 정합 X
 - 옵션 B (유형 C 안 시점): D-024 위반 = "유형 = 사장님 의도 기록 = 자동 갱신 X"
-- 시점 형식 (b) "2026-05-10": 너무 김 = 사장님 비개발자 시각 ↓
+- 시점 형식 (b) "2026-05-10": 너무 김 = 사장님 가독성 ↓
 - 시점 형식 (c) "5/10 03:00": 사장님 결정 = (a) 대신 시각까지 명시 선호 = (c) 채택
 
 ---
@@ -1027,7 +1027,7 @@
 ### D-055: Q&A 봇 자연어 이해 — Groq 무료 LLM 연결 (사장님 "비용 없이 자연어" 결정)
 
 **배경/결정 경로**: 사장님 결정 1번(즉시 webhook + 자연어 LLM) 재논의(2026-06-20). 사장님 답 = "비용 없이 자연어도 이해할 수 있나?" → 외부 조사(document-specialist ×2 병렬, 무료 LLM 한도 교차검증). 결론 = **가능**. 사장님 최종 선택 = **Groq로 진행**. ('즉시 1초'는 보류 — 답 속도는 5~10분 폴링 유지. 알림 빈도도 '지금처럼 매번' 유지.)
-**왜 Groq**(비개발자+하루 수십 건+한국어+$0 기준): ① 신용카드 안 받음 → 구조적 과금 위험 0(한도 초과 시 429만, 자동 청구 없음), ② 무료 RPD 1,000(우리 하루 수십 건 → 한참 남음), ③ 진짜 LLM(Llama 3.3 70B) 한국어 양호. 대안 비교: Gemini = 질문이 구글 학습에 명시적 사용 + 무경고 한도 삭감 전례 → 탈락. OpenRouter :free = 하루 50건 경계 + 모델 임의 중단 → 탈락. Cloudflare = 한도 빠듯 + 셋업 난이도 높음 → 탈락.
+**왜 Groq**(하루 수십 건+한국어+$0 기준): ① 신용카드 안 받음 → 구조적 과금 위험 0(한도 초과 시 429만, 자동 청구 없음), ② 무료 RPD 1,000(우리 하루 수십 건 → 한참 남음), ③ 진짜 LLM(Llama 3.3 70B) 한국어 양호. 대안 비교: Gemini = 질문이 구글 학습에 명시적 사용 + 무경고 한도 삭감 전례 → 탈락. OpenRouter :free = 하루 50건 경계 + 모델 임의 중단 → 탈락. Cloudflare = 한도 빠듯 + 셋업 난이도 높음 → 탈락.
 **설계(프라이버시 우선)**: 정확한 명령(누락/삭제/순위/유형/지식인/요약/제품/키워드 = `qa_formatter.classify_with_confidence` confident=True)은 LLM 호출 0 → 무료한도 절약. 키워드로 확신 못한 **자유 질문만** `src/llm_intent.classify` 로 Groq 호출. **LLM 에 보내는 것은 사장님 질문 글뿐** — 의도목록은 system prompt 고정, 제품 탭 이름조차 미전송(product arg 는 LLM 이 질문에서 뽑은 단어, 실제 탭 매핑은 로컬 `_match_tab`). 실제 순위/시트 데이터 외부 전송 0건.
 **비차단 불변식**: `GROQ_API_KEY` 미설정·네트워크 실패·응답형식 불일치·JSON 파싱 실패 → 전부 `None` 반환 → 호출부가 기존 키워드 결과 유지. 봇은 절대 죽지 않음. 키 없으면 예전(정해진 단어)대로 동작.
 **보안**: 봇은 owner(TELEGRAM_CHAT_ID)에게만 응답(기존). LLM 출력은 `_VALID_INTENTS` 화이트리스트만 허용 + arg sanitize → 프롬프트 인젝션 무효(owner 전용이라 위협도 낮음). 키/URL 로그·예외 미노출(`type(e).__name__`만). 모델/엔드포인트는 secret(`GROQ_MODEL`/`GROQ_BASE_URL`)로 교체 가능(deprecate 대비).
@@ -1041,7 +1041,7 @@
 
 **증상**: 사장님 "답변이 너무 늦게 와"(2026-06-20, 봇 실수신 후). 원인 = 기존 봇이 5분 cron 으로 '한 번 확인 후 종료' → 메시지 놓치면 다음 cron 까지 대기 + GitHub 예약 cron 자체 지연(5~10분, 때론 더). 실측 지연 5~10분.
 **결정**: 봇을 **long-polling 루프**로 전환. 한 run 이 예산(QA_LOOP_SECONDS 기본 4h) 동안 `getUpdates(timeout=50)` 반복 → 텔레그램 서버가 연결 잡고 있다 **메시지 오는 즉시(보통 몇 초) 반환** → 즉답. ('즉시 webhook'은 사장님 클라우드 계정 셋업 필요 → 보류. long-poll 은 무료·무설정으로 사실상 즉답 달성.)
-**왜 이게 최선**(비개발자+무료+무설정): GitHub Actions 공개 repo = 무료·무제한이라 장수 잡 OK. webhook 같은 외부 호스팅/계정 불필요. 텔레그램 long-poll 이 표준 즉답 방식.
+**왜 이게 최선**(무료+무설정): GitHub Actions 공개 repo = 무료·무제한이라 장수 잡 OK. webhook 같은 외부 호스팅/계정 불필요. 텔레그램 long-poll 이 표준 즉답 방식.
 **핸드오프**: cron `*/5` + concurrency cancel-in-progress=false → 실행 중 1 + 대기 1(새 트리거가 이전 대기 교체, pileup 없음). 4h 잡 종료 시 대기 run 이 곧바로 이어받음. timeout-minutes 290(6h 하드한도 안전). 잡 교대 시 ~10~30초 짧은 공백 가능(메시지는 텔레그램이 보관 → 유실 0).
 **안전**: 무한루프 없음(time.monotonic 예산, budget=0→0회). offset 으로 서버 ack(at-least-once, 재시작 시 마지막 배치 1회 중복 가능=허용). get_updates 에러=None 반환 → 지수 backoff(정상 빈결과 []=즉시 재폴, 지연 0). 소켓 타임아웃=long-poll+15(65s)로 조기 abort 방지. owner 전용 응답 유지.
 **리뷰 반영(HIGH)**: 장수 프로세스 staleness — `load_data_once` 가 4h 동안 첫 데이터만 캐시 → 새 점검(6h 주기) 반영 못 함. fix=TTL 캐시(QA_DATA_TTL 기본 30분). MEDIUM=에러 backoff(적용)+상수명 MAX_ANSWERS_PER_BATCH(명확화). Codex=NO BLOCKING ISSUES.
@@ -1087,3 +1087,12 @@
 **결정(자가복구 안전 범위)**: ✅ 자동 재시도 = rank-check.yml `Run cron cycle` 에 1차 실패 시 90초 후 1회 재시도(set +e/rc 관리) → 일시적 네트워크·차단·구글API 장애 자가복구. + 기존 실패 알림(send_telegram_summary, cycle_summary 없으면 '❌ 점검 실패') + dual-cron(07/27분) 유지. ⚠️ **AI 코드 자동수정·재배포 = 안 함** — 검증 없는 자동 코드변경이 라이브 시트 손상 위험(D-047 등 사고 이력). 코드 버그성 실패는 텔레그램 알림 → 사람(Claude) 검토 후 수정이 안전.
 **잔여**: 'integration_runner' 재료수집 알림이 미설정(수집0)으로 사장님 혼란 → 사장님 확인 후 (a)알림 끄기 (b)활성화(단계 태깅+Apify키) (c)유지 택1. 이 시스템은 cafe-external concept 파생, 다른 세션/브랜치서 구축(사장님 명시 요청 기록 불명확).
 **구현 완료(2026-06-21, 사장님 "그걸 만들어줘")**: D-061 의 in-job 90초 재시도(rank-check.yml 기존)는 *실행 중* 일시 장애만 복구 → 못 잡는 **전체 작업/인프라 실패(checkout 403·러너 다운·setup 실패 등) 복구 레이어** 신규 추가. `.github/workflows/rank-check-watchdog.yml`: `on: workflow_run`(naver-rank-check, conclusion==failure) → `run_attempt==1` 이면 `gh run rerun --failed` 1회 자동 재시도, `>=2` 면 재시도 없이 '사람 확인' 알림. **무한루프 불가**(run_attempt 단조증가 가드 + 워치독 이름 분리로 자가 트리거 X). `scripts/notify_run_failure.py`(build_failure_alert 순수함수 + 비차단 send_report, 토큰/URL 로그 미노출) + `tests/unit/test_notify_run_failure.py` 16 + cafe 테스트 정합. **이중 리뷰**: code-reviewer CRITICAL 1(`gh run rerun` 실패해도 '재시도 중' 오알림 → RETRYING 을 `steps.rerun_step.outcome=='success'` 로 도출하게 수정) + `--failed`·attempt 표기 반영 / Codex NO BLOCKING. 전체 656 passed. ⚠️ **AI 코드 자동수정·재배포는 여전히 제외**(사람 검토 후 수정 — 라이브 시트 손상 방지). 알림→재시도→재실패 시 '사람 확인' 텔레그램 = 사장님 즉시 인지.
+
+### D-063: 저점리뷰 전수수집 = '이어받기'(미수집분 N개/run) — GHA 타임아웃 회피하며 506개 누적
+
+**배경**: 4·5단계 키워드 약 506개 저점리뷰를 모아 키워드마다 원고 재료 확보 필요. 직전(D-062 파생)은 대표 브랜드 화이트리스트(니조랄·헤드앤숄더·도브)로 한정해 6분 20건 실증. 이제 한정 풀고 전수로. 단 키워드당 ~2분 × 506 = 한 run(GHA 60분) 불가(전수 = timeout 확정).
+**결정(가장 안정적 방식)**: '이어받기'(resume). `수집결과_리뷰` 탭에 **이미 적재된 키워드는 수집일 무관 건너뜀**(`_existing_keywords`, seen_review read 재사용 — 추가 시트 read 없음). 한 run 은 아직 안 한 키워드만 **예산(`review_keyword_budget`)만큼** 처리하고 스스로 종료 → 여러 번 dispatch 로 506개 누적.
+**대안 안 고른 이유**: ① 한 run 전수 = timeout 강제종료 = 적재 중 데이터 유실. ② matrix 분할 = 키워드 정적 분배라 실패 키워드 재처리·진행도 추적 복잡. 이어받기는 시트 자체가 진행상태라 단순·견고.
+**구현**: env `REVIEW_KEYWORD_BUDGET`(기본 22 ≈ 키워드당 2분×22=44분, 50분 한도 내) / `REVIEW_MAX`(키워드당 목표, 직전 20→**40** 상향). 0건 키워드도 `'0건'` 마커 1행 적재 → 다음 run 시트 read 가 '완료'로 인식(매 run 0건 키워드 재시도하느라 예산이 새 키워드로 진행 못 하는 정체 방지). 진행도 보고 = `format_summary` 둘째 줄 '이번 run 키워드 N개 / 누적 N/총M개 완료 / 남은 K개'. GHA `timeout-minutes` 60→**50**(안전마진). 화이트리스트 dispatch input 비우면 전수(=한정 없음, 기존 동작).
+**가동 게이트**: cron 자동가동은 사장님 go 전까지 비활성 유지(`workflow_dispatch` 수동 전용 — D-062 정합). 이번엔 이어받기 1 run 동작만 검증.
+**검증**: 신규 5 단위테스트(이어받기 날짜무관 skip / 예산 / 0건 마커 / 무제한 / 진행도 요약), `test_integration_runner` 26 passed, 전체 664 passed(playwright 로컬 미설치 모듈만 제외 — CI 설치). **실제 GHA 1회 dispatch**(feat/review-lowstar-pw, budget 5, review_max 40)로 미수집분 처리·타임아웃 전 종료·키워드당 후기 20건 초과 확인. 브랜치 = `feat/review-lowstar-pw`(main 금지).
