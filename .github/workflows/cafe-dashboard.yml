@@ -76,7 +76,8 @@ jobs:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}          # 한수연 DM 추가 발송(미설정 시 스킵)
-          SLACK_TARGET_USER_ID: ${{ secrets.SLACK_TARGET_USER_ID }}
+          SLACK_TARGET_USER_ID: ${{ secrets.SLACK_TARGET_USER_ID }}  # U… 직접 지정(오버라이드)
+          SLACK_TARGET_EMAIL: ${{ secrets.SLACK_TARGET_EMAIL }}       # 없으면 이메일로 자동 조회
           GH_TOKEN: ${{ secrets.ACTIONS_PAT || github.token }}   # 타 워크플로 artifact 다운로드용
           GH_REPO: ${{ github.repository }}
           PYTHONIOENCODING: 'utf-8'

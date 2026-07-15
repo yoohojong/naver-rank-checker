@@ -5,14 +5,19 @@
 
 설계(notify.py 방어패턴 모방):
 - 표준 라이브러리 urllib 만 사용(requirements 무수정).
-- env: SLACK_BOT_TOKEN(xoxb-...), SLACK_TARGET_USER_ID(한수연 멤버ID U...).
-  둘 중 하나라도 없으면 [SLACK][SKIP] 후 False(비차단, 예외 X).
+- env(우선순위 순):
+    SLACK_BOT_TOKEN (xoxb-...) — 필수. 없으면 즉시 SKIP.
+    SLACK_TARGET_USER_ID (U...) — 있으면 그대로 사용(오버라이드).
+    SLACK_TARGET_EMAIL — USER_ID 없을 때 users.lookupByEmail 로 id 자동 조회.
+    둘 다 없으면 [SLACK][SKIP] 후 False(비차단, 예외 X).
+- 필요 Slack 앱 스코프: chat:write, files:write, im:write,
+    users:read.email (EMAIL 경로 사용 시 추가 필요).
 - files.upload 은 2025 deprecated → files_upload_v2 3단계 흐름:
     ① files.getUploadURLExternal (GET) → upload_url + file_id
     ② upload_url 에 파일 바이트 multipart POST
     ③ files.completeUploadExternal (POST) → DM 채널에 게시(initial_comment)
-- DM 채널 = conversations.open(users=SLACK_TARGET_USER_ID) 의 channel.id.
-- 토큰은 Authorization: Bearer 헤더로만 — 에러/로그에 토큰·url 절대 출력 금지(D-048 가드).
+- DM 채널 = conversations.open(users=<resolved user_id>) 의 channel.id.
+- 토큰·이메일은 Authorization: Bearer 헤더/env 로만 — 에러/로그에 절대 출력 금지(D-048 가드).
 - 실패/미설정 = 경고 후 False(비차단, 예외 전파 X).
 """
 import json
@@ -26,9 +31,11 @@ _BOUNDARY = "----nrcSlackBoundaryK3P8"
 
 
 def slack_secrets() -> tuple:
+    """(token, user_id, email) — user_id 또는 email 중 하나만 있으면 됨."""
     return (
         os.environ.get("SLACK_BOT_TOKEN", "").strip(),
         os.environ.get("SLACK_TARGET_USER_ID", "").strip(),
+        os.environ.get("SLACK_TARGET_EMAIL", "").strip(),
     )
 
 
@@ -86,6 +93,20 @@ def _open_dm(token: str, user_id: str, timeout: int = HTTP_TIMEOUT_SEC) -> str:
     return (resp.get("channel") or {}).get("id", "")
 
 
+def _lookup_user_by_email(token: str, email: str,
+                          timeout: int = HTTP_TIMEOUT_SEC) -> str:
+    """users.lookupByEmail → user_id(U...) 반환. 실패 시 "" (이메일 노출 금지).
+
+    필요 스코프: users:read.email
+    """
+    resp = _api_get("users.lookupByEmail", token, {"email": email}, timeout)
+    if not resp.get("ok"):
+        # 이메일 자체를 로그에 찍지 않는다(D-048 가드 확장)
+        print(f"[SLACK][WARN] 이메일로 유저 조회 실패: {resp.get('error', 'no_response')}")
+        return ""
+    return (resp.get("user") or {}).get("id", "")
+
+
 def _multipart_body(field: str, filename: str, file_bytes: bytes, content_type: str) -> bytes:
     """upload_url 용 multipart/form-data 본문 수동 조립(requests 없이)."""
     crlf = b"\r\n"
@@ -119,13 +140,29 @@ def _upload_bytes(upload_url: str, filename: str, file_bytes: bytes,
 def _upload_and_share(file_bytes: bytes, filename: str, content_type: str,
                       title: str = "", initial_comment: str = "",
                       timeout: int = HTTP_TIMEOUT_SEC) -> bool:
-    """files_upload_v2 3단계 + DM 게시 공용. 성공 True. 미설정/실패 = 경고 후 False."""
-    token, user_id = slack_secrets()
-    if not token or not user_id:
-        print("[SLACK][SKIP] SLACK_BOT_TOKEN/SLACK_TARGET_USER_ID 미설정 — 슬랙 발송 건너뜀")
+    """files_upload_v2 3단계 + DM 게시 공용. 성공 True. 미설정/실패 = 경고 후 False.
+
+    타깃 해석 우선순위:
+      1. SLACK_TARGET_USER_ID(U...) 있으면 그대로 사용(오버라이드).
+      2. 없고 SLACK_TARGET_EMAIL 있으면 users.lookupByEmail 로 id 조회.
+      3. 둘 다 없으면 [SLACK][SKIP].
+    """
+    token, user_id, email = slack_secrets()
+    if not token:
+        print("[SLACK][SKIP] SLACK_BOT_TOKEN 미설정 — 슬랙 발송 건너뜀")
         return False
 
-    channel_id = _open_dm(token, user_id, timeout)
+    if user_id:
+        resolved_id = user_id  # USER_ID 직접 오버라이드
+    elif email:
+        resolved_id = _lookup_user_by_email(token, email, timeout)
+        if not resolved_id:
+            return False
+    else:
+        print("[SLACK][SKIP] SLACK_TARGET_USER_ID/SLACK_TARGET_EMAIL 미설정 — 슬랙 발송 건너뜀")
+        return False
+
+    channel_id = _open_dm(token, resolved_id, timeout)
     if not channel_id:
         return False
 
