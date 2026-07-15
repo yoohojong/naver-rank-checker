@@ -22,6 +22,26 @@ const git = (...args) => execFileSync('git', ['-C', REPO, ...args], {
 }).trim();
 const gitSafe = (...args) => { try { return git(...args); } catch { return ''; } };
 
+// 이어받기 브리핑: 다른 기기가 한 작업을 세션 시작 화면에 요약(stdout=SessionStart 컨텍스트 주입).
+function printResume(branch, commits, changedFiles) {
+  try {
+    if (!commits.length) return;
+    const lines = [`🔄 이어받기 [브랜치: ${branch}] — 다른 곳에서 한 작업 ${commits.length}건 받음:`];
+    for (const c of commits.slice(0, 6)) {
+      const i = c.indexOf('\t');
+      const when = i >= 0 ? c.slice(0, i) : '';
+      const subj = i >= 0 ? c.slice(i + 1) : c;
+      lines.push(`   • ${subj}${when ? ` (${when})` : ''}`);
+    }
+    if (commits.length > 6) lines.push(`   … 외 ${commits.length - 6}건`);
+    if (changedFiles.length) {
+      lines.push(`   바뀐 파일 ${changedFiles.length}개: ${changedFiles.slice(0, 8).join(', ')}${changedFiles.length > 8 ? ' …' : ''}`);
+      lines.push('   → 이어가려면 위 파일부터 확인하세요.');
+    }
+    console.log(lines.join('\n'));
+  } catch {}
+}
+
 try {
   if (!existsSync(`${REPO}/.git`)) { log('skip: not a git repo'); process.exit(0); }
   if (existsSync(`${REPO}/.git/index.lock`)) { log('skip: index.lock present'); process.exit(0); }
@@ -44,14 +64,20 @@ try {
   const ahead = parseInt(gitSafe('rev-list', '--count', `${upstream}..HEAD`), 10) || 0;
   if (behind === 0) { log(`up-to-date on ${branch} (ahead ${ahead})`); process.exit(0); }
 
+  // 이어받기 브리핑용: pull 전에 '들어올 커밋/바뀔 파일'을 미리 캡처(다른 기기가 한 작업).
+  const incoming = gitSafe('log', '--format=%cr%x09%s', `HEAD..${upstream}`).split('\n').filter(Boolean);
+  const incomingFiles = gitSafe('-c', 'core.quotepath=false', 'diff', '--name-only', `HEAD..${upstream}`).split('\n').filter(Boolean);
+
   // pull --rebase --autostash: 미커밋 변경 임시보관→재적용, 로컬 커밋은 원격 위로 재배치. --force 아님.
   try {
     git('pull', '--rebase', '--autostash', '--quiet', 'origin', branch);
     log(`pulled: ${branch} 이(가) behind ${behind}(ahead ${ahead}) → 최신 반영 완료`);
+    printResume(branch, incoming, incomingFiles);
   } catch (e) {
     // 진짜 충돌 → 원상복구(rebase --abort 는 pre-rebase 상태로 되돌려 로컬 작업 무손실). 사용자 수동 병합.
     gitSafe('rebase', '--abort');
     log(`CONFLICT: rebase aborted, 원상복구함(behind ${behind}, ahead ${ahead}). 수동 병합 필요. ${e?.message?.slice(0, 120) || ''}`);
+    console.log(`⚠️ 이어받기 경고 [${branch}]: 양쪽 기기에서 같은 부분을 편집해 자동 병합 실패 → 원상복구(무손실). 수동 확인 필요.`);
   }
 } catch (e) {
   log('error: ' + (e?.message?.slice(0, 200) || 'unknown'));

@@ -7,6 +7,7 @@
 //   ⑩ git add -A 미사용 — 비민감 파일만 개별 add (사용자 수동 staging 보존)
 import { execFileSync, spawn } from 'node:child_process';
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { hostname } from 'node:os';
 
 // 1) 재진입 가드 (push 자식에 AUTOBACKUP_RUNNING=1 주입; Stop hook 은 자기 commit 으로
 //    재트리거되지 않지만 이중 안전 + cooldown 으로 보강)
@@ -21,6 +22,7 @@ try { cwd = (JSON.parse(raw || '{}').cwd) || ''; } catch {}
 const REPO = process.env.CLAUDE_PROJECT_DIR || cwd || process.cwd();
 const ts = () => new Date().toISOString();
 const log = (m) => { try { writeFileSync(`${REPO}/.git/autobackup.log`, `[${ts()}] ${m}\n`, { flag: 'a' }); } catch {} };
+const HOST = (() => { try { return hostname(); } catch { return 'unknown'; } })();
 
 // execFileSync: 쉘을 거치지 않아 파일명/경로의 특수문자로 명령주입 불가. 30초 타임아웃.
 const git = (...args) => execFileSync('git', ['-C', REPO, ...args], {
@@ -78,7 +80,7 @@ try {
   const staged = git('diff', '--cached', '--name-only').split('\n').filter(Boolean);
   if (staged.length === 0) { log('skip: nothing staged'); process.exit(0); }
 
-  git('commit', '-q', '-m', `auto-backup ${ts()}`);
+  git('commit', '-q', '-m', `auto-backup(${HOST}) ${ts()}`);
   writeFileSync(tsFile, String(Date.now()));
   log(`committed ${staged.length} files on ${branch} (filtered ${filtered})`);
 
