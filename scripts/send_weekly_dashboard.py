@@ -62,8 +62,16 @@ def main() -> int:
     print(f"[WEEKLY] PNG 저장: {os.path.abspath(out)} ({len(png)} bytes)")
 
     if not args.no_send:
-        ok = send_photo(png, caption=caption(ctx), filename=filename)
+        cap = caption(ctx)
+        ok = send_photo(png, caption=cap, filename=filename)
         print(f"[WEEKLY] 발송 {'성공' if ok else '건너뜀/실패'}")
+        # 슬랙 DM(한수연) 추가 발송 — import/미설정/실패가 텔레그램 흐름 안 깨게 격리.
+        try:
+            from src.slack_notify import send_slack_photo  # noqa: E402
+            sok = send_slack_photo(png, filename=filename, initial_comment=cap)
+            print(f"[WEEKLY][SLACK] 발송 {'성공' if sok else '건너뜀/실패'}")
+        except Exception as e:  # noqa: BLE001 — 슬랙 실패 비차단
+            print(f"[WEEKLY][SLACK][WARN] 슬랙 발송 생략: {type(e).__name__}")
     return 0
 
 
