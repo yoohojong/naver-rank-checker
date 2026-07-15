@@ -6,7 +6,8 @@ name: telegram-report
 
 on:
   schedule:
-    - cron: '0 22 * * *'   # 07:00 KST 아침 요약 (UTC+9)
+    # 아침(07:00 KST) 텍스트 요약은 이미지 대시보드로 대체(cafe-dashboard.yml '0 22'). 아래 줄만 되살리면 원복.
+    # - cron: '0 22 * * *'   # 07:00 KST 아침 요약 (UTC+9)
     - cron: '0 10 * * *'   # 19:00 KST 저녁 최종본 (UTC+9)
   workflow_dispatch:
     inputs:
