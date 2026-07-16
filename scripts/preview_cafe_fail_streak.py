@@ -24,6 +24,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from src.sheets import (  # noqa: E402
     _next_cafe_fail_streak,
+    _next_cafe_fail_history,
     _fail_streak_color,
     _parse_fail_streak,
     COLOR_FAIL_STREAK_1,
@@ -42,6 +43,7 @@ _H_RAW_M    = "raw_카페순위"
 _H_COUNT    = "raw_카페1등실패횟수"
 _H_LAST_WD  = "raw_카페실패마지막작업일"
 _H_MAX      = "raw_카페실패최대"
+_H_SINCE    = "raw_카페1등연속시작"
 
 _COLOR_NAME = {
     id(COLOR_FAIL_STREAK_1): "연노랑(1회)",
@@ -129,8 +131,8 @@ def _cause(rank: str, wd: str, last_wd: str, ref: date) -> str:
     if not wd:
         return "작업일없음"
     wd_date = _md_to_date(wd, ref)
-    if wd_date is None or (ref - wd_date).days < 1:
-        return "1일미경과"
+    if wd_date is None or (ref - wd_date).days < 2:
+        return "2일미경과"
     if wd == last_wd:
         return "같은발행재run"
     return "증가"
@@ -170,6 +172,7 @@ def main() -> None:
             total += 1
             prev = _parse_fail_streak(row.get(_H_COUNT))
             prev_max = _parse_fail_streak(row.get(_H_MAX))
+            prev_since = str(row.get(_H_SINCE, "") or "").strip()
             rank = _cafe_rank(row)
             wd = str(row.get(_H_WORKDATE, "") or "").strip()
             last_wd = str(row.get(_H_LAST_WD, "") or "").strip()
@@ -179,7 +182,7 @@ def main() -> None:
             new_cnt, new_wd = _next_cafe_fail_streak(
                 prev, rank, wd, ref, last_count_date_str=last_wd
             )
-            new_max = max(prev_max, new_cnt)
+            new_max, _ = _next_cafe_fail_history(rank, prev_max, new_cnt, prev_since, ref)
             color = _fail_streak_color(new_cnt, new_max)
             c = _cause(rank, wd, last_wd, ref)
             cname = _COLOR_NAME.get(id(color), "-") if color else "-"
@@ -195,7 +198,7 @@ def main() -> None:
 
     SEP = "  " + "-" * 90
 
-    print(f"\n[횟수 증가] {len(increased)}개 — 새 발행이 1일↑ 경과 후 1등 실패\n")
+    print(f"\n[횟수 증가] {len(increased)}개 — 새 발행이 2일↑ 경과(발행 다음다음날) 후 1등 실패\n")
     if increased:
         print(f"  {'탭':<12} {'키워드':<22} {'작업일':<7} {'카페순위':<12}"
               f" {'prev':>4} {'→cnt':>4} {'→max':>4}  {'→마지막작업일':<10} {'색단계'}")

@@ -72,8 +72,12 @@ HEADER_LAST_CHECKED_AT = "마지막검사시각"
 HEADER_RAW_CAFE_FAIL_STREAK = "raw_카페1등실패횟수"
 # 마지막으로 카운터를 +1 한 그 발행의 작업일 (M/D 문자열 그대로). 같은 발행 중복 카운트 방지 게이트.
 HEADER_RAW_CAFE_FAIL_LAST_DATE = "raw_카페실패마지막작업일"
-# 역대 최대 실패 횟수 (단조 비감소, 1등 리셋 시에도 유지). '전적 있으나 현재 1등' 회색 표기 판별용.
+# 역대 최대 실패 횟수 (1등 리셋 시에도 유지). '전적 있으나 현재 1등' 회색 표기 판별용.
 HEADER_RAW_CAFE_FAIL_MAX = "raw_카페실패최대"
+# 1등 연속 유지 시작일 (M/D). 이 날부터 CAFE_HISTORY_CLEAR_DAYS 이상 계속 1등이면 전적(최대) 해제 → 흰색.
+HEADER_RAW_CAFE_ONETOP_SINCE = "raw_카페1등연속시작"
+# 이 일수 이상 연속 1등 유지 시 전적 회색 해제(완전 정상=흰색). 사장님 확정 2026-07-16.
+CAFE_HISTORY_CLEAR_DAYS = 14
 
 STALE_DISPLAY_K = "재검사필요"
 INPUT_KEY_VERSION = "v1"
@@ -87,7 +91,8 @@ STALE_FORMULA_HEADERS = (
     HEADER_LAST_CHECKED_AT,
     HEADER_RAW_CAFE_FAIL_STREAK,       # 맨 뒤 append (기존 열 위치 불변, 헤더명 매핑이라 무관)
     HEADER_RAW_CAFE_FAIL_LAST_DATE,    # 카운터 날짜 게이트 (streak 바로 뒤)
-    HEADER_RAW_CAFE_FAIL_MAX,          # 역대 최대 (단조 비감소, 1등 리셋에도 유지)
+    HEADER_RAW_CAFE_FAIL_MAX,          # 역대 최대 (1등 리셋에도 유지, 단 오래 1등이면 해제)
+    HEADER_RAW_CAFE_ONETOP_SINCE,      # 1등 연속 시작일 (전적 만료 판정용)
 )
 STALE_FORMULA_WRITE_COLUMNS = frozenset({
     HEADER_LAST_CHECKED_INPUT_KEY,
@@ -99,6 +104,7 @@ STALE_FORMULA_WRITE_COLUMNS = frozenset({
     HEADER_RAW_CAFE_FAIL_STREAK,       # ghost 행 clear 대상 포함 (clear_stale_formula_cells)
     HEADER_RAW_CAFE_FAIL_LAST_DATE,
     HEADER_RAW_CAFE_FAIL_MAX,
+    HEADER_RAW_CAFE_ONETOP_SINCE,
 })
 
 # D-023 (2026-05-14) 영구 룰: 사장님 시트 사용자 입력 컬럼 = 자동 갱신 절대 X.
@@ -247,12 +253,12 @@ def _next_cafe_fail_streak(
       new_last_workdate = 마지막으로 +1 한 발행의 작업일(M/D) 또는 빈칸(리셋 시).
       last_count_date_str 는 이전 마지막작업일(M/D) — 같은 발행분 중복 카운트 방지 게이트.
 
-    규칙:
+    규칙 (2026-07-16 사장님 확정: 발행 당일·다음날은 흰색, 그 다음날부터 판정):
     - cafe_rank == "1" → (0, "") 리셋 (카페 구좌 1등 = 성공 = 해결).
     - ref_date 없음 / 작업일 빈칸·파싱불가 → 유지 (경과 계산 불가).
-    - (오늘 − 작업일).days < 1 → 유지 (이 발행 아직 판단 전).
+    - (오늘 − 작업일).days < 2 → 유지 (발행 당일·다음날은 아직 판단 전 = 흰색).
     - 작업일(M/D) == 마지막작업일(last_count_date_str) → 유지 (이 발행분 이미 카운트함).
-    - 작업일 != 마지막작업일 AND 1일 이상 경과
+    - 작업일 != 마지막작업일 AND 2일 이상 경과 (발행 다음다음날부터)
       → (prev + 1, 현재 작업일 M/D) — 새 발행분이 또 1등 실패.
     """
     if str(cafe_rank or "").strip() == "1":
@@ -266,13 +272,47 @@ def _next_cafe_fail_streak(
     wd = _md_to_date(wd_str, ref_date)
     if wd is None:
         return (max(0, int(prev_counter)), last_count_date_str)
-    if (ref_date - wd).days < 1:
+    if (ref_date - wd).days < 2:
         return (max(0, int(prev_counter)), last_count_date_str)
     # 같은 발행분(작업일 동일)은 이미 카운트 → 유지
     if wd_str == str(last_count_date_str or "").strip():
         return (max(0, int(prev_counter)), last_count_date_str)
-    # 새 발행분이 1일 이상 경과 후에도 1등 실패 → 횟수 +1, 마지막작업일 = 현재 작업일
+    # 새 발행분이 2일 이상 경과 후에도 1등 실패 → 횟수 +1, 마지막작업일 = 현재 작업일
     return (max(0, int(prev_counter)) + 1, wd_str)
+
+
+def _next_cafe_fail_history(
+    cafe_rank: object,
+    prev_max: int,
+    new_streak: int,
+    prev_since: str,
+    ref_date: Optional[date],
+    clear_days: int = CAFE_HISTORY_CLEAR_DAYS,
+) -> tuple[int, str]:
+    """전적(역대 최대 실패) + '1등 연속 시작일' 갱신 → (new_max, new_since_md).
+
+    사장님 확정 2026-07-16: 오래(clear_days 일 이상) 계속 1등이면 전적 회색을 해제(흰색).
+    - 1등 아님(실패/판단전): 연속 끊김 → since="", max = max(prev_max, new_streak) (전적 유지·증가).
+    - 1등이고 전적 없음(max<=0): 추적 불필요 → (0, "").
+    - 1등이고 전적 있음: since = 이전 시작일 or 오늘(첫 진입).
+        (오늘 − since).days >= clear_days → 전적 해제 (0, "").
+        아니면 → (max 유지, since 유지).
+    """
+    base_max = max(int(prev_max or 0), int(new_streak or 0))
+    if str(cafe_rank or "").strip() != "1":
+        return (base_max, "")
+    if base_max <= 0:
+        return (0, "")
+    if ref_date is None:
+        return (base_max, str(prev_since or "").strip())
+    from src.report_metrics import _md_to_date
+
+    today_md = f"{ref_date.month}/{ref_date.day}"
+    since = str(prev_since or "").strip() or today_md
+    since_date = _md_to_date(since, ref_date)
+    if since_date is not None and (ref_date - since_date).days >= clear_days:
+        return (0, "")
+    return (base_max, since)
 
 
 def _fail_streak_color(counter: int, max_streak: int = 0) -> Optional[dict]:
@@ -406,6 +446,7 @@ class SheetsClient:
                     HEADER_RAW_CAFE_FAIL_STREAK: "0",  # 마이그레이션 시 카운터 0부터
                     HEADER_RAW_CAFE_FAIL_LAST_DATE: "",  # 마지막카운트일 빈칸으로 시딩
                     HEADER_RAW_CAFE_FAIL_MAX: "0",     # 역대 최대 0부터 시작
+                    HEADER_RAW_CAFE_ONETOP_SINCE: "",  # 1등 연속 시작일 빈칸으로 시딩
                 }
                 for header, value in values_by_header.items():
                     if header not in newly_created_headers:
@@ -502,6 +543,7 @@ class SheetsClient:
         streak_idx = mapping.get(HEADER_RAW_CAFE_FAIL_STREAK)
         last_date_idx = mapping.get(HEADER_RAW_CAFE_FAIL_LAST_DATE)
         max_streak_idx = mapping.get(HEADER_RAW_CAFE_FAIL_MAX)
+        onetop_since_idx = mapping.get(HEADER_RAW_CAFE_ONETOP_SINCE)
         workdate_idx = mapping.get(HEADER_WORKDATE)
         ref_date = _parse_checked_date(checked_at)
 
@@ -699,11 +741,14 @@ class SheetsClient:
                 prev_last_date = _cell(target_values, last_date_idx) if last_date_idx is not None else ""
                 workdate_md = _cell(target_values, workdate_idx) if workdate_idx is not None else ""
                 prev_max = _parse_fail_streak(_cell(target_values, max_streak_idx)) if max_streak_idx is not None else 0
+                prev_since = _cell(target_values, onetop_since_idx) if onetop_since_idx is not None else ""
                 new_streak, new_last_date = _next_cafe_fail_streak(
                     prev_streak, payload.get(HEADER_RAW_M, ""), workdate_md, ref_date,
                     last_count_date_str=prev_last_date,
                 )
-                new_max = max(prev_max, new_streak)
+                new_max, new_since = _next_cafe_fail_history(
+                    payload.get(HEADER_RAW_M, ""), prev_max, new_streak, prev_since, ref_date,
+                )
                 cells.append({
                     "range": gspread.utils.rowcol_to_a1(target_row, streak_idx + 1),
                     "values": [[str(new_streak)]],
@@ -717,6 +762,11 @@ class SheetsClient:
                     cells.append({
                         "range": gspread.utils.rowcol_to_a1(target_row, max_streak_idx + 1),
                         "values": [[str(new_max)]],
+                    })
+                if onetop_since_idx is not None:
+                    cells.append({
+                        "range": gspread.utils.rowcol_to_a1(target_row, onetop_since_idx + 1),
+                        "values": [[new_since]],
                     })
                 streak_color = _fail_streak_color(new_streak, new_max)
                 color_formats.append({
