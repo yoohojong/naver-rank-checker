@@ -129,6 +129,16 @@ class TestNextCafeFailCount:
         cnt, _ = _next_cafe_fail_streak(0, "", WD_9, REF_11, last_count_date_str="")
         assert cnt == 1
 
+    def test_과거1위_이력있으면_동결_색칠안함(self):
+        """ever_onetop=True, 현재 미노출, 2일↑ 경과 → 카운트 안 늘고 0 동결"""
+        cnt, wd = _next_cafe_fail_streak(0, "", WD_9, REF_11, last_count_date_str="", ever_onetop=True)
+        assert cnt == 0
+        assert wd == ""
+
+    def test_과거1위_이력없으면_정상카운트(self):
+        cnt, _ = _next_cafe_fail_streak(0, "", WD_9, REF_11, last_count_date_str="", ever_onetop=False)
+        assert cnt == 1
+
     def test_2등이하도_실패(self):
         """카페순위 "3" = 1등 실패 (2일 경과 후)"""
         cnt, wd = _next_cafe_fail_streak(0, "3", WD_9, REF_11, last_count_date_str="")
@@ -259,12 +269,13 @@ HEADERS = [
     "raw_카페실패마지막작업일", # X = index 23
     "raw_카페실패최대",         # Y = index 24 (역대 최대)
     "raw_카페1등연속시작",      # Z = index 25 (1등 연속 시작일, 전적 만료용)
+    "raw_카페1등달성",          # AA = index 26 (1위 달성 이력 Y — 색칠 면제)
 ]
 KEYWORD = "비듬샴푸추천"
 LINK = "https://cafe.naver.com/workee/1325909"
 
 
-def _make_client(prev_count: str, workdate: str, prev_last_wd: str = "", prev_max: str = "0", prev_since: str = ""):
+def _make_client(prev_count: str, workdate: str, prev_last_wd: str = "", prev_max: str = "0", prev_since: str = "", prev_ever: str = ""):
     fake_creds = json.dumps({
         "type": "service_account",
         "client_email": "x@example.iam.gserviceaccount.com",
@@ -279,6 +290,7 @@ def _make_client(prev_count: str, workdate: str, prev_last_wd: str = "", prev_ma
     row2[HEADERS.index("raw_카페실패마지막작업일")] = prev_last_wd
     row2[HEADERS.index("raw_카페실패최대")] = prev_max
     row2[HEADERS.index("raw_카페1등연속시작")] = prev_since
+    row2[HEADERS.index("raw_카페1등달성")] = prev_ever
     with patch("src.sheets.gspread.service_account_from_dict") as mock_auth:
         mock_gc = MagicMock()
         mock_sheet = MagicMock()
@@ -464,3 +476,32 @@ class TestWriteStaleFormulaFailCount:
         assert {"range": "Y2", "values": [["2"]]} in cells
         assert {"range": "Z2", "values": [["9/10"]]} in cells
         assert {"range": "D2", "format": {"backgroundColor": COLOR_FAIL_HISTORY}} in _all_formats(ws)
+
+    # ─── 1위 달성 이력 → 색칠 면제 (2026-07-16) ─────────────────────────────────
+    def test_과거1위_이력있으면_떨어져도_색칠안함(self):
+        """prev_ever=Y, 지금 미노출(2일↑ 지남) → 연노랑 아님, 연회색 유지(동결), 이력 Y 유지"""
+        client, ws = _make_client(prev_count="0", workdate="9/1", prev_last_wd="",
+                                  prev_max="2", prev_ever="Y")
+        _write(client, cafe_rank="", checked_at="2026-09-10 12:00 KST")
+
+        cells = _all_cells(ws)
+        assert {"range": "W2", "values": [["0"]]} in cells    # 카운트 동결
+        assert {"range": "AA2", "values": [["Y"]]} in cells   # 이력 유지
+        assert {"range": "D2", "format": {"backgroundColor": COLOR_FAIL_HISTORY}} in _all_formats(ws)
+
+    def test_이력없으면_기존대로_색칠(self):
+        """prev_ever='', 미노출 2일↑ → 정상 색칠(연노랑), 이력 빈칸"""
+        client, ws = _make_client(prev_count="0", workdate="9/1", prev_last_wd="", prev_ever="")
+        _write(client, cafe_rank="", checked_at="2026-09-10 12:00 KST")
+
+        cells = _all_cells(ws)
+        assert {"range": "W2", "values": [["1"]]} in cells
+        assert {"range": "AA2", "values": [[""]]} in cells
+        assert {"range": "D2", "format": {"backgroundColor": COLOR_FAIL_STREAK_1}} in _all_formats(ws)
+
+    def test_1위_달성하면_이력Y_기록(self):
+        """지금 1위 → AA2=Y 기록(이후 색칠 면제 근거)"""
+        client, ws = _make_client(prev_count="1", workdate="9/1", prev_last_wd="9/1", prev_ever="")
+        _write(client, cafe_rank="1", checked_at="2026-09-10 12:00 KST")
+
+        assert {"range": "AA2", "values": [["Y"]]} in _all_cells(ws)

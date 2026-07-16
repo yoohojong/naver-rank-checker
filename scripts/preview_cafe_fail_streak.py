@@ -44,6 +44,7 @@ _H_COUNT    = "raw_카페1등실패횟수"
 _H_LAST_WD  = "raw_카페실패마지막작업일"
 _H_MAX      = "raw_카페실패최대"
 _H_SINCE    = "raw_카페1등연속시작"
+_H_EVER     = "raw_카페1등달성"
 
 _COLOR_NAME = {
     id(COLOR_FAIL_STREAK_1): "연노랑(1회)",
@@ -125,9 +126,11 @@ def _synthetic_backup(ref: date) -> dict:
             "tabs": {"샴푸 카외": shampoo, "바디워시 카외": bodywash}}
 
 
-def _cause(rank: str, wd: str, last_wd: str, ref: date) -> str:
+def _cause(rank: str, wd: str, last_wd: str, ref: date, ever: bool = False) -> str:
     if rank == "1":
         return "1등리셋"
+    if ever:
+        return "과거1위동결"
     if not wd:
         return "작업일없음"
     wd_date = _md_to_date(wd, ref)
@@ -173,6 +176,7 @@ def main() -> None:
             prev = _parse_fail_streak(row.get(_H_COUNT))
             prev_max = _parse_fail_streak(row.get(_H_MAX))
             prev_since = str(row.get(_H_SINCE, "") or "").strip()
+            prev_ever = str(row.get(_H_EVER, "") or "").strip()
             rank = _cafe_rank(row)
             wd = str(row.get(_H_WORKDATE, "") or "").strip()
             last_wd = str(row.get(_H_LAST_WD, "") or "").strip()
@@ -180,16 +184,16 @@ def main() -> None:
             rank_str = rank or "(빈칸=미노출)"
 
             new_cnt, new_wd = _next_cafe_fail_streak(
-                prev, rank, wd, ref, last_count_date_str=last_wd
+                prev, rank, wd, ref, last_count_date_str=last_wd, ever_onetop=(prev_ever == "Y")
             )
             new_max, _ = _next_cafe_fail_history(rank, prev_max, new_cnt, prev_since, ref)
             color = _fail_streak_color(new_cnt, new_max)
-            c = _cause(rank, wd, last_wd, ref)
+            c = _cause(rank, wd, last_wd, ref, ever=(prev_ever == "Y"))
             cname = _COLOR_NAME.get(id(color), "-") if color else "-"
             entry = (tab, kw, wd, rank_str, prev, new_cnt, new_max, last_wd, new_wd, cname, c)
             if c == "증가":
                 increased.append(entry)
-            elif c in ("같은발행재run", "1일미경과", "작업일없음") and color is not None:
+            elif c in ("같은발행재run", "2일미경과", "작업일없음", "과거1위동결") and color is not None:
                 held.append(entry)
             elif c == "1등리셋" and new_max >= 1:
                 history_gray.append(entry)
