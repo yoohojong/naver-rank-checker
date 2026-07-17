@@ -76,8 +76,8 @@ HEADER_RAW_CAFE_FAIL_LAST_DATE = "raw_카페실패마지막작업일"
 HEADER_RAW_CAFE_FAIL_MAX = "raw_카페실패최대"
 # 1등 연속 유지 시작일 (M/D). 이 날부터 CAFE_HISTORY_CLEAR_DAYS 이상 계속 1등이면 전적(최대) 해제 → 흰색.
 HEADER_RAW_CAFE_ONETOP_SINCE = "raw_카페1등연속시작"
-# 이 일수 이상 연속 1등 유지 시 전적 회색 해제(완전 정상=흰색). 사장님 확정 2026-07-16.
-CAFE_HISTORY_CLEAR_DAYS = 14
+# 이 일수 이상 연속 1등 유지 시 전적 회색 해제(완전 정상=흰색). 사장님 확정 2026-07-16 → 3일로 단축 2026-07-18.
+CAFE_HISTORY_CLEAR_DAYS = 3
 # 한 번이라도 카페 구좌 1위 달성하면 "Y"(영구). 이후엔 떨어져도 실패 색칠 안 함.
 # 사장님 2026-07-16: "한번이라도 1위 떴으면 그 후 누락돼도 상관없는 키워드". 색칠(연노랑~빨강)=1위 무경험만.
 HEADER_RAW_CAFE_EVER_ONETOP = "raw_카페1등달성"

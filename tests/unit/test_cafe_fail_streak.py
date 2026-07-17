@@ -5,11 +5,11 @@
 - v2: 하루당 카운터 (YYYY-MM-DD 게이트)
 - v3: 재발행 횟수 (작업일 M/D 게이트)
 - v4: 발행 당일·다음날은 흰색, 발행 다음다음날(2일 경과)부터 판정 — 사장님 확정 2026-07-16
-- v5: 전적 회색 만료 — 14일 이상 연속 1등이면 전적(최대) 해제 → 흰색
+- v5: 전적 회색 만료 — 3일 이상 연속 1등이면 전적(최대) 해제 → 흰색 (14→3, 2026-07-18)
 
 의미: 재발행(작업일 값이 바뀜)마다, 발행 다음다음날(2일 경과)에도 1등 실패면 +1.
      발행 당일·다음날은 아직 흰색. 같은 발행분은 run 수에 무관 1회만.
-색 임계: 1회=연노랑, 2회=주황, 3회+=빨강. 전적 있으나 현재 1등=회색(단 14일+ 연속 1등이면 해제).
+색 임계: 1회=연노랑, 2회=주황, 3회+=빨강. 전적 있으나 현재 1등=회색(단 3일+ 연속 1등이면 해제).
 
 대상:
 - 순수 로직: _next_cafe_fail_streak / _fail_streak_color / _parse_fail_streak / _parse_checked_date
@@ -180,26 +180,26 @@ class TestNextCafeFailHistory:
         assert new_max == 2
         assert since == "9/10"
 
-    def test_1등_14일미만이면_전적유지(self):
-        """9/5부터 1등, 오늘 9/10 = 5일 < 14 → 전적 유지"""
-        new_max, since = _next_cafe_fail_history("1", 3, 0, "9/5", REF_10)
+    def test_1등_3일미만이면_전적유지(self):
+        """9/8부터 1등, 오늘 9/10 = 2일 < 3 → 전적 유지"""
+        new_max, since = _next_cafe_fail_history("1", 3, 0, "9/8", REF_10)
         assert new_max == 3
-        assert since == "9/5"
+        assert since == "9/8"
 
-    def test_1등_14일이상이면_전적해제(self):
-        """8/1부터 1등, 오늘 9/10 = 40일 >= 14 → 전적 해제(0)"""
+    def test_1등_3일이상이면_전적해제(self):
+        """8/1부터 1등, 오늘 9/10 = 40일 >= 3 → 전적 해제(0)"""
         new_max, since = _next_cafe_fail_history("1", 3, 0, "8/1", REF_10)
         assert new_max == 0
         assert since == ""
 
     def test_1등_정확히_임계일이면_해제(self):
-        """9/10 기준 정확히 14일 전(8/27) → 해제"""
-        new_max, since = _next_cafe_fail_history("1", 2, 0, "8/27", REF_10)
+        """9/10 기준 정확히 3일 전(9/7) → 해제"""
+        new_max, since = _next_cafe_fail_history("1", 2, 0, "9/7", REF_10)
         assert new_max == 0
         assert since == ""
 
     def test_임계값_상수_확인(self):
-        assert CAFE_HISTORY_CLEAR_DAYS == 14
+        assert CAFE_HISTORY_CLEAR_DAYS == 3
 
 
 # ── 순수 로직: _fail_streak_color ────────────────────────────────────────────
@@ -444,8 +444,8 @@ class TestWriteStaleFormulaFailCount:
         assert {"range": "D2", "format": {"backgroundColor": COLOR_FAIL_HISTORY}} in _all_formats(ws)
 
     # ─── 전적 회색 만료 (③, 2026-07-16) ───────────────────────────────────────
-    def test_전적_14일이상_연속1등이면_해제_흰색(self):
-        """전적 있으나 8/1부터 40일 연속 1등 → 전적 해제(Y2=0), 연속시작 클리어(Z2=''), 흰색"""
+    def test_전적_3일이상_연속1등이면_해제_흰색(self):
+        """전적 있으나 8/1부터 40일 연속 1등(≥3) → 전적 해제(Y2=0), 연속시작 클리어(Z2=''), 흰색"""
         client, ws = _make_client(prev_count="0", workdate="9/9", prev_last_wd="",
                                   prev_max="3", prev_since="8/1")
         _write(client, cafe_rank="1", checked_at="2026-09-10 12:00 KST")
@@ -455,15 +455,15 @@ class TestWriteStaleFormulaFailCount:
         assert {"range": "Z2", "values": [[""]]} in cells
         assert {"range": "D2", "format": {"backgroundColor": COLOR_NONE}} in _all_formats(ws)
 
-    def test_전적_14일미만_연속1등이면_회색유지(self):
-        """9/5부터 5일 연속 1등 → 전적 유지(Y2=3), 연속시작 유지(Z2=9/5), 회색"""
+    def test_전적_3일미만_연속1등이면_회색유지(self):
+        """9/8부터 2일 연속 1등 → 전적 유지(Y2=3), 연속시작 유지(Z2=9/8), 회색"""
         client, ws = _make_client(prev_count="0", workdate="9/9", prev_last_wd="",
-                                  prev_max="3", prev_since="9/5")
+                                  prev_max="3", prev_since="9/8")
         _write(client, cafe_rank="1", checked_at="2026-09-10 12:00 KST")
 
         cells = _all_cells(ws)
         assert {"range": "Y2", "values": [["3"]]} in cells
-        assert {"range": "Z2", "values": [["9/5"]]} in cells
+        assert {"range": "Z2", "values": [["9/8"]]} in cells
         assert {"range": "D2", "format": {"backgroundColor": COLOR_FAIL_HISTORY}} in _all_formats(ws)
 
     def test_전적_방금1등진입_연속시작_오늘로_기록(self):
