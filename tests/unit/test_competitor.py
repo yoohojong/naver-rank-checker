@@ -230,6 +230,44 @@ def test_build_competitor_rows_best_rank_across_different_areas():
     assert rows[0]["구좌"] == "인기글"
 
 
+def test_total_cap_does_not_starve_ab():
+    """AB 순위는 페이지 전체 1..N, 스마트블록은 박스마다 1부터 — 한 줄로 세워 자르면 AB 가 밀린다.
+
+    사장님이 제일 중요하게 보는 구좌가 잘리면 안 되므로 구좌를 번갈아 채운다.
+    """
+    items = [
+        SlotItem(area="AB", rank=r, url=f"https://cafe.naver.com/ab{r}/1", kind="cafe")
+        for r in range(1, 6)
+    ] + [
+        SlotItem(area="스마트블록", rank=1, url=f"https://blog.naver.com/sb{b}/1", kind="blog")
+        for b in range(3)
+    ] + [
+        SlotItem(area="인기글", rank=1, url="https://cafe.naver.com/pop1/1", kind="cafe"),
+    ]
+    rows = build_competitor_rows(
+        date_str="2026-07-23", tab="샴푸 카외", keyword="비듬샴푸", our_state="누락",
+        items=items, top_n=5, max_per_keyword=6,
+    )
+    ab_rows = [r for r in rows if r["구좌"] == "AB"]
+    assert len(rows) == 6
+    assert len(ab_rows) >= 3  # 한 줄 정렬이면 2건까지 밀렸었다
+    assert ab_rows[0]["순위"] == 1
+
+
+def test_single_area_page_uses_full_budget():
+    """구좌가 하나뿐인 페이지에서는 번갈아 채우기가 오히려 적게 담으면 안 된다."""
+    items = [
+        SlotItem(area="AB", rank=r, url=f"https://cafe.naver.com/ab{r}/1", kind="cafe")
+        for r in range(1, 8)
+    ]
+    rows = build_competitor_rows(
+        date_str="2026-07-23", tab="샴푸 카외", keyword="비듬샴푸", our_state="누락",
+        items=items, top_n=5, max_per_keyword=6,
+    )
+    assert len(rows) == 5  # 구좌 상한(top_n)까지는 채운다
+    assert [r["순위"] for r in rows] == [1, 2, 3, 4, 5]
+
+
 def test_build_competitor_rows_caps_total_per_keyword():
     """구좌가 3종이라 구좌별 상한만으로는 최대 3배가 된다 — 키워드 총량 상한이 필요."""
     items = [
@@ -334,6 +372,39 @@ def test_build_actor_aliases_no_merge_without_shared_name():
     assert build_actor_aliases(history) == {}
 
 
+def test_build_actor_aliases_does_not_merge_blogs_sharing_generic_name():
+    """블로그 이름은 '일상'·'리뷰' 처럼 흔해서 겹친다 — 엮으면 없는 경쟁사를 1위로 만든다."""
+    history = [
+        _hist("2026-07-22", "a", "blogger1", 1, kind="블로그", name="일상"),
+        _hist("2026-07-22", "b", "blogger2", 1, kind="블로그", name="일상"),
+        _hist("2026-07-22", "c", "blogger3", 1, kind="블로그", name="일상"),
+    ]
+    assert build_actor_aliases(history) == {}
+
+    ranking = aggregate_ranking(history)
+    assert sorted(r["주체"] for r in ranking) == ["blogger1", "blogger2", "blogger3"]
+
+
+def test_build_actor_aliases_does_not_merge_across_kinds():
+    """카페·블로그·웹샵이 같은 이름을 쓸 수 있다 — 종류가 다르면 절대 안 묶는다."""
+    history = [
+        _hist("2026-07-22", "a", "somecafe", 1, kind="카페", name="같은이름"),
+        _hist("2026-07-22", "b", "someblog", 1, kind="블로그", name="같은이름"),
+        _hist("2026-07-22", "c", "shop.co.kr", 1, kind="웹", name="같은이름"),
+    ]
+    assert build_actor_aliases(history) == {}
+
+
+def test_build_actor_aliases_requires_exactly_one_named_side():
+    """이름 형태가 둘 이상이면 어느 쪽이 그 숫자 ID 인지 알 수 없다 — 묶지 않는다."""
+    history = [
+        _hist("2026-07-22", "a", "cafeA", 1, name="같은이름"),
+        _hist("2026-07-22", "b", "cafeB", 1, name="같은이름"),
+        _hist("2026-07-22", "c", "카페#777", 1, name="같은이름"),
+    ]
+    assert build_actor_aliases(history) == {}
+
+
 def test_aggregate_ranking_counts_and_sorts():
     history = [
         _hist("2026-07-21", "비듬샴푸", "bigcafe", 1),
@@ -404,6 +475,12 @@ class FakeWorksheet:
 
     def clear(self):
         self.values = []
+
+    def resize(self, rows=None, cols=None):
+        # 실제 시트 정합: 격자를 줄이면 넘치는 행은 잘린다.
+        if rows is not None and rows < len(self.values):
+            self.values = self.values[:rows]
+        self.grid_rows = rows
 
     def append_rows(self, rows, value_input_option="RAW", insert_data_option="INSERT_ROWS"):
         for r in rows:
@@ -575,6 +652,58 @@ def test_run_competitor_update_preserves_ranking_when_history_fails():
     assert "skipped" in result["ranking"]
     # 기존 집계 탭은 그대로 남아 있다.
     assert len(sheet.worksheet("경쟁사_랭킹").values) == 2
+
+
+def test_scattered_deletions_collapse_into_one_call_and_lose_nothing():
+    """이번에 0건 나온 키워드가 사이사이 끼면 지울 구간이 흩어진다 → 호출 폭증(429) 위험.
+
+    구간이 많으면 한 통으로 지우고, 그 사이 살아남아야 할 행은 다시 넣어야 한다.
+    """
+    sheet = FakeSpreadsheet()
+    client = FakeClient(sheet)
+    keywords = [f"k{i:02d}" for i in range(20)]
+    append_daily_competitors(client, _values("2026-07-23", keywords), "2026-07-23")
+
+    ws = sheet.worksheet("경쟁사_이력")
+    ws.delete_calls.clear()
+    # 짝수 키워드만 다시 수집됨 = 지울 행이 한 칸 걸러 흩어진 상태
+    rerun = [k for i, k in enumerate(keywords) if i % 2 == 0]
+    append_daily_competitors(client, _values("2026-07-23", rerun), "2026-07-23")
+
+    assert len(ws.delete_calls) == 1  # 10회가 아니라 1회
+    surviving = sorted(r[2] for r in ws.values[1:] if r)
+    assert surviving == sorted(keywords)  # 안 돈 키워드도 전부 살아 있다
+
+
+def test_header_mismatch_stops_instead_of_writing_shifted_data():
+    """탭 헤더가 코드와 다르면 칸이 밀려 읽힌다 — 그 값으로 집계 탭을 덮어쓰면 안 된다."""
+    old_header = [c for c in HISTORY_HEADER if c != "이름"]  # 이름 칸 없던 옛 스키마
+    stale_ws = FakeWorksheet([old_header, ["2026-07-22", "샴푸 카외", "a", "누락", "인기글",
+                                           "블록", "1", "bigcafe", "카페", "", "u"]])
+    sheet = FakeSpreadsheet({"경쟁사_이력": stale_ws})
+    client = FakeClient(sheet)
+
+    result = append_daily_competitors(client, _values("2026-07-23", ["b"]), "2026-07-23")
+
+    assert result["history"] is None
+    assert "헤더" in result["error"]
+    assert len(stale_ws.values) == 2  # 아무것도 안 건드림
+
+
+def test_ranking_tab_resized_to_fit_and_capped():
+    """격자(기본 2000행)보다 큰 내용을 쓰면 시트가 거부해 탭이 빈 채 남는다."""
+    from src.competitor import RANKING_MAX_ROWS
+
+    sheet = FakeSpreadsheet()
+    client = FakeClient(sheet)
+    many = [[f"이름{i}", f"actor{i}", "카페", 1, 1, 1.0, 0, 1, "2026-07-23", "u"] for i in range(500)]
+    result = write_ranking(client, many)
+
+    ws = sheet.worksheet("경쟁사_랭킹")
+    assert result["rows_written"] == RANKING_MAX_ROWS
+    assert result["dropped_rows"] == 500 - RANKING_MAX_ROWS  # 잘린 수를 숨기지 않는다
+    assert ws.grid_rows >= len(ws.values)
+    assert ws.values[0] == RANKING_HEADER
 
 
 def test_write_ranking_rewrites_whole_tab():

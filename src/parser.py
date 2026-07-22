@@ -1062,6 +1062,11 @@ def collect_slot_items(html: str, *, max_per_area: int = 20) -> list[SlotItem]:
             ab_rank += 1
             if ab_rank > max_per_area:
                 continue
+            # AB 박스는 결과가 1건이라 박스 안 출처 이름도 1개다 → 주소 형태가 달라
+            # 키가 안 맞아도(신형 카페 주소 등) 그 박스의 이름을 그대로 쓴다.
+            source_name = names.get(_owner_key(url), "")
+            if not source_name and len(names) == 1:
+                source_name = next(iter(names.values()))
             items.append(
                 SlotItem(
                     area=ExposureArea.AB.value,
@@ -1069,7 +1074,7 @@ def collect_slot_items(html: str, *, max_per_area: int = 20) -> list[SlotItem]:
                     url=url,
                     kind=_classify_item_url(url),
                     title=_title_for_url(box, url),
-                    source_name=names.get(_owner_key(url), ""),
+                    source_name=source_name,
                 )
             )
             continue
