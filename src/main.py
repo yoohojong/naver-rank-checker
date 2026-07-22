@@ -742,12 +742,16 @@ def run_cycle() -> dict:
     competitor_collector = None
     competitor_date = datetime.now(kst).strftime("%Y-%m-%d")
     if _env_truthy("COMPETITOR_TRACK_ENABLED"):
-        from src.competitor import CompetitorCollector
-        competitor_collector = CompetitorCollector(
-            our_links=set(all_known_links),
-            our_cafe_slugs=set(CAFE_WHITELIST),
-        )
-        print("[경쟁사] 수집 ON — 전 키워드 상위 구좌에서 우리 글 제외한 주체 기록")
+        if not CAFE_WHITELIST:
+            # 우리 카페 목록이 없으면 '우리 글' 을 가려낼 수 없어 우리 글이 경쟁사로 올라간다.
+            print("[경쟁사] 수집 skip — CAFE_WHITELIST_SLUGS 미설정 (우리 글 구분 불가)")
+        else:
+            from src.competitor import CompetitorCollector
+            competitor_collector = CompetitorCollector(
+                our_links=set(all_known_links),
+                our_cafe_slugs=set(CAFE_WHITELIST),
+            )
+            print("[경쟁사] 수집 ON — 전 키워드 상위 구좌에서 우리 글 제외한 주체 기록")
 
     # 2. 각 탭 + 행 처리
     # url_alive_cache: T-M10.5 폐기로 미사용. 호환성 유지용 빈 dict.
@@ -1034,6 +1038,8 @@ def run_cycle() -> dict:
     # 4.9. 경쟁사 이력 적재 + 랭킹 갱신 (2026-07-23, COMPETITOR_TRACK_ENABLED 일 때만).
     # 비공개 시트 탭 2개(경쟁사_이력 / 경쟁사_랭킹)만 건드린다 — 사장님 작업 탭은 손대지 않는다.
     # best-effort: 실패해도 순위 검사 결과와 cron 을 죽이지 않는다.
+    # 부분 실행(차단으로 중간 종료·일부 행 재검사)도 안전하다 — 적재 멱등 단위가
+    # (날짜 × 키워드) 라, 이번에 돈 키워드만 갈아끼우고 나머지 오늘 기록은 그대로 둔다.
     competitor_summary: dict = {}
     if competitor_collector is not None and len(competitor_collector) > 0:
         try:

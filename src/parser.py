@@ -964,6 +964,54 @@ class SlotItem:
     kind: str  # "cafe" / "blog" / "web"
     title: str = ""
     block_name: str = ""  # 박스 h2 텍스트 (AB 는 h2 없음 = "")
+    source_name: str = ""  # 출처 표시 이름 (예 "부산맘 카페 - …", "❣컴프리의 건강이야기❣")
+
+
+def _owner_key(url: str) -> tuple:
+    """URL → 그 글의 '주인' 식별 키 (카페/블로그 단위). 홈 링크와 글 링크가 같은 키를 낸다.
+
+    - cafe.naver.com/{slug}/{id}      → ("cafe.naver.com", "{slug}")
+    - cafe.naver.com/ca-fe/cafes/{id}/… → ("cafe.naver.com", "cafes/{id}")  ← 신형 URL
+    - blog.naver.com/{id}/{post}     → ("blog.naver.com", "{id}")
+    """
+    if not url:
+        return ()
+    parsed = urlparse(url)
+    netloc = _normalize_netloc(parsed.netloc)
+    parts = [seg for seg in parsed.path.split("/") if seg]
+    if not parts:
+        return ()
+    if len(parts) >= 3 and parts[0] == "ca-fe" and parts[1] == "cafes":
+        return (netloc, f"cafes/{parts[2]}")
+    return (netloc, parts[0])
+
+
+def _collect_source_names(box) -> dict:
+    """박스 안 '홈 링크'(카페 대문 / 블로그 홈)의 표시 텍스트 → 주인별 이름 map.
+
+    네이버 검색 결과는 각 글 옆에 출처 대문 링크(cafe.naver.com/{slug} 등)를 같이 싣고,
+    그 링크 텍스트가 사람이 읽는 이름("부산맘 카페 - …")이다. 이걸 주워두면 경쟁사를
+    주소가 아니라 **이름**으로 보여줄 수 있고, 구형/신형 URL 이 같은 이름으로 묶인다.
+    """
+    names: dict = {}
+    for a in box.find_all("a", href=True):
+        href = a["href"]
+        if not href.startswith("http"):
+            continue
+        parsed = urlparse(href)
+        parts = [seg for seg in parsed.path.split("/") if seg]
+        is_home = len(parts) == 1 or (
+            len(parts) == 3 and parts[0] == "ca-fe" and parts[1] == "cafes"
+        )
+        if not is_home:
+            continue
+        text = a.get_text(strip=True)
+        if not text:
+            continue
+        key = _owner_key(href)
+        if key and key not in names:
+            names[key] = text[:80]
+    return names
 
 
 def _title_for_url(box, url: str) -> str:
@@ -1002,6 +1050,7 @@ def collect_slot_items(html: str, *, max_per_area: int = 20) -> list[SlotItem]:
     items: list[SlotItem] = []
     ab_rank = 0
     for box in boxes:
+        names = _collect_source_names(box)
         h2 = box.find("h2")
         if h2 is None:
             has_cafe = any("cafe.naver.com" in a.get("href", "") for a in box.find_all("a", href=True))
@@ -1020,6 +1069,7 @@ def collect_slot_items(html: str, *, max_per_area: int = 20) -> list[SlotItem]:
                     url=url,
                     kind=_classify_item_url(url),
                     title=_title_for_url(box, url),
+                    source_name=names.get(_owner_key(url), ""),
                 )
             )
             continue
@@ -1027,16 +1077,14 @@ def collect_slot_items(html: str, *, max_per_area: int = 20) -> list[SlotItem]:
         h2_text = h2.get_text(strip=True)
         if any(p in h2_text for p in _POPULAR_SKIP_PATTERNS):
             continue
-        if "인기글" in h2_text:
-            area = ExposureArea.POPULAR.value
-            urls = _extract_popular_items(box)
-        else:
-            area = ExposureArea.SMART_BLOCK.value
-            urls = _extract_smart_block_items(box)
-
-        # 스마트블록은 글 링크와 함께 작성자 홈(blog.naver.com/{id}, in.naver.com/{id}) 링크도
-        # 같이 잡힌다. 경쟁사 목록에는 '글'만 남긴다(홈 링크는 순위 자리를 차지한 글이 아님).
-        urls = [u for u in urls if _is_post_like_url(u)]
+        area = (
+            ExposureArea.POPULAR.value if "인기글" in h2_text else ExposureArea.SMART_BLOCK.value
+        )
+        # 인기글·스마트블록 모두 _extract_popular_items 를 쓴다.
+        # 순위 판정 쪽(_parse_popular / _parse_smart_blocks)이 둘 다 이 추출기를 쓰므로,
+        # 여기서 다른 추출기를 쓰면 같은 자리를 두고 순위 숫자가 어긋난다(= 시트 L열과 불일치).
+        # 이 추출기는 '끝이 글번호인 URL' 만 남기므로 작성자 홈/피드 링크도 자연히 빠진다.
+        urls = _extract_popular_items(box)
 
         for idx, url in enumerate(urls[:max_per_area], start=1):
             items.append(
@@ -1047,17 +1095,10 @@ def collect_slot_items(html: str, *, max_per_area: int = 20) -> list[SlotItem]:
                     kind=_classify_item_url(url),
                     title=_title_for_url(box, url),
                     block_name=h2_text,
+                    source_name=names.get(_owner_key(url), ""),
                 )
             )
     return items
-
-
-def _is_post_like_url(url: str) -> bool:
-    """글 상세 URL 로 보이는지 — path segment 2개 이상 (홈/프로필 링크 배제)."""
-    if not url:
-        return False
-    parts = [seg for seg in urlparse(url).path.split("/") if seg]
-    return len(parts) >= 2
 
 
 def is_known_url(url: str, link_set: Optional[set[str]]) -> bool:

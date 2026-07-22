@@ -22,21 +22,24 @@ from src.parser import SlotItem, cafe_slug_of, is_known_url
 
 # 이력 탭 스키마 (고정). "우리상태" = 그 키워드에서 우리 글이 어떤 상태였나(누락/미노출/AB…).
 HISTORY_HEADER = [
-    "날짜", "탭", "키워드", "우리상태", "구좌", "블록명", "순위", "주체", "종류", "제목", "URL",
+    "날짜", "탭", "키워드", "우리상태", "구좌", "블록명", "순위", "주체", "이름", "종류", "제목", "URL",
 ]
 HISTORY_TAB_NAME = "경쟁사_이력"
 
 # 집계 탭 스키마 (고정). 사장님이 보는 화면 = 이 탭.
 RANKING_HEADER = [
-    "주체", "종류", "등장 횟수", "노출 키워드 수", "평균 순위", "1위 횟수",
+    "이름", "주체", "종류", "등장 횟수", "노출 키워드 수", "평균 순위", "1위 횟수",
     "우리가 놓친 키워드 수", "최근 등장일", "대표 URL",
 ]
 RANKING_TAB_NAME = "경쟁사_랭킹"
 
-# 키워드 1건당 시트에 남길 상위 몇 개까지. 423 키워드 × 5 = 하루 ~2천 행.
-DEFAULT_TOP_N = 5
+# 시트 적재량 상한. 구좌(AB/스마트블록/인기글)가 3종이라 구좌별 상한만 두면 최대 3배가 된다
+# → 키워드 총량 상한을 따로 둔다. 423 키워드 × 6 = 하루 ~2,500행(약 3만 셀).
+DEFAULT_TOP_N = 5           # 한 구좌에서 최대 몇 곳까지
+DEFAULT_MAX_PER_KEYWORD = 6  # 한 키워드에서 최대 몇 곳까지(구좌 합산)
 # 이력 탭 보관 일수. 이보다 오래된 날짜 블록은 적재할 때 같이 정리한다.
-DEFAULT_RETENTION_DAYS = 30
+# 21일 × 2,500행 × 12열 ≈ 63만 셀 — 스프레드시트 전체 상한(1천만 셀) 대비 안전 구간.
+DEFAULT_RETENTION_DAYS = 21
 
 # "우리가 놓친" 으로 볼 상태값 (K 컬럼 base 기준).
 MISSED_STATES = {"누락", "미노출", "삭제"}
@@ -113,13 +116,15 @@ def build_competitor_rows(
     our_links: set | None = None,
     our_cafe_slugs: set | None = None,
     top_n: int = DEFAULT_TOP_N,
+    max_per_keyword: int = DEFAULT_MAX_PER_KEYWORD,
 ) -> list[dict]:
     """키워드 1건의 구좌 목록 → 경쟁사 행 dict 리스트 · 순수함수.
 
     - 우리 글은 제외한다(우리 글 제외가 곧 "경쟁사").
-    - 같은 주체가 한 키워드에 여러 글을 올렸으면 **가장 높은 순위 1건만** 센다.
+    - 같은 주체가 한 키워드에 여러 글을 올렸으면 **가장 높은 자리 1건만** 센다.
       (한 카페가 3개 깔았다고 등장 3회로 세면 "제일 많이 보이는 애들" 이 왜곡됨)
-    - 구좌별로 top_n 까지만 남긴다(시트 적재량 방어).
+      구좌가 여러 개면 문서 순서 ≠ 순위 순서라, 순위로 먼저 정렬한 뒤 고른다.
+    - 구좌별 top_n · 키워드 총 max_per_keyword 까지만 남긴다(시트 적재량 방어).
     """
     keyword = _clean(keyword)
     if not keyword or not items:
@@ -129,7 +134,8 @@ def build_competitor_rows(
     seen_actor: set[str] = set()
     per_area_count: dict[str, int] = {}
 
-    for item in items:
+    # 순위 오름차순(같으면 원래 순서 유지) — '가장 높은 자리'가 남도록.
+    for item in sorted(items, key=lambda it: int(it.rank or 999)):
         url = _clean(item.url)
         if not url:
             continue
@@ -140,6 +146,8 @@ def build_competitor_rows(
             continue
         if per_area_count.get(item.area, 0) >= top_n:
             continue
+        if len(rows) >= max_per_keyword:
+            break
         seen_actor.add(actor)
         per_area_count[item.area] = per_area_count.get(item.area, 0) + 1
         rows.append({
@@ -151,6 +159,7 @@ def build_competitor_rows(
             "블록명": _clean(item.block_name),  # 스마트블록·인기글 박스 제목 (AB 는 "")
             "순위": int(item.rank),
             "주체": actor,
+            "이름": _clean(item.source_name),  # 검색 결과에 뜬 카페·블로그 표시 이름
             "종류": actor_kind,
             "제목": _clean(item.title),
             "URL": url,
@@ -178,7 +187,9 @@ class CompetitorCollector:
         self.top_n = top_n
         self._by_keyword: dict[tuple[str, str], list[dict]] = {}
 
-    def add(self, *, date_str: str, tab: str, keyword: str, our_state: str, items: list[SlotItem]) -> int:
+    def add(  # noqa: PLR0913 — 호출부 가독성 위해 키워드 인자 유지
+        self, *, date_str: str, tab: str, keyword: str, our_state: str, items: list[SlotItem]
+    ) -> int:
         rows = build_competitor_rows(
             date_str=date_str,
             tab=tab,
@@ -203,6 +214,36 @@ class CompetitorCollector:
         return sum(len(rows) for rows in self._by_keyword.values())
 
 
+def build_actor_aliases(history_rows: list[dict]) -> dict:
+    """같은 곳인데 주소 형태가 달라 갈라진 주체를 하나로 묶는 대조표 · 순수함수.
+
+    네이버 카페 주소는 구형(cafe.naver.com/{이름})과 신형(ca-fe/cafes/{숫자})이 섞여 나온다.
+    같은 카페인데 주체가 "pusanmommy" 와 "카페#123" 으로 갈리면 등장 횟수가 반씩 쪼개져
+    "제일 많이 보이는 곳" 이 틀린 답이 된다. 표시 이름이 같으면 같은 곳으로 묶는다.
+
+    Returns:
+        {갈라진 주체: 대표 주체}. 대표는 이름이 있는 주소 형태(구형)를 우선한다.
+    """
+    by_name: dict[str, set] = {}
+    for row in history_rows or []:
+        name = _clean(row.get("이름"))
+        actor = _clean(row.get("주체"))
+        if not name or not actor:
+            continue
+        by_name.setdefault(name, set()).add(actor)
+
+    aliases: dict = {}
+    for actors in by_name.values():
+        if len(actors) < 2:
+            continue
+        # 숫자 ID 형태("카페#123")보다 이름 형태를 대표로.
+        canonical = sorted(actors, key=lambda a: (a.startswith("카페#"), a))[0]
+        for actor in actors:
+            if actor != canonical:
+                aliases[actor] = canonical
+    return aliases
+
+
 def aggregate_ranking(history_rows: list[dict]) -> list[dict]:
     """이력 행 전체 → 주체별 집계 · 순수함수.
 
@@ -211,14 +252,18 @@ def aggregate_ranking(history_rows: list[dict]) -> list[dict]:
     - 평균 순위 = 등장한 자리들의 평균(소수 1자리).
     - 1위 횟수 = 순위 1로 잡힌 횟수.
     - 우리가 놓친 키워드 수 = 그 주체가 보인 키워드 중 우리 상태가 누락/미노출/삭제인 키워드 수.
+    - 주소 형태가 갈린 같은 곳은 표시 이름으로 묶는다(build_actor_aliases).
     정렬 = 등장 횟수 내림차순 → 평균 순위 오름차순 → 주체 이름.
     """
+    aliases = build_actor_aliases(history_rows)
     stats: dict[str, dict] = {}
     for row in history_rows or []:
         actor = _clean(row.get("주체"))
         if not actor:
             continue
+        actor = aliases.get(actor, actor)
         entry = stats.setdefault(actor, {
+            "이름": _clean(row.get("이름")),
             "종류": _clean(row.get("종류")),
             "hits": set(),
             "keywords": set(),
@@ -243,6 +288,8 @@ def aggregate_ranking(history_rows: list[dict]) -> list[dict]:
                 entry["first_place"] += 1
         if _clean(row.get("우리상태")) in MISSED_STATES and keyword:
             entry["missed_keywords"].add(keyword)
+        if not entry["이름"]:
+            entry["이름"] = _clean(row.get("이름"))
         if date_str > entry["last_date"]:
             entry["last_date"] = date_str
             entry["sample_url"] = _clean(row.get("URL")) or entry["sample_url"]
@@ -252,6 +299,7 @@ def aggregate_ranking(history_rows: list[dict]) -> list[dict]:
         ranks = entry["ranks"]
         avg_rank = round(sum(ranks) / len(ranks), 1) if ranks else ""
         out.append({
+            "이름": entry["이름"],
             "주체": actor,
             "종류": entry["종류"],
             "등장 횟수": len(entry["hits"]),
@@ -328,37 +376,72 @@ def append_daily_competitors(
 ) -> dict:
     """경쟁사 이력 행을 비공개 시트 탭에 멱등 append + 보관기간 지난 날짜 정리.
 
+    ★ 멱등 단위 = (날짜 × 키워드). '그날 전체'를 지우고 새로 쓰지 않는다.
+      네이버 차단으로 중간에 끊긴 run, 일부 행만 도는 재검사 run 이 이번에 못 돈 키워드의
+      오늘치 기록까지 날려버리는 사고를 구조적으로 막는다 — 이번에 돈 키워드만 갈아끼운다.
+
+    적재하면서 이미 읽은 시트 내용을 그대로 돌려준다(집계용). 같은 탭을 두 번 읽지 않는다.
+
     Returns:
-        {"rows_written": n, "date": date_str, "created_tab": bool, "pruned_rows": n}
-        실패 시 rows_written=0 + "error" 키.
+        {"rows_written": n, "date": date_str, "created_tab": bool, "pruned_rows": n,
+         "history": [행 dict, ...]}  ← 적재 후 탭에 남은 전체 내용
+        실패 시 rows_written=0 + "error" 키 + history=None (집계 단계가 이걸 보고 멈춘다).
     """
     try:
         ws, created = _get_or_create_ws(client, tab_name, HISTORY_HEADER)
         pruned = 0
+        kept: list[list] = []
+        header = list(HISTORY_HEADER)
+        keyword_col = HISTORY_HEADER.index("키워드")
+        # 이번 run 이 다시 쓴 키워드만 교체 대상.
+        replaced_keywords = {
+            _clean(row[keyword_col]) for row in rows if len(row) > keyword_col
+        }
         if not created:
             all_values = ws.get_all_values()
+            if all_values and all_values[0]:
+                header = [_clean(cell) for cell in all_values[0]]
+                if "키워드" in header:
+                    keyword_col = header.index("키워드")
             cutoff = _cutoff_date(date_str, retention_days)
-            same_date_rows: list[int] = []
-            old_rows: list[int] = []
+            stale_rows: list[int] = []
             for row_num, values in enumerate(all_values[1:], start=2):
                 if not values:
                     continue
                 cell_date = _clean(values[0])
-                if cell_date == _clean(date_str):
-                    same_date_rows.append(row_num)
+                cell_keyword = _clean(values[keyword_col]) if len(values) > keyword_col else ""
+                if cell_date == _clean(date_str) and cell_keyword in replaced_keywords:
+                    stale_rows.append(row_num)  # 이번에 다시 쓴 키워드 = 교체
                 elif cutoff and cell_date and cell_date < cutoff:
-                    old_rows.append(row_num)
-            pruned = _delete_row_numbers(ws, same_date_rows + old_rows)
+                    stale_rows.append(row_num)  # 보관기간 지남 = 정리
+                else:
+                    kept.append(values)  # 다른 날짜 · 이번에 안 돈 키워드 = 보존
+            pruned = _delete_row_numbers(ws, stale_rows)
         if rows:
             ws.append_rows(rows, value_input_option="RAW", insert_data_option="INSERT_ROWS")
+        history = _values_to_dicts(header, kept) + _values_to_dicts(HISTORY_HEADER, rows)
         return {
             "rows_written": len(rows),
             "date": date_str,
             "created_tab": created,
             "pruned_rows": pruned,
+            "history": history,
         }
     except Exception as e:  # noqa: BLE001 — 적재 실패가 cron 을 죽이면 안 됨
-        return {"rows_written": 0, "date": date_str, "created_tab": False, "error": str(e)}
+        return {
+            "rows_written": 0, "date": date_str, "created_tab": False,
+            "error": str(e), "history": None,
+        }
+
+
+def _values_to_dicts(header: list[str], values: list[list]) -> list[dict]:
+    """2D 시트 값 → 행 dict 리스트 (헤더 길이 넘는 칸은 버림)."""
+    out: list[dict] = []
+    for line in values or []:
+        if not line:
+            continue
+        out.append({header[i]: line[i] for i in range(min(len(header), len(line)))})
+    return out
 
 
 def _cutoff_date(date_str: str, retention_days: int) -> str:
@@ -372,26 +455,6 @@ def _cutoff_date(date_str: str, retention_days: int) -> str:
         return (date(year, month, day) - timedelta(days=retention_days)).isoformat()
     except (ValueError, TypeError):
         return ""
-
-
-def read_history_rows(client, *, tab_name: str = HISTORY_TAB_NAME) -> list[dict]:
-    """이력 탭 전체를 행 dict 리스트로 읽는다. 실패 시 빈 리스트."""
-    try:
-        ws, created = _get_or_create_ws(client, tab_name, HISTORY_HEADER)
-        if created:
-            return []
-        values = ws.get_all_values()
-        if len(values) < 2:
-            return []
-        header = [_clean(cell) for cell in values[0]]
-        out: list[dict] = []
-        for line in values[1:]:
-            if not line:
-                continue
-            out.append({header[i]: line[i] for i in range(min(len(header), len(line)))})
-        return out
-    except Exception:  # noqa: BLE001
-        return []
 
 
 def write_ranking(
@@ -422,12 +485,23 @@ def run_competitor_update(
     *,
     retention_days: int = DEFAULT_RETENTION_DAYS,
 ) -> dict:
-    """이력 적재 → 이력 전체 재집계 → 집계 탭 갱신. 한 번에 처리하는 진입점."""
+    """이력 적재 → 이력 전체 재집계 → 집계 탭 갱신. 한 번에 처리하는 진입점.
+
+    이력 적재가 실패했으면 집계 탭은 **건드리지 않는다** — 읽기 실패로 빈 집계를 써서
+    사장님이 보는 탭이 백지가 되는 사고를 막는다(실패 시 지난 집계가 그대로 남는 편이 낫다).
+    """
     rows = collector.rows()
     append_result = append_daily_competitors(
         client, rows_to_sheet_values(rows), date_str, retention_days=retention_days
     )
-    history = read_history_rows(client)
+    history = append_result.get("history")
+    if history is None:
+        return {
+            "history": append_result,
+            "ranking": {"rows_written": 0, "skipped": "이력 적재 실패 — 집계 탭 보존"},
+            "actors": 0,
+            "top": [],
+        }
     ranking = aggregate_ranking(history)
     write_result = write_ranking(client, ranking_to_sheet_values(ranking))
     return {

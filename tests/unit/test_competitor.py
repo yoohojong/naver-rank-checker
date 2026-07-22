@@ -17,10 +17,12 @@ from src.competitor import (
     RANKING_HEADER,
     aggregate_ranking,
     append_daily_competitors,
+    build_actor_aliases,
     build_competitor_rows,
     identify_actor,
     ranking_to_sheet_values,
     rows_to_sheet_values,
+    run_competitor_update,
     write_ranking,
     CompetitorCollector,
 )
@@ -63,10 +65,23 @@ _POPULAR_BOX = """
 <div class="desktop_mode api_subject_bx">
   <h2>비듬샴푸 인기글</h2>
   <ul>
-    <li><a href="https://cafe.naver.com/bigcafe/2001">인기글 첫번째 글 제목</a></li>
+    <li><a href="https://cafe.naver.com/bigcafe">빅카페 - 두피 고민 커뮤니티</a>
+        <a href="https://cafe.naver.com/bigcafe/2001">인기글 첫번째 글 제목</a></li>
     <li><a href="https://blog.naver.com/blogger1/2002">인기글 두번째 글 제목</a></li>
     <li><a href="https://cafe.naver.com/ourcafe/2003">우리 카페 글 제목</a></li>
   </ul>
+</div>
+"""
+
+# 스마트블록 = h2 있고 '인기글' 아님. 작성자 홈/피드 링크가 글 링크와 섞여 나온다.
+_SMART_BLOCK_BOX = """
+<div class="desktop_mode api_subject_bx">
+  <h2>비듬샴푸 추천</h2>
+  <div><a href="https://blog.naver.com/writer1">❣작성자1의 블로그❣</a>
+       <a href="https://blog.naver.com/writer1/PostList.naver">블로그 글목록</a>
+       <a href="https://blog.naver.com/writer1/223456789">스마트블록 글 제목</a></div>
+  <div><a href="https://in.naver.com/writer2/feed">피드</a>
+       <a href="https://cafe.naver.com/rivalcafe/5001">라이벌 카페 글</a></div>
 </div>
 """
 
@@ -108,6 +123,44 @@ def test_collect_slot_items_respects_max_per_area():
     items = collect_slot_items(_html(_AB_BOX, _POPULAR_BOX), max_per_area=2)
     popular = [i for i in items if i.area == "인기글"]
     assert len(popular) == 2
+
+
+def test_collect_slot_items_smart_block_excludes_home_and_feed_links():
+    """스마트블록 순위는 '글' 기준이어야 한다.
+
+    작성자 홈(blog.naver.com/writer1)·글목록(PostList.naver)·피드(in.naver.com/writer2/feed)가
+    자리를 차지하면 순위가 밀려 시트 L열(순위 판정)과 어긋나고, 작성자 홈이 경쟁 '글' 로 잡힌다.
+    """
+    items = collect_slot_items(_html(_SMART_BLOCK_BOX))
+    smart = [i for i in items if i.area == "스마트블록"]
+
+    assert [i.url for i in smart] == [
+        "https://blog.naver.com/writer1/223456789",
+        "https://cafe.naver.com/rivalcafe/5001",
+    ]
+    assert [i.rank for i in smart] == [1, 2]  # 홈·피드가 자리를 먹지 않는다
+
+
+def test_collect_slot_items_picks_up_source_display_name():
+    """출처 대문 링크 텍스트 = 사람이 읽는 이름. 주소만으로는 누군지 모른다."""
+    items = collect_slot_items(_html(_POPULAR_BOX, _SMART_BLOCK_BOX))
+    by_url = {i.url: i.source_name for i in items}
+
+    assert by_url["https://cafe.naver.com/bigcafe/2001"] == "빅카페 - 두피 고민 커뮤니티"
+    assert by_url["https://blog.naver.com/writer1/223456789"] == "❣작성자1의 블로그❣"
+
+
+def test_collect_slot_items_matches_live_ranker_extractor_for_smart_block():
+    """수집기와 순위 판정기가 같은 추출기를 써야 순위 숫자가 일치한다."""
+    from bs4 import BeautifulSoup
+    from src.parser import _extract_popular_items
+
+    soup = BeautifulSoup(_html(_SMART_BLOCK_BOX), "lxml")
+    box = soup.select(".desktop_mode.api_subject_bx")[0]
+    ranker_urls = _extract_popular_items(box)
+    collected = [i.url for i in collect_slot_items(_html(_SMART_BLOCK_BOX)) if i.area == "스마트블록"]
+
+    assert collected == ranker_urls
 
 
 # ----- build_competitor_rows -----
@@ -163,6 +216,34 @@ def test_build_competitor_rows_counts_same_actor_once_at_best_rank():
     assert big[0]["순위"] == 1
 
 
+def test_build_competitor_rows_best_rank_across_different_areas():
+    """구좌가 여러 개면 문서 순서 ≠ 순위 순서 — 낮은 자리가 먼저 나와도 높은 자리를 남겨야 한다."""
+    items = [
+        SlotItem(area="스마트블록", rank=4, url="https://cafe.naver.com/bigcafe/9004", kind="cafe"),
+        SlotItem(area="인기글", rank=1, url="https://cafe.naver.com/bigcafe/9001", kind="cafe"),
+    ]
+    rows = build_competitor_rows(
+        date_str="2026-07-23", tab="샴푸 카외", keyword="비듬샴푸", our_state="누락", items=items
+    )
+    assert len(rows) == 1
+    assert rows[0]["순위"] == 1
+    assert rows[0]["구좌"] == "인기글"
+
+
+def test_build_competitor_rows_caps_total_per_keyword():
+    """구좌가 3종이라 구좌별 상한만으로는 최대 3배가 된다 — 키워드 총량 상한이 필요."""
+    items = [
+        SlotItem(area=area, rank=rank, url=f"https://cafe.naver.com/c{area}{rank}/1", kind="cafe")
+        for area in ("AB", "스마트블록", "인기글")
+        for rank in range(1, 6)
+    ]
+    rows = build_competitor_rows(
+        date_str="2026-07-23", tab="샴푸 카외", keyword="비듬샴푸", our_state="누락",
+        items=items, top_n=5, max_per_keyword=6,
+    )
+    assert len(rows) == 6
+
+
 def test_build_competitor_rows_top_n_per_area():
     rows = build_competitor_rows(
         date_str="2026-07-23",
@@ -215,12 +296,42 @@ def test_collector_last_write_wins_per_keyword():
 
 # ----- aggregate_ranking -----
 
-def _hist(date, keyword, actor, rank, state="누락", kind="카페", url="https://cafe.naver.com/x/1"):
+def _hist(date, keyword, actor, rank, state="누락", kind="카페", url="https://cafe.naver.com/x/1", name=""):
     return {
         "날짜": date, "탭": "샴푸 카외", "키워드": keyword, "우리상태": state,
-        "구좌": "인기글", "블록명": "", "순위": rank, "주체": actor, "종류": kind,
-        "제목": "", "URL": url,
+        "구좌": "인기글", "블록명": "", "순위": rank, "주체": actor, "이름": name,
+        "종류": kind, "제목": "", "URL": url,
     }
+
+
+def test_build_actor_aliases_merges_old_and_new_cafe_url_forms():
+    """같은 카페가 구형 주소(slug)와 신형 주소(카페#숫자)로 갈리면 횟수가 반씩 쪼개진다."""
+    history = [
+        _hist("2026-07-22", "비듬샴푸", "bigcafe", 1, name="빅카페 - 두피 커뮤니티"),
+        _hist("2026-07-22", "지루성두피", "카페#30256014", 2, name="빅카페 - 두피 커뮤니티"),
+    ]
+    aliases = build_actor_aliases(history)
+    assert aliases == {"카페#30256014": "bigcafe"}  # 이름 있는 쪽이 대표
+
+
+def test_aggregate_ranking_merges_split_actor_into_one_row():
+    history = [
+        _hist("2026-07-22", "비듬샴푸", "bigcafe", 1, name="빅카페"),
+        _hist("2026-07-22", "지루성두피", "카페#30256014", 2, name="빅카페"),
+        _hist("2026-07-22", "탈모샴푸", "rivalcafe", 1, name="라이벌카페"),
+    ]
+    ranking = aggregate_ranking(history)
+    assert [r["주체"] for r in ranking] == ["bigcafe", "rivalcafe"]
+    assert ranking[0]["등장 횟수"] == 2  # 쪼개지지 않고 합산
+    assert ranking[0]["이름"] == "빅카페"
+
+
+def test_build_actor_aliases_no_merge_without_shared_name():
+    history = [
+        _hist("2026-07-22", "비듬샴푸", "bigcafe", 1, name="빅카페"),
+        _hist("2026-07-22", "지루성두피", "카페#999", 2, name=""),
+    ]
+    assert build_actor_aliases(history) == {}
 
 
 def test_aggregate_ranking_counts_and_sorts():
@@ -263,7 +374,7 @@ def test_ranking_to_sheet_values_matches_header_order():
     ranking = aggregate_ranking([_hist("2026-07-22", "비듬샴푸", "bigcafe", 1)])
     values = ranking_to_sheet_values(ranking)
     assert len(values[0]) == len(RANKING_HEADER)
-    assert values[0][0] == "bigcafe"
+    assert values[0][RANKING_HEADER.index("주체")] == "bigcafe"
 
 
 # ----- 시트 I/O 대역 -----
@@ -326,9 +437,9 @@ class FakeClient:
         self.spreadsheet = spreadsheet
 
 
-def _values(date, keywords):
+def _values(date, keywords, actor="bigcafe"):
     return [
-        [date, "샴푸 카외", kw, "누락", "인기글", "비듬샴푸 인기글", "1", "bigcafe", "카페", "", "u"]
+        [date, "샴푸 카외", kw, "누락", "인기글", "블록", "1", actor, "빅카페", "카페", "", "u"]
         for kw in keywords
     ]
 
@@ -393,13 +504,86 @@ def test_append_error_is_captured_not_raised():
     assert "error" in result
 
 
+def test_partial_run_keeps_todays_other_keywords():
+    """차단으로 중간에 끊긴 run(일부 키워드만 수집)이 그날 나머지 기록을 지우면 안 된다.
+
+    03:00 run 이 3개 키워드를 적재한 뒤, 09:00 run 이 1개만 돌고 끊긴 상황.
+    """
+    sheet = FakeSpreadsheet()
+    client = FakeClient(sheet)
+    append_daily_competitors(client, _values("2026-07-23", ["a", "b", "c"]), "2026-07-23")
+    append_daily_competitors(client, _values("2026-07-23", ["b"]), "2026-07-23")
+
+    ws = sheet.worksheet("경쟁사_이력")
+    keywords = sorted(r[2] for r in ws.values[1:] if r)
+    assert keywords == ["a", "b", "c"]  # a·c 는 이번에 안 돌았을 뿐, 사라지면 안 됨
+
+
+def test_append_returns_history_for_aggregation_without_second_read():
+    sheet = FakeSpreadsheet()
+    client = FakeClient(sheet)
+    append_daily_competitors(client, _values("2026-07-22", ["a"]), "2026-07-22")
+    result = append_daily_competitors(client, _values("2026-07-23", ["b"]), "2026-07-23")
+
+    history = result["history"]
+    assert {row["키워드"] for row in history} == {"a", "b"}
+    assert {row["날짜"] for row in history} == {"2026-07-22", "2026-07-23"}
+
+
+def test_run_competitor_update_writes_both_tabs():
+    sheet = FakeSpreadsheet()
+    client = FakeClient(sheet)
+    collector = CompetitorCollector(our_cafe_slugs={"ourcafe"})
+    collector.add(
+        date_str="2026-07-23", tab="샴푸 카외", keyword="비듬샴푸", our_state="누락", items=_items()
+    )
+    result = run_competitor_update(client, collector, "2026-07-23")
+
+    assert result["history"]["rows_written"] > 0
+    assert result["actors"] > 0
+    assert sheet.worksheet("경쟁사_랭킹").values[0] == RANKING_HEADER
+    assert len(sheet.worksheet("경쟁사_랭킹").values) > 1
+
+
+def test_run_competitor_update_preserves_ranking_when_history_fails():
+    """이력 적재/읽기 실패 시 집계 탭을 백지로 덮어쓰면 안 된다(지난 집계 보존)."""
+    class HalfBrokenClient:
+        def __init__(self, spreadsheet):
+            self.spreadsheet = spreadsheet
+            self._calls = 0
+
+    sheet = FakeSpreadsheet()
+    client = FakeClient(sheet)
+    write_ranking(client, [["빅카페", "bigcafe", "카페", 5, 3, 1.5, 2, 3, "2026-07-22", "u"]])
+
+    class BrokenSpreadsheet:
+        def worksheet(self, title):
+            raise RuntimeError("read quota exceeded")
+
+        def add_worksheet(self, title, rows, cols):
+            raise RuntimeError("read quota exceeded")
+
+    broken = FakeClient(BrokenSpreadsheet())
+    collector = CompetitorCollector()
+    collector.add(
+        date_str="2026-07-23", tab="샴푸 카외", keyword="비듬샴푸", our_state="누락", items=_items()
+    )
+    result = run_competitor_update(broken, collector, "2026-07-23")
+
+    assert "error" in result["history"]
+    assert result["ranking"]["rows_written"] == 0
+    assert "skipped" in result["ranking"]
+    # 기존 집계 탭은 그대로 남아 있다.
+    assert len(sheet.worksheet("경쟁사_랭킹").values) == 2
+
+
 def test_write_ranking_rewrites_whole_tab():
     sheet = FakeSpreadsheet()
     client = FakeClient(sheet)
-    write_ranking(client, [["bigcafe", "카페", 5, 3, 1.5, 2, 3, "2026-07-23", "u"]])
-    write_ranking(client, [["rivalcafe", "카페", 1, 1, 2.0, 0, 1, "2026-07-23", "u"]])
+    write_ranking(client, [["빅카페", "bigcafe", "카페", 5, 3, 1.5, 2, 3, "2026-07-23", "u"]])
+    write_ranking(client, [["라이벌", "rivalcafe", "카페", 1, 1, 2.0, 0, 1, "2026-07-23", "u"]])
 
     ws = sheet.worksheet("경쟁사_랭킹")
     assert ws.values[0] == RANKING_HEADER
     assert len(ws.values) == 2          # 매 실행 전체 갱신 = 이전 행 잔류 X
-    assert ws.values[1][0] == "rivalcafe"
+    assert ws.values[1][1] == "rivalcafe"
