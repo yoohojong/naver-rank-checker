@@ -35,8 +35,8 @@ RANKING_TAB_NAME = "경쟁사_랭킹"
 
 # 제품(시트 탭)별 섹터 — 사장님 요청(2026-07-23) "제품별로 분류해서".
 PRODUCT_HEADER = [
-    "제품", "이름", "주체", "종류", "등장 횟수", "노출 키워드 수", "점유율(%)",
-    "평균 순위", "우리가 놓친 키워드 수", "최근 등장일",
+    "기준일", "제품", "이름", "주체", "종류", "노출 키워드 수", "점유율(%)",
+    "평균 순위", "우리가 놓친 키워드 수", "경쟁 키워드 수",
 ]
 PRODUCT_TAB_NAME = "경쟁사_제품별"
 PRODUCT_TOP_N = 20  # 제품마다 상위 몇 곳까지 시트에 남길지
@@ -357,14 +357,23 @@ def ranking_to_sheet_values(ranking: list[dict]) -> list[list]:
 
 
 def aggregate_by_product(history_rows: list[dict], *, top_n: int = PRODUCT_TOP_N) -> list[dict]:
-    """제품(시트 탭)별 경쟁사 집계 · 순수함수.
+    """제품(시트 탭)별 경쟁사 집계 · 순수함수. **최근 1일치만** 본다.
 
     사장님 요청(2026-07-23): "구글 스프레드시트에도 하나 섹터 추가 / 제품별로 분류해서".
-    점유율 = 그 경쟁사가 뜬 키워드 수 ÷ 그 제품에서 우리가 추적하는 키워드 수(최근 기록 기준).
+
+    ★ 기간을 최신 날짜 하루로 못박는다 (2026-07-23 검토 지적).
+      21일 전체를 합치면 '그동안 한 번이라도 보인 비율'이 되어 시간이 갈수록 100%로 수렴하고,
+      같은 이름(점유율)으로 대시보드(최신일 기준)와 다른 숫자가 나와 사장님이 헷갈린다.
+    ★ 분모 = 그 제품에서 **경쟁사가 한 곳이라도 잡힌 키워드 수**.
+      우리가 모든 자리를 차지한 키워드는 기록 자체가 없어 분모에 안 들어간다 — 그래서
+      '추적 키워드 대비'가 아니라 '경쟁이 있었던 키워드 대비' 다. 열 이름도 그렇게 적는다.
     """
+    rows_all = list(history_rows or [])
+    dates = {_clean(r.get("날짜")) for r in rows_all if _clean(r.get("날짜"))}
+    latest = max(dates) if dates else ""
     keywords_by_product: dict = {}
     stats: dict = {}
-    for row in history_rows or []:
+    for row in [r for r in rows_all if _clean(r.get("날짜")) == latest]:
         product = _clean(row.get("탭"))
         actor = _clean(row.get("주체"))
         keyword = _clean(row.get("키워드"))
@@ -375,14 +384,12 @@ def aggregate_by_product(history_rows: list[dict], *, top_n: int = PRODUCT_TOP_N
             "이름": _clean(row.get("이름")),
             "종류": _clean(row.get("종류")),
             "keywords": set(),
-            "hits": set(),
             "ranks": [],
             "missed": set(),
-            "last": "",
         })
-        date_str = _clean(row.get("날짜"))
+        if keyword in entry["keywords"]:
+            continue  # 같은 키워드 중복 적재 = 평균 순위 부풀림 방지(집계 탭과 같은 규칙)
         entry["keywords"].add(keyword)
-        entry["hits"].add((date_str, keyword))
         try:
             rank = int(row.get("순위") or 0)
         except (TypeError, ValueError):
@@ -393,8 +400,6 @@ def aggregate_by_product(history_rows: list[dict], *, top_n: int = PRODUCT_TOP_N
             entry["missed"].add(keyword)
         if not entry["이름"]:
             entry["이름"] = _clean(row.get("이름"))
-        if date_str > entry["last"]:
-            entry["last"] = date_str
 
     out: list[dict] = []
     for (product, actor), entry in stats.items():
@@ -402,16 +407,16 @@ def aggregate_by_product(history_rows: list[dict], *, top_n: int = PRODUCT_TOP_N
         share = round(len(entry["keywords"]) / total * 100, 1) if total else ""
         ranks = entry["ranks"]
         out.append({
+            "기준일": latest,
             "제품": product,
             "이름": entry["이름"],
             "주체": actor,
             "종류": entry["종류"],
-            "등장 횟수": len(entry["hits"]),
             "노출 키워드 수": len(entry["keywords"]),
-            "점유율(%)": share,
+            "점유율(%)": share,   # 경쟁이 있었던 키워드 대비
             "평균 순위": round(sum(ranks) / len(ranks), 1) if ranks else "",
             "우리가 놓친 키워드 수": len(entry["missed"]),
-            "최근 등장일": entry["last"],
+            "경쟁 키워드 수": total,
         })
 
     out.sort(key=lambda r: (r["제품"], -int(r["노출 키워드 수"]), r["주체"]))
