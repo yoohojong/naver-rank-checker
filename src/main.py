@@ -1053,9 +1053,11 @@ def run_cycle() -> dict:
                     f"{history_result.get('error') or ranking_result.get('error')} (cron 진행)"
                 )
             else:
+                dropped = int(ranking_result.get("dropped_rows", 0) or 0)
+                dropped_note = f" (상위 {ranking_result.get('rows_written', 0)}곳만 표시, {dropped}곳 생략)" if dropped else ""
                 print(
                     f"[경쟁사] 이력 {history_result.get('rows_written', 0)} 행 적재 · "
-                    f"주체 {competitor_summary.get('actors', 0)}곳 랭킹 갱신"
+                    f"주체 {competitor_summary.get('actors', 0)}곳 랭킹 갱신{dropped_note}"
                 )
         except Exception as e:  # noqa: BLE001
             print(f"[경쟁사] 기록 실패 = {e} (cron 진행)")
@@ -1089,6 +1091,8 @@ def run_cycle() -> dict:
     summary["all_known_links_count"] = len(all_known_links)
     summary["competitor_rows_collected"] = len(competitor_collector) if competitor_collector is not None else 0
     summary["competitor_actors"] = competitor_summary.get("actors", 0)
+    summary["competitor_ranking_rows_shown"] = competitor_summary.get("ranking", {}).get("rows_written", 0)
+    summary["competitor_ranking_rows_dropped"] = competitor_summary.get("ranking", {}).get("dropped_rows", 0)
     summary["competitor_top"] = competitor_summary.get("top", [])
     summary["cafe_whitelist_size"] = len(CAFE_WHITELIST)
     summary["prewrite_invariant_violations"] = len(prewrite_invariant_issues)

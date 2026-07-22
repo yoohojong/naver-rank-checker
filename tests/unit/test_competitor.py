@@ -395,6 +395,16 @@ def test_build_actor_aliases_does_not_merge_across_kinds():
     assert build_actor_aliases(history) == {}
 
 
+def test_build_actor_aliases_requires_one_to_one_pairing():
+    """숫자 ID 가 여럿이면 서로 다른 카페 여럿을 한 곳으로 만들어버린다 — 1:1 짝일 때만 묶는다."""
+    history = [
+        _hist("2026-07-22", "a", "powderroom", 1, name="파우더룸"),
+        _hist("2026-07-22", "b", "카페#111", 1, name="파우더룸"),
+        _hist("2026-07-22", "c", "카페#222", 1, name="파우더룸"),
+    ]
+    assert build_actor_aliases(history) == {}
+
+
 def test_build_actor_aliases_requires_exactly_one_named_side():
     """이름 형태가 둘 이상이면 어느 쪽이 그 숫자 ID 인지 알 수 없다 — 묶지 않는다."""
     history = [
@@ -673,6 +683,60 @@ def test_scattered_deletions_collapse_into_one_call_and_lose_nothing():
     assert len(ws.delete_calls) == 1  # 10회가 아니라 1회
     surviving = sorted(r[2] for r in ws.values[1:] if r)
     assert surviving == sorted(keywords)  # 안 돈 키워드도 전부 살아 있다
+
+
+def test_retention_prune_and_same_day_replace_are_deleted_separately():
+    """오래된 행(맨 위)과 오늘 교체분(아래)을 한 통으로 묶으면 '표 전체'가 한 구간이 된다.
+
+    그러면 지운 뒤 다시 넣다 한 번만 실패해도 21일치가 통째로 사라진다 → 따로 지워야 한다.
+    """
+    sheet = FakeSpreadsheet()
+    client = FakeClient(sheet)
+    # 보관기간 지난 날 + 중간 날 + 오늘(짝수만 재수집되어 흩어진 모양)
+    append_daily_competitors(client, _values("2026-06-01", ["old1", "old2"]), "2026-06-01")
+    append_daily_competitors(client, _values("2026-07-20", ["mid1", "mid2"]), "2026-07-20")
+    today_kw = [f"t{i:02d}" for i in range(12)]
+    append_daily_competitors(client, _values("2026-07-23", today_kw), "2026-07-23")
+
+    ws = sheet.worksheet("경쟁사_이력")
+    ws.delete_calls.clear()
+    rerun = [k for i, k in enumerate(today_kw) if i % 2 == 0]  # 흩어진 6개만 재수집
+    append_daily_competitors(client, _values("2026-07-23", rerun), "2026-07-23", retention_days=21)
+
+    # 삭제 구간이 '표 전체'로 번지지 않았는지 = 맨 윗행(보관만료)과 오늘치가 한 통이 아니어야 함
+    spans = ws.delete_calls
+    assert all(end - start + 1 < len(ws.values) for start, end in spans), spans
+    surviving = {r[2] for r in ws.values[1:] if r}
+    assert "old1" not in surviving and "old2" not in surviving  # 보관기간 지난 건 정리
+    assert {"mid1", "mid2"} <= surviving                        # 중간 날짜는 보존
+    assert set(today_kw) <= surviving                           # 오늘치는 전부 살아 있음
+
+
+def test_header_mismatch_tolerates_trailing_blank_columns():
+    """오른쪽 아무 칸에 글자 하나만 있어도 시트가 헤더를 넓혀 돌려준다 — 그걸로 기능이 멈추면 안 된다."""
+    padded_header = list(HISTORY_HEADER) + ["", ""]
+    ws = FakeWorksheet([padded_header])
+    sheet = FakeSpreadsheet({"경쟁사_이력": ws})
+    client = FakeClient(sheet)
+
+    result = append_daily_competitors(client, _values("2026-07-23", ["a"]), "2026-07-23")
+
+    assert result["history"] is not None
+    assert result["rows_written"] == 1
+
+
+def test_ranking_tab_drops_previous_rows_when_ranking_shrinks():
+    """경쟁사가 줄어든 날, 어제 줄이 아래에 남아 오늘 것처럼 보이면 안 된다."""
+    sheet = FakeSpreadsheet()
+    client = FakeClient(sheet)
+    many = [[f"이름{i}", f"actor{i}", "카페", 1, 1, 1.0, 0, 1, "2026-07-22", "u"] for i in range(30)]
+    write_ranking(client, many)
+    few = [[f"새{i}", f"new{i}", "카페", 1, 1, 1.0, 0, 1, "2026-07-23", "u"] for i in range(3)]
+    write_ranking(client, few)
+
+    ws = sheet.worksheet("경쟁사_랭킹")
+    assert len(ws.values) == 4  # 헤더 + 3줄, 어제 27줄은 사라짐
+    assert all(row[8] == "2026-07-23" for row in ws.values[1:])
 
 
 def test_header_mismatch_stops_instead_of_writing_shifted_data():
