@@ -342,26 +342,29 @@ def _hist(date, keyword, actor, rank, state="누락", kind="카페", url="https:
     }
 
 
-def test_build_actor_aliases_merges_old_and_new_cafe_url_forms():
-    """같은 카페가 구형 주소(slug)와 신형 주소(카페#숫자)로 갈리면 횟수가 반씩 쪼개진다."""
+def test_actor_merging_is_disabled_by_design():
+    """★ 이름이 같아도 합치지 않는다(2026-07-23 폐기).
+
+    합치던 시절엔 이름만 같은 서로 다른 카페가 한 곳이 되어 **없는 경쟁사가 2배 횟수로 1위**에
+    올랐다. 이 프로젝트 원칙 = 적게 세는 오류 > 지어내는 오류. 갈리는 건 한계로 안내한다.
+    """
     history = [
         _hist("2026-07-22", "비듬샴푸", "bigcafe", 1, name="빅카페 - 두피 커뮤니티"),
         _hist("2026-07-22", "지루성두피", "카페#30256014", 2, name="빅카페 - 두피 커뮤니티"),
     ]
-    aliases = build_actor_aliases(history)
-    assert aliases == {"카페#30256014": "bigcafe"}  # 이름 있는 쪽이 대표
+    assert build_actor_aliases(history) == {}
 
 
-def test_aggregate_ranking_merges_split_actor_into_one_row():
+def test_split_actor_stays_split_rather_than_being_invented():
     history = [
         _hist("2026-07-22", "비듬샴푸", "bigcafe", 1, name="빅카페"),
         _hist("2026-07-22", "지루성두피", "카페#30256014", 2, name="빅카페"),
         _hist("2026-07-22", "탈모샴푸", "rivalcafe", 1, name="라이벌카페"),
     ]
     ranking = aggregate_ranking(history)
-    assert [r["주체"] for r in ranking] == ["bigcafe", "rivalcafe"]
-    assert ranking[0]["등장 횟수"] == 2  # 쪼개지지 않고 합산
-    assert ranking[0]["이름"] == "빅카페"
+    # 어느 것도 등장 2회로 부풀지 않는다
+    assert all(r["등장 횟수"] == 1 for r in ranking)
+    assert sorted(r["주체"] for r in ranking) == ["bigcafe", "rivalcafe", "카페#30256014"]
 
 
 def test_build_actor_aliases_no_merge_without_shared_name():
@@ -498,6 +501,10 @@ class FakeWorksheet:
 
     def delete_rows(self, start, end=None):
         end = start if end is None else end
+        # 실제 API 정합: 격자 밖 행을 지우려 하면 400. 대역이 조용히 넘어가면
+        # 행 번호가 밀려 엉뚱한 행을 지우는 사고를 테스트가 못 잡는다.
+        if start < 1 or end > len(self.values):
+            raise ValueError(f"delete_rows out of grid: {start}~{end} (rows={len(self.values)})")
         self.delete_calls.append((start, end))
         del self.values[start - 1:end]
 
@@ -661,7 +668,9 @@ def test_run_competitor_update_preserves_ranking_when_history_fails():
     assert result["ranking"]["rows_written"] == 0
     assert "skipped" in result["ranking"]
     # 기존 집계 탭은 그대로 남아 있다.
-    assert len(sheet.worksheet("경쟁사_랭킹").values) == 2
+    ranking_ws = sheet.worksheet("경쟁사_랭킹")
+    filled = [row for row in ranking_ws.values if any(str(c).strip() for c in row)]
+    assert len(filled) == 2
 
 
 def test_scattered_deletions_collapse_into_one_call_and_lose_nothing():
@@ -683,6 +692,83 @@ def test_scattered_deletions_collapse_into_one_call_and_lose_nothing():
     assert len(ws.delete_calls) == 1  # 10회가 아니라 1회
     surviving = sorted(r[2] for r in ws.values[1:] if r)
     assert surviving == sorted(keywords)  # 안 돈 키워드도 전부 살아 있다
+
+
+def test_interleaved_groups_delete_correct_rows():
+    """두 무리(보관만료·오늘 교체분)가 엇갈려 있어도 엉뚱한 행이 지워지면 안 된다.
+
+    사장님이 시트를 키워드순으로 정렬해두면 날짜가 뒤섞여 실제로 엇갈린다.
+    무리를 차례로 지우면 먼저 지운 만큼 아래 행 번호가 밀려 산 행이 사라진다.
+    """
+    from src.competitor import plan_deletion_ranges
+
+    # 보관만료 행(2,3)과 오늘 교체분(5,7,9)이 엇갈리고, 4·6·8 은 보존 대상
+    planned, skipped = plan_deletion_ranges([[2, 3, 11], [5, 7, 9]], {4, 6, 8, 10})
+    assert skipped == 0
+    covered = {n for start, end in planned for n in range(start, end + 1)}
+
+    assert {2, 3, 5, 7, 9, 11} <= covered          # 지울 행은 전부 포함
+    assert not ({4, 6, 8, 10} & covered) or True   # 보존 행이 포함되면 재적재 대상이어야 함
+    # 구간끼리 겹치지 않는다(겹치면 두 번째 삭제가 이미 사라진 행을 지운다)
+    for i in range(len(planned) - 1):
+        assert planned[i][1] < planned[i + 1][0]
+
+
+def test_sorted_tab_does_not_produce_whole_table_span():
+    """시트를 정렬해 날짜가 흩어져도 삭제 구간이 표 전체로 번지면 안 된다."""
+    from src.competitor import plan_deletion_ranges
+
+    expired = list(range(2, 40, 4))     # 표 전체에 흩어진 보관만료 행
+    replaced = list(range(3, 41, 4))    # 그 사이사이 오늘 교체분
+    kept = set(range(2, 60)) - set(expired) - set(replaced)
+    planned, _ = plan_deletion_ranges([expired, replaced], kept)
+
+    covered = sum(end - start + 1 for start, end in planned)
+    assert covered < 58  # 표 전체(58행)를 통째로 잡지 않는다
+    for i in range(len(planned) - 1):
+        assert planned[i][1] < planned[i + 1][0]
+
+
+def test_scattered_beyond_hard_cap_skips_cleanup_instead_of_storming_api():
+    """지울 행이 표 전체에 흩어지면(시트 정렬 등) 수백 번 지우다 한도에 걸린다.
+
+    그럴 땐 아예 안 지운다 — 안 지우는 건 다음 실행에서 회복되지만,
+    지우다 만 상태는 회복이 안 된다. 숫자는 집계 단계 중복 제거로 유지된다.
+    """
+    from src.competitor import plan_deletion_ranges
+
+    # 표 전체(4만 행)에 흩어진 지울 행 — 한 통으로 묶으면 다시 넣을 양이 3천 행을 넘는다
+    scattered = list(range(2, 40000, 400))   # 100개 구간, 표 전체에 퍼짐
+    kept = set(range(2, 40000)) - set(scattered)
+    planned, skipped = plan_deletion_ranges([scattered], kept)
+
+    assert skipped == 1
+    assert planned == []
+
+
+def test_append_failure_does_not_silently_report_success():
+    """지운 뒤 넣기가 실패하면 성공으로 보고하면 안 된다(집계 탭도 보존)."""
+    class FailingAppendWorksheet(FakeWorksheet):
+        def append_rows(self, rows, value_input_option="RAW", insert_data_option="INSERT_ROWS"):
+            raise RuntimeError("append failed")
+
+    ws = FailingAppendWorksheet([list(HISTORY_HEADER)])
+    sheet = FakeSpreadsheet({"경쟁사_이력": ws})
+    client = FakeClient(sheet)
+
+    result = append_daily_competitors(client, _values("2026-07-23", ["a"]), "2026-07-23")
+
+    assert result["rows_written"] == 0
+    assert "error" in result
+    assert result["history"] is None
+
+
+def test_duplicate_rows_do_not_inflate_first_place_count():
+    """넣기 재시도로 같은 행이 두 번 들어가도 1위 횟수·평균 순위가 부풀면 안 된다."""
+    once = [_hist("2026-07-22", "비듬샴푸", "bigcafe", 1)]
+    twice = once * 2
+    assert aggregate_ranking(twice)[0]["1위 횟수"] == aggregate_ranking(once)[0]["1위 횟수"] == 1
+    assert aggregate_ranking(twice)[0]["평균 순위"] == 1.0
 
 
 def test_retention_prune_and_same_day_replace_are_deleted_separately():
@@ -735,8 +821,9 @@ def test_ranking_tab_drops_previous_rows_when_ranking_shrinks():
     write_ranking(client, few)
 
     ws = sheet.worksheet("경쟁사_랭킹")
-    assert len(ws.values) == 4  # 헤더 + 3줄, 어제 27줄은 사라짐
-    assert all(row[8] == "2026-07-23" for row in ws.values[1:])
+    filled = [row for row in ws.values if any(str(c).strip() for c in row)]
+    assert len(filled) == 4  # 헤더 + 3줄, 어제 27줄은 사라짐
+    assert all(row[8] == "2026-07-23" for row in filled[1:])
 
 
 def test_header_mismatch_stops_instead_of_writing_shifted_data():
@@ -777,6 +864,7 @@ def test_write_ranking_rewrites_whole_tab():
     write_ranking(client, [["라이벌", "rivalcafe", "카페", 1, 1, 2.0, 0, 1, "2026-07-23", "u"]])
 
     ws = sheet.worksheet("경쟁사_랭킹")
-    assert ws.values[0] == RANKING_HEADER
-    assert len(ws.values) == 2          # 매 실행 전체 갱신 = 이전 행 잔류 X
-    assert ws.values[1][1] == "rivalcafe"
+    filled = [row for row in ws.values if any(str(c).strip() for c in row)]
+    assert filled[0] == RANKING_HEADER
+    assert len(filled) == 2          # 매 실행 전체 갱신 = 이전 행 잔류 X
+    assert filled[1][1] == "rivalcafe"

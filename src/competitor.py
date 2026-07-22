@@ -45,6 +45,9 @@ MAX_DELETE_CALLS = 5
 # 묶어 지울 때 '다시 넣어야 할' 행 수 상한. 이보다 크면 묶지 않는다 —
 # 다시 넣다 실패하면 그만큼이 사라지므로, 호출을 몇 번 더 쓰는 편이 안전하다.
 MAX_READD_ROWS = 3000
+# 그래도 남는 삭제 호출 수의 절대 상한. 넘으면 이번 실행은 정리를 건너뛴다
+# (수백 번 지우다 한도에 걸려 '지우다 만 상태' 가 되는 것보다 안 지우는 편이 안전).
+HARD_MAX_DELETE_CALLS = 20
 # 집계 탭에 남길 최대 줄 수. 사장님이 보는 건 위쪽 몇십 곳이고,
 # 전체를 쓰면 한 번에 보내는 양이 커져 실패 위험이 오른다. 잘린 수는 로그로 알린다.
 RANKING_MAX_ROWS = 300
@@ -244,40 +247,19 @@ class CompetitorCollector:
         return sum(len(rows) for rows in self._by_keyword.values())
 
 
-def build_actor_aliases(history_rows: list[dict]) -> dict:
-    """주소 형태가 갈린 **같은 카페**만 하나로 묶는 대조표 · 순수함수.
+def build_actor_aliases(history_rows: list[dict]) -> dict:  # noqa: ARG001
+    """★ 폐기(2026-07-23 4차 검토) — 항상 빈 dict. 아무것도 합치지 않는다.
 
-    네이버 카페 주소는 구형(cafe.naver.com/{이름})과 신형(ca-fe/cafes/{숫자})이 섞여 나온다.
-    한 카페가 "pusanmommy" 와 "카페#123" 으로 갈리면 등장 횟수가 반씩 쪼개진다.
+    원래 목적: 카페 주소가 구형(이름)/신형(숫자)으로 갈려 한 카페가 두 곳으로 세어지는 것 보정.
+    폐기 이유: 표시 이름이 같다는 것 말고는 같은 곳이라는 근거가 없다. 네이버 카페 이름은
+    유일하지 않아("다이어트", "맘스카페") **서로 다른 두 카페가 1:1 로 짝지어져 한 곳으로 합쳐지고,
+    없는 경쟁사가 2배 횟수로 1위에 오른다.** 조건을 아무리 좁혀도 이 구멍은 안 닫혔다(3차·4차 연속 검출).
 
-    ★ 묶는 조건을 아주 좁게 건다 (2026-07-23 독립 검토 지적 반영):
-      ① 종류가 '카페' 로 같고 ② 한쪽이 숫자 ID 형태("카페#…") 이고 ③ 표시 이름이 같을 때만.
-      이름만 같으면 묶던 이전 판은 "일상"·"리뷰" 같은 흔한 블로그 이름끼리 엮여 **없는 경쟁사를
-      1위로 만들어내는** 더 나쁜 답을 냈다. 못 묶어서 적게 세는 쪽이 지어내는 쪽보다 안전하다.
-
-    Returns:
-        {숫자 ID 주체: 이름 형태 주체}. 조건 안 맞으면 빈 dict.
+    이 프로젝트 확정 원칙: **적게 세는 오류 > 지어내는 오류.**
+    같은 카페가 갈려 횟수가 나뉘는 건 감수하고(안내문에 한계로 명시), 합치기는 하지 않는다.
+    합치려면 근거가 필요하다 — 시트 '카페매핑' 탭 같은 실제 대조표가 생기면 그때 다시 넣는다.
     """
-    by_name: dict[str, dict] = {}
-    for row in history_rows or []:
-        name = _clean(row.get("이름"))
-        actor = _clean(row.get("주체"))
-        kind = _clean(row.get("종류"))
-        if not name or not actor or kind != "카페":
-            continue
-        by_name.setdefault(name, {})[actor] = kind
-
-    aliases: dict = {}
-    for actors in by_name.values():
-        numeric = [a for a in actors if a.startswith("카페#")]
-        named = sorted(a for a in actors if not a.startswith("카페#"))
-        # 이름 형태 1개 + 숫자 ID 1개 = 1:1 짝일 때만 묶는다.
-        # 어느 한쪽이라도 여러 개면 어느 것과 어느 것이 같은 곳인지 알 수 없다
-        # (이름만 같은 서로 다른 카페 여럿을 한 곳으로 만들어버린다 — 2026-07-23 3차 검토).
-        if len(numeric) != 1 or len(named) != 1:
-            continue
-        aliases[numeric[0]] = named[0]
-    return aliases
+    return {}
 
 
 def aggregate_ranking(history_rows: list[dict]) -> list[dict]:
@@ -288,16 +270,23 @@ def aggregate_ranking(history_rows: list[dict]) -> list[dict]:
     - 평균 순위 = 등장한 자리들의 평균(소수 1자리).
     - 1위 횟수 = 순위 1로 잡힌 횟수.
     - 우리가 놓친 키워드 수 = 그 주체가 보인 키워드 중 우리 상태가 누락/미노출/삭제인 키워드 수.
-    - 주소 형태가 갈린 같은 곳은 표시 이름으로 묶는다(build_actor_aliases).
+    - 주체를 합치는 보정은 하지 않는다(build_actor_aliases 폐기 사유 참고).
     정렬 = 등장 횟수 내림차순 → 평균 순위 오름차순 → 주체 이름.
     """
     aliases = build_actor_aliases(history_rows)
     stats: dict[str, dict] = {}
+    # 같은 (날짜·키워드·주체)가 두 번 적재된 경우(넣기 재시도 등) 평균 순위·1위 횟수가
+    # 부풀지 않도록 한 번만 센다. 등장 횟수는 원래 집합이라 영향 없음.
+    counted: set = set()
     for row in history_rows or []:
         actor = _clean(row.get("주체"))
         if not actor:
             continue
         actor = aliases.get(actor, actor)
+        dedupe_key = (_clean(row.get("날짜")), _clean(row.get("키워드")), actor)
+        if dedupe_key in counted:
+            continue
+        counted.add(dedupe_key)
         entry = stats.setdefault(actor, {
             "이름": _clean(row.get("이름")),
             "종류": _clean(row.get("종류")),
@@ -396,25 +385,92 @@ def _delete_row_numbers(ws, target_rows: list[int], *, max_calls: int = MAX_DELE
     """
     if not target_rows:
         return 0, None
-    target_rows = sorted(set(target_rows))
+    ranges = _contiguous_ranges(target_rows)
+    if len(ranges) > max_calls:
+        span = (min(target_rows), max(target_rows))
+        ws.delete_rows(span[0], span[1])
+        return span[1] - span[0] + 1, span
+
+    deleted = _execute_deletions(ws, ranges)
+    return deleted, None
+
+
+def _contiguous_ranges(row_numbers) -> list:
+    """행 번호 → 연속 구간 [(start, end), ...] (오름차순)."""
+    rows = sorted(set(row_numbers))
+    if not rows:
+        return []
     ranges: list[tuple[int, int]] = []
-    start = prev = target_rows[0]
-    for row_num in target_rows[1:]:
+    start = prev = rows[0]
+    for row_num in rows[1:]:
         if row_num == prev + 1:
             prev = row_num
         else:
             ranges.append((start, prev))
             start = prev = row_num
     ranges.append((start, prev))
+    return ranges
 
-    if len(ranges) > max_calls:
-        span = (target_rows[0], target_rows[-1])
-        ws.delete_rows(span[0], span[1])
-        return span[1] - span[0] + 1, span
 
-    for start, end in sorted(ranges, reverse=True):
+def _merge_ranges(ranges: list) -> list:
+    """겹치거나 맞닿은 구간을 합친다 (오름차순 반환)."""
+    merged: list[list] = []
+    for start, end in sorted(ranges):
+        if merged and start <= merged[-1][1] + 1:
+            merged[-1][1] = max(merged[-1][1], end)
+        else:
+            merged.append([start, end])
+    return [(start, end) for start, end in merged]
+
+
+def _execute_deletions(ws, ranges: list) -> int:
+    """구간들을 아래→위 순서로 지운다. 위를 먼저 지우면 아래 행 번호가 밀려 어긋난다."""
+    total = 0
+    for start, end in sorted(_merge_ranges(ranges), reverse=True):
         ws.delete_rows(start, end)
-    return len(target_rows), None
+        total += end - start + 1
+    return total
+
+
+def plan_deletion_ranges(groups: list, kept_rows, *, max_calls: int = MAX_DELETE_CALLS,
+                         max_readd: int = MAX_READD_ROWS) -> list:
+    """지울 행 무리들 → 실제로 지울 구간 목록 · 순수함수(시트 접근 없음).
+
+    ★ 무리별로 따로 '묶을지' 판단한 뒤, 마지막에 전부 합쳐 한 번에 계획한다
+      (2026-07-23 4차 검토 지적). 무리를 순서대로 지우면, 무리들이 서로 엇갈려 있을 때
+      (사장님이 시트를 키워드순으로 정렬해두는 등) 먼저 지운 만큼 아래 행 번호가 밀려
+      **엉뚱한 행이 지워지고 살아야 할 행이 사라진다.** 구간을 합쳐 한 번에 계획하면
+      엇갈려 있어도 안전하고, '묶기' 판단은 무리별이라 구간이 표 전체로 번지지도 않는다.
+
+    Args:
+        groups: 지울 행 번호 리스트들 (예: [보관만료 행들, 오늘 교체분 행들])
+        kept_rows: 보존해야 할 행 번호 모음 (묶어 지울 때 다시 넣을 대상 판정용)
+
+    Returns:
+        (지울 구간 [(start, end), ...], 포기한 무리 수)
+        구간은 겹침 없이 합쳐진 상태. 포기한 무리가 있으면 이번엔 그만큼 안 지운다.
+    """
+    planned: list[tuple[int, int]] = []
+    skipped = 0
+    for group in groups:
+        if not group:
+            continue
+        ranges = _contiguous_ranges(group)
+        if len(ranges) > max_calls:
+            span = (min(group), max(group))
+            inside = [n for n in kept_rows if span[0] <= n <= span[1]]
+            if len(inside) <= max_readd:
+                # 다시 넣을 양이 감당 가능 → 한 통으로 묶어 1회에 끝낸다.
+                ranges = [span]
+            elif len(ranges) > HARD_MAX_DELETE_CALLS:
+                # 묶지도 못하고 구간도 너무 많다(예: 시트를 정렬해 날짜가 뒤섞인 경우).
+                # 수백 번 지우면 분당 한도에 걸려 지우다 만 상태가 된다 →
+                # 이번 실행은 **안 지우고 넘어간다**. 남은 옛 행은 집계에서 (날짜·키워드·주체)로
+                # 한 번만 세므로 숫자는 안 틀리고, 다음 정상 실행에서 정리된다.
+                skipped += 1
+                continue
+        planned.extend(ranges)
+    return _merge_ranges(planned), skipped
 
 
 def append_daily_competitors(
@@ -471,8 +527,8 @@ def append_daily_competitors(
             replaced_rows: list[int] = []  # 이번에 다시 쓴 오늘치 — 아래쪽에 흩어짐
             kept_by_row: dict[int, list] = {}
             for row_num, values in enumerate(all_values[1:], start=2):
-                if not values:
-                    continue
+                if not values or not any(_clean(cell) for cell in values):
+                    continue  # 빈 줄 = 보존 대상도 아님(다시 넣지 않는다)
                 cell_date = _clean(values[0])
                 cell_keyword = _clean(values[keyword_col]) if len(values) > keyword_col else ""
                 if cutoff and cell_date and cell_date < cutoff:
@@ -486,20 +542,22 @@ def append_daily_competitors(
             #   같이 묶으면 '맨 위 오래된 행 ~ 맨 아래 오늘 행' = 사실상 표 전체가 한 구간이 되어,
             #   지운 뒤 다시 넣다가 한 번만 실패해도 21일치가 통째로 사라진다.
             #   따로 지우면 오래된 블록은 붙어 있어 1회로 끝나고, 다시 넣을 양도 하루치로 제한된다.
-            pruned = 0
-            readd_nums: set = set()
-            # 아래쪽 무리부터 지운다 — 위를 먼저 지우면 아래 행 번호가 밀려 엉뚱한 행이 지워진다.
-            groups = [g for g in (expired_rows, replaced_rows) if g]
-            for group in sorted(groups, key=max, reverse=True):
-                # 한 통으로 묶었을 때 다시 넣어야 할 양이 너무 크면 묶지 않는다
-                # (다시 넣다 실패하면 그만큼이 날아가므로, 호출 몇 번 더 쓰는 편이 안전).
-                inside = [n for n in kept_by_row if group[0] <= n <= group[-1]]
-                max_calls = MAX_DELETE_CALLS if len(inside) <= MAX_READD_ROWS else len(group)
-                deleted, span = _delete_row_numbers(ws, group, max_calls=max_calls)
-                pruned += deleted
-                if span is not None:
-                    readd_nums.update(n for n in kept_by_row if span[0] <= n <= span[1])
-            readd = [kept_by_row[n] for n in sorted(readd_nums)]
+            # 무리별로 '묶을지' 판단 → 전부 합쳐 한 번에 계획 → 아래부터 삭제.
+            # 무리를 차례로 지우면 무리가 엇갈릴 때 행 번호가 밀려 엉뚱한 행이 지워진다.
+            planned, skipped_groups = plan_deletion_ranges(
+                [expired_rows, replaced_rows], set(kept_by_row)
+            )
+            if skipped_groups:
+                print(
+                    f"[경쟁사] 이력 정리 일부 건너뜀 — 지울 행이 표 전체에 흩어져 있음"
+                    f"(무리 {skipped_groups}개). 숫자는 중복 제거로 유지되고 다음 실행에서 정리됨."
+                )
+            pruned = _execute_deletions(ws, planned)
+            # 지운 구간 안에 있던 보존 행 = 다시 넣는다(순서 무관).
+            readd = [
+                values for num, values in sorted(kept_by_row.items())
+                if any(start <= num <= end for start, end in planned)
+            ]
             kept = list(kept_by_row.values())
         payload = readd + list(rows)
         if payload:
@@ -567,17 +625,20 @@ def write_ranking(
         payload = [RANKING_HEADER] + shown
         # 탭 격자를 payload 크기에 맞춘다. 격자보다 큰 내용을 쓰면 시트가 거부하고,
         # clear() 로 비운 뒤였다면 탭이 빈 채로 남는다. resize 는 넘치는 옛 행도 함께 잘라준다.
+        from src.sheets import _sheets_api_retry
+
         try:
-            ws.resize(rows=len(payload) + 10, cols=max(len(RANKING_HEADER), 10))
+            _sheets_api_retry(
+                lambda: ws.resize(rows=len(payload) + 10, cols=max(len(RANKING_HEADER), 10)),
+                ctx="경쟁사 랭킹 resize",
+            )
         except Exception:  # noqa: BLE001 — resize 미지원 대역/구버전이면 clear 로 대체
             ws.clear()
-        ws.update("A1", payload, value_input_option="RAW")
-        # 경쟁사가 줄어든 날, 예전 줄이 아래에 그대로 남아 오늘 것처럼 보이는 걸 막는다.
-        # (쓰기 '뒤' 에 잘라내므로 중간에 실패해도 표가 비는 창은 없다.)
-        try:
-            ws.resize(rows=len(payload), cols=max(len(RANKING_HEADER), 10))
-        except Exception:  # noqa: BLE001
-            pass
+        # 경쟁사가 줄어든 날 예전 줄이 아래에 남아 오늘 것처럼 보이는 걸 막는다.
+        # 격자를 딱 맞게 줄이면 다음 실행에서 한 줄만 늘어도 넘쳐 실패하므로,
+        # 여유 10줄은 남기되 그 자리를 **빈 값으로 덮어써서** 옛 줄이 안 보이게 한다.
+        blank = [""] * len(RANKING_HEADER)
+        ws.update("A1", payload + [list(blank) for _ in range(10)], value_input_option="RAW")
         return {"rows_written": len(shown), "created_tab": created, "dropped_rows": dropped}
     except Exception as e:  # noqa: BLE001
         return {"rows_written": 0, "created_tab": False, "error": str(e)}
