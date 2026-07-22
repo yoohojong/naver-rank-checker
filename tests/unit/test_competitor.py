@@ -454,6 +454,40 @@ def test_aggregate_ranking_empty():
     assert aggregate_ranking(None) == []
 
 
+def test_aggregate_by_product_computes_share_per_product():
+    """제품(탭)별 점유율 = 그 경쟁사가 뜬 키워드 수 ÷ 그 제품에서 추적 중인 키워드 수."""
+    from src.competitor import aggregate_by_product
+
+    history = [
+        _hist("2026-07-22", "비듬샴푸", "bigcafe", 1, name="빅카페"),
+        _hist("2026-07-22", "지루성두피", "bigcafe", 2, name="빅카페"),
+        _hist("2026-07-22", "탈모샴푸", "rivalcafe", 1, name="라이벌"),
+        _hist("2026-07-22", "각질샴푸", "rivalcafe", 3, state="AB", name="라이벌"),
+    ]
+    rows = aggregate_by_product(history)
+
+    big = [r for r in rows if r["주체"] == "bigcafe"][0]
+    assert big["제품"] == "샴푸 카외"
+    assert big["노출 키워드 수"] == 2
+    assert big["점유율(%)"] == 50.0        # 4개 키워드 중 2개
+    assert big["우리가 놓친 키워드 수"] == 2
+
+    rival = [r for r in rows if r["주체"] == "rivalcafe"][0]
+    assert rival["우리가 놓친 키워드 수"] == 1  # 각질샴푸는 우리가 AB 노출 = 놓친 것 아님
+
+
+def test_aggregate_by_product_separates_products():
+    from src.competitor import aggregate_by_product
+
+    history = [
+        _hist("2026-07-22", "비듬샴푸", "bigcafe", 1),
+        {**_hist("2026-07-22", "등드름", "bigcafe", 1), "탭": "바디워시 카외"},
+    ]
+    rows = aggregate_by_product(history)
+    assert sorted(r["제품"] for r in rows) == ["바디워시 카외", "샴푸 카외"]
+    assert all(r["점유율(%)"] == 100.0 for r in rows)  # 각 제품에서 유일한 키워드
+
+
 def test_ranking_to_sheet_values_matches_header_order():
     ranking = aggregate_ranking([_hist("2026-07-22", "비듬샴푸", "bigcafe", 1)])
     values = ranking_to_sheet_values(ranking)

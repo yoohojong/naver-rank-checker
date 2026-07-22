@@ -33,6 +33,14 @@ RANKING_HEADER = [
 ]
 RANKING_TAB_NAME = "경쟁사_랭킹"
 
+# 제품(시트 탭)별 섹터 — 사장님 요청(2026-07-23) "제품별로 분류해서".
+PRODUCT_HEADER = [
+    "제품", "이름", "주체", "종류", "등장 횟수", "노출 키워드 수", "점유율(%)",
+    "평균 순위", "우리가 놓친 키워드 수", "최근 등장일",
+]
+PRODUCT_TAB_NAME = "경쟁사_제품별"
+PRODUCT_TOP_N = 20  # 제품마다 상위 몇 곳까지 시트에 남길지
+
 # 시트 적재량 상한. 구좌(AB/스마트블록/인기글)가 3종이라 구좌별 상한만 두면 최대 3배가 된다
 # → 키워드 총량 상한을 따로 둔다. 423 키워드 × 6 = 하루 ~2,500행(약 3만 셀).
 DEFAULT_TOP_N = 5           # 한 구좌에서 최대 몇 곳까지
@@ -348,6 +356,81 @@ def ranking_to_sheet_values(ranking: list[dict]) -> list[list]:
     return [[row.get(col, "") for col in RANKING_HEADER] for row in ranking]
 
 
+def aggregate_by_product(history_rows: list[dict], *, top_n: int = PRODUCT_TOP_N) -> list[dict]:
+    """제품(시트 탭)별 경쟁사 집계 · 순수함수.
+
+    사장님 요청(2026-07-23): "구글 스프레드시트에도 하나 섹터 추가 / 제품별로 분류해서".
+    점유율 = 그 경쟁사가 뜬 키워드 수 ÷ 그 제품에서 우리가 추적하는 키워드 수(최근 기록 기준).
+    """
+    keywords_by_product: dict = {}
+    stats: dict = {}
+    for row in history_rows or []:
+        product = _clean(row.get("탭"))
+        actor = _clean(row.get("주체"))
+        keyword = _clean(row.get("키워드"))
+        if not product or not actor or not keyword:
+            continue
+        keywords_by_product.setdefault(product, set()).add(keyword)
+        entry = stats.setdefault((product, actor), {
+            "이름": _clean(row.get("이름")),
+            "종류": _clean(row.get("종류")),
+            "keywords": set(),
+            "hits": set(),
+            "ranks": [],
+            "missed": set(),
+            "last": "",
+        })
+        date_str = _clean(row.get("날짜"))
+        entry["keywords"].add(keyword)
+        entry["hits"].add((date_str, keyword))
+        try:
+            rank = int(row.get("순위") or 0)
+        except (TypeError, ValueError):
+            rank = 0
+        if rank > 0:
+            entry["ranks"].append(rank)
+        if _clean(row.get("우리상태")) in MISSED_STATES:
+            entry["missed"].add(keyword)
+        if not entry["이름"]:
+            entry["이름"] = _clean(row.get("이름"))
+        if date_str > entry["last"]:
+            entry["last"] = date_str
+
+    out: list[dict] = []
+    for (product, actor), entry in stats.items():
+        total = len(keywords_by_product.get(product) or ())
+        share = round(len(entry["keywords"]) / total * 100, 1) if total else ""
+        ranks = entry["ranks"]
+        out.append({
+            "제품": product,
+            "이름": entry["이름"],
+            "주체": actor,
+            "종류": entry["종류"],
+            "등장 횟수": len(entry["hits"]),
+            "노출 키워드 수": len(entry["keywords"]),
+            "점유율(%)": share,
+            "평균 순위": round(sum(ranks) / len(ranks), 1) if ranks else "",
+            "우리가 놓친 키워드 수": len(entry["missed"]),
+            "최근 등장일": entry["last"],
+        })
+
+    out.sort(key=lambda r: (r["제품"], -int(r["노출 키워드 수"]), r["주체"]))
+    # 제품별 상위 N 곳만 남긴다(시트에서 한눈에 보이도록).
+    trimmed: list[dict] = []
+    seen_count: dict = {}
+    for row in out:
+        product = row["제품"]
+        if seen_count.get(product, 0) >= top_n:
+            continue
+        seen_count[product] = seen_count.get(product, 0) + 1
+        trimmed.append(row)
+    return trimmed
+
+
+def product_ranking_to_sheet_values(rows: list[dict]) -> list[list]:
+    return [[row.get(col, "") for col in PRODUCT_HEADER] for row in rows]
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # 시트 I/O — 로컬엔 서비스계정 키가 없어 라이브 R/W 는 못 하므로 방어적으로 짠다.
 # ─────────────────────────────────────────────────────────────────────────────
@@ -612,24 +695,26 @@ def write_ranking(
     ranking_values: list[list],
     *,
     tab_name: str = RANKING_TAB_NAME,
+    header: list | None = None,
 ) -> dict:
     """집계 탭 전체 재작성 (헤더 + 집계 행). 매 실행 갱신 = 항상 최신 상태.
 
     Returns:
         {"rows_written": n, "created_tab": bool} / 실패 시 "error" 키.
     """
+    head = list(header or RANKING_HEADER)
     try:
-        ws, created = _get_or_create_ws(client, tab_name, RANKING_HEADER)
+        ws, created = _get_or_create_ws(client, tab_name, head)
         shown = list(ranking_values)[:RANKING_MAX_ROWS]
         dropped = max(0, len(ranking_values) - len(shown))
-        payload = [RANKING_HEADER] + shown
+        payload = [head] + shown
         # 탭 격자를 payload 크기에 맞춘다. 격자보다 큰 내용을 쓰면 시트가 거부하고,
         # clear() 로 비운 뒤였다면 탭이 빈 채로 남는다. resize 는 넘치는 옛 행도 함께 잘라준다.
         from src.sheets import _sheets_api_retry
 
         try:
             _sheets_api_retry(
-                lambda: ws.resize(rows=len(payload) + 10, cols=max(len(RANKING_HEADER), 10)),
+                lambda: ws.resize(rows=len(payload) + 10, cols=max(len(head), 10)),
                 ctx="경쟁사 랭킹 resize",
             )
         except Exception:  # noqa: BLE001 — resize 미지원 대역/구버전이면 clear 로 대체
@@ -637,7 +722,7 @@ def write_ranking(
         # 경쟁사가 줄어든 날 예전 줄이 아래에 남아 오늘 것처럼 보이는 걸 막는다.
         # 격자를 딱 맞게 줄이면 다음 실행에서 한 줄만 늘어도 넘쳐 실패하므로,
         # 여유 10줄은 남기되 그 자리를 **빈 값으로 덮어써서** 옛 줄이 안 보이게 한다.
-        blank = [""] * len(RANKING_HEADER)
+        blank = [""] * len(head)
         ws.update("A1", payload + [list(blank) for _ in range(10)], value_input_option="RAW")
         return {"rows_written": len(shown), "created_tab": created, "dropped_rows": dropped}
     except Exception as e:  # noqa: BLE001
@@ -670,9 +755,17 @@ def run_competitor_update(
         }
     ranking = aggregate_ranking(history)
     write_result = write_ranking(client, ranking_to_sheet_values(ranking))
+    by_product = aggregate_by_product(history)
+    product_result = write_ranking(
+        client,
+        product_ranking_to_sheet_values(by_product),
+        tab_name=PRODUCT_TAB_NAME,
+        header=PRODUCT_HEADER,
+    )
     return {
         "history": append_result,
         "ranking": write_result,
+        "byProduct": product_result,
         "actors": len(ranking),
         "top": ranking[:10],
     }
