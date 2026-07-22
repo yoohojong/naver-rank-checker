@@ -941,3 +941,132 @@ def _parse_bootstrap_json_fallback(
                 return True
 
     return False
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 경쟁사 수집 (2026-07-23 사장님 요청): "누락시킨거 보고 상위노출된 경쟁사 리스트업"
+#
+# 기존 파싱 분기(_parse_ab_list / _parse_smart_blocks / _parse_popular)는 **우리 link**
+# 를 찾으면 즉시 return 하고 나머지 항목은 버린다. 경쟁사 집계는 그 "나머지"가 필요하다.
+# 기존 함수를 건드리면 순위 판정 회귀 위험이 있으므로, 같은 박스 분류 규칙을 그대로 쓰되
+# **읽기 전용으로 따로 도는 함수**를 새로 둔다(= 순위 로직 회귀 0).
+# 추가 크롤링 없음 — main.py 가 이미 받아둔 같은 html 을 그대로 넘긴다.
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+@dataclass
+class SlotItem:
+    """검색 결과 한 구좌에 실제로 올라와 있는 글 1건 (우리 글/남의 글 구분 전)."""
+
+    area: str  # "AB" / "스마트블록" / "인기글"
+    rank: int  # 그 구좌 안 순위 (위→아래, 1부터)
+    url: str
+    kind: str  # "cafe" / "blog" / "web"
+    title: str = ""
+    block_name: str = ""  # 박스 h2 텍스트 (AB 는 h2 없음 = "")
+
+
+def _title_for_url(box, url: str) -> str:
+    """박스 안에서 해당 URL 을 가진 a 태그의 표시 텍스트 (없으면 "")."""
+    if not url:
+        return ""
+    for a in box.find_all("a", href=True):
+        if a["href"] == url:
+            text = a.get_text(strip=True)
+            if text:
+                return text[:120]
+    return ""
+
+
+def collect_slot_items(html: str, *, max_per_area: int = 20) -> list[SlotItem]:
+    """검색 결과 페이지 → 구좌별 상위 글 목록 (읽기 전용, 매칭 판단 없음).
+
+    박스 분류 규칙은 _detect_block_order 와 동일:
+    - h2 없음 + 박스 안 cafe link ≥ 1 → AB (박스 1개 = 항목 1개, 박스 순서 = 순위)
+    - h2 있음 + "인기글" 포함 → 인기글 (박스 안 본문 글 목록)
+    - h2 있음 + 그 외 (광고/이미지/AI/쇼핑 제외) → 스마트블록
+
+    Args:
+        html: 이미 받아둔 검색 결과 HTML (추가 요청 X).
+        max_per_area: 구좌별 상위 몇 개까지 담을지 (시트 적재량 방어).
+
+    Returns:
+        SlotItem 리스트 (구좌·순위 순). html 이 비었거나 짧으면 빈 리스트.
+    """
+    if not html or len(html) < 500:
+        return []
+
+    soup = BeautifulSoup(html, "lxml")
+    boxes = soup.select(".desktop_mode.api_subject_bx, .fds-default-mode.api_subject_bx")
+
+    items: list[SlotItem] = []
+    ab_rank = 0
+    for box in boxes:
+        h2 = box.find("h2")
+        if h2 is None:
+            has_cafe = any("cafe.naver.com" in a.get("href", "") for a in box.find_all("a", href=True))
+            if not has_cafe:
+                continue
+            url = _extract_main_link(box)
+            if not url:
+                continue
+            ab_rank += 1
+            if ab_rank > max_per_area:
+                continue
+            items.append(
+                SlotItem(
+                    area=ExposureArea.AB.value,
+                    rank=ab_rank,
+                    url=url,
+                    kind=_classify_item_url(url),
+                    title=_title_for_url(box, url),
+                )
+            )
+            continue
+
+        h2_text = h2.get_text(strip=True)
+        if any(p in h2_text for p in _POPULAR_SKIP_PATTERNS):
+            continue
+        if "인기글" in h2_text:
+            area = ExposureArea.POPULAR.value
+            urls = _extract_popular_items(box)
+        else:
+            area = ExposureArea.SMART_BLOCK.value
+            urls = _extract_smart_block_items(box)
+
+        # 스마트블록은 글 링크와 함께 작성자 홈(blog.naver.com/{id}, in.naver.com/{id}) 링크도
+        # 같이 잡힌다. 경쟁사 목록에는 '글'만 남긴다(홈 링크는 순위 자리를 차지한 글이 아님).
+        urls = [u for u in urls if _is_post_like_url(u)]
+
+        for idx, url in enumerate(urls[:max_per_area], start=1):
+            items.append(
+                SlotItem(
+                    area=area,
+                    rank=idx,
+                    url=url,
+                    kind=_classify_item_url(url),
+                    title=_title_for_url(box, url),
+                    block_name=h2_text,
+                )
+            )
+    return items
+
+
+def _is_post_like_url(url: str) -> bool:
+    """글 상세 URL 로 보이는지 — path segment 2개 이상 (홈/프로필 링크 배제)."""
+    if not url:
+        return False
+    parts = [seg for seg in urlparse(url).path.split("/") if seg]
+    return len(parts) >= 2
+
+
+def is_known_url(url: str, link_set: Optional[set[str]]) -> bool:
+    """url 이 link_set(우리 시트 link) 중 하나와 같은 글인지 (정규화 매치). 공개 wrapper."""
+    if not url or not link_set:
+        return False
+    return _urls_match_any(url, link_set)
+
+
+def cafe_slug_of(url: str) -> Optional[str]:
+    """카페 URL → slug (구형 URL 만). 공개 wrapper."""
+    return _extract_cafe_slug(url)
