@@ -59,7 +59,18 @@ jobs:
             --from-sheet \
             --limit "${{ inputs.limit || '0' }}" \
             --top-posts "${{ inputs.top_posts || '4' }}" \
+            --mentions-file mentions.json \
             ${{ (inputs.write_sheet == 'false') && ' ' || '--write-sheet' }}
+
+      # 댓글 훑기가 이 작업의 45분이다. 판정만 실패했을 때 다시 훑지 않도록 남겨둔다.
+      - name: 모아둔 댓글 보관
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mentions
+          path: mentions.json
+          retention-days: 3
+          if-no-files-found: ignore
 
       # 한 번 내린 제품 판정은 남긴다 — 다음 run 은 새로 나온 이름만 물어본다.
       # (Groq 무료 하루치를 아끼는 핵심. 사장님이 파일에서 직접 고칠 수도 있다.)

@@ -220,14 +220,25 @@ def scan_keyword(crawler: CommentFetcher, kw: str, *, our_links: set, our_slugs:
 
 SHEET_HEADER = ["제품군", "경쟁 제품", "횟수", "나온 키워드 수", "확인일", "댓글 예시"]
 
-# 판정을 못 받은 후보가 이만큼을 넘으면 시트를 덮지 않는다.
+# 판정을 못 받은 몫이 이만큼을 넘으면 시트를 덮지 않는다.
 # 반쪽짜리 표를 어제 표 위에 덮으면, 사장님은 그게 오늘의 전부인 줄 알게 된다.
 MAX_UNJUDGED_RATIO = 0.2
 
 
 def should_skip_write(stat: dict) -> bool:
-    """판정이 많이 비었나 — 비었으면 시트를 덮지 않는다 · 순수함수."""
-    asked = int((stat or {}).get("후보") or 0)
+    """판정이 많이 비었나 — 비었으면 시트를 덮지 않는다 · 순수함수.
+
+    재는 잣대는 **댓글에서 몇 번 언급됐나** 다(이름 종류 수가 아니라).
+    판정 못 받은 이름은 대개 한 번만 나온 찌꺼기라, 종류로 세면 멀쩡한 표도 막힌다.
+    많이 오르내린 이름을 못 읽었을 때만 막는 게 맞다.
+    """
+    stat = stat or {}
+    said = int(stat.get("언급") or 0)
+    if said:
+        if not int(stat.get("확정제품") or 0):
+            return True                     # 제품이 하나도 안 남았으면 뭔가 잘못된 것
+        return (int(stat.get("미판정언급") or 0) / said) > MAX_UNJUDGED_RATIO
+    asked = int(stat.get("후보") or 0)
     if not asked:
         return False                        # 물어볼 게 없던 run 은 정상
     return (int(stat.get("미판정") or 0) / asked) > MAX_UNJUDGED_RATIO
@@ -249,7 +260,14 @@ def run_from_sheet(args) -> int:
     today = datetime.now(timezone(timedelta(hours=9))).strftime("%Y-%m-%d")
     by_product: dict = {}
 
-    for ws in client.spreadsheet.worksheets():
+    # 댓글 훑기가 이 작업의 45분이다. 판정만 실패했을 때 또 훑지 않도록 모아둔 걸 남긴다.
+    if args.mentions_file and os.path.exists(args.mentions_file):
+        with open(args.mentions_file, encoding="utf-8") as f:
+            by_product = json.load(f)
+        print(f"모아둔 댓글 재사용: {args.mentions_file} "
+              f"({sum(len(v) for v in by_product.values())}건) — 다시 훑지 않습니다")
+
+    for ws in ([] if by_product else client.spreadsheet.worksheets()):
         tab = ws.title
         if not tab.endswith("카외") or tab in hidden:
             continue                        # 숨김 탭(작업 안 하는 제품)은 제외
@@ -284,6 +302,14 @@ def run_from_sheet(args) -> int:
         by_product[product] = mentions
         print(f"[{product}] 제품 후보 {len({m['키'] for m in mentions})}종")
 
+    if args.mentions_file and not os.path.exists(args.mentions_file):
+        try:
+            with open(args.mentions_file, "w", encoding="utf-8") as f:
+                json.dump(by_product, f, ensure_ascii=False)
+            print(f"모아둔 댓글 저장: {args.mentions_file}")
+        except OSError as e:
+            print(f"모아둔 댓글 저장 실패(계속 진행): {type(e).__name__}")
+
     # 후보를 한데 모아 한 번에 판정한다 — 제품군이 달라도 같은 이름은 한 번만 묻는다.
     all_mentions = [m for ms in by_product.values() for m in ms]
     verdicts, jstat = judge_candidates(all_mentions, today=today)
@@ -295,6 +321,11 @@ def run_from_sheet(args) -> int:
                              r["댓글 예시"][:120]])
         print(f"[{product}] 경쟁 제품 {len([x for x in out_rows if x[0] == product])}종")
 
+    # 못 읽은 몫을 '언급 횟수' 로 잰다 — 표가 실제로 얼마나 비뚤어졌는지의 잣대.
+    jstat["언급"] = len(all_mentions)
+    jstat["미판정언급"] = sum(1 for m in all_mentions if m["키"] not in verdicts)
+    jstat["확정제품"] = len(out_rows)
+
     print(f"\n댓글 연 글 {fetcher.stat['열림']}개 · 못 연 글 {fetcher.stat['막힘']}개")
     print(f"후보 {jstat['후보'] + jstat.get('캐시적중', 0)}종 "
           f"(전에 판정해둔 것 {jstat.get('캐시적중', 0)}종 · 새로 물어본 것 {jstat['판정']}종 "
@@ -304,8 +335,11 @@ def run_from_sheet(args) -> int:
         print(f"  {row[0]:<8}{row[1][:22]:<24}{row[2]:>3}회  키워드 {row[3]}개")
 
     # 판정이 많이 빈 run 은 표를 덮지 않는다 — 반쪽 표가 오늘의 전부로 읽히면 안 된다.
+    print(f"댓글 언급 {jstat['언급']}건 중 판정 못 받은 것 {jstat['미판정언급']}건 "
+          f"· 확정 경쟁 제품 {jstat['확정제품']}종")
+
     if should_skip_write(jstat):
-        print(f"\n❌ 제품명 판정이 {jstat['미판정']}/{jstat['후보']}종 비었습니다 "
+        print(f"\n❌ 판정 못 받은 언급이 {jstat['미판정언급']}/{jstat['언급']}건입니다 "
               f"(Groq 하루 한도·오류 의심). 시트는 손대지 않았습니다 — 어제 값 그대로입니다.")
         return 3
 
@@ -334,6 +368,8 @@ def main() -> int:
     ap.add_argument("--from-sheet", action="store_true", help="시트 표시 탭의 키워드를 쓴다")
     ap.add_argument("--limit", type=int, default=25, help="제품군마다 볼 키워드 수")
     ap.add_argument("--write-sheet", action="store_true", help="'경쟁사' 탭에 결과를 쓴다")
+    ap.add_argument("--mentions-file", default="",
+                    help="모아둔 댓글을 여기 저장·재사용 (판정만 다시 할 때 45분 아낀다)")
     args = ap.parse_args()
 
     if args.from_sheet:
