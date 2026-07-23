@@ -188,7 +188,10 @@ jobs:
       # M10 (D-048): 즉시 보고 = 매 cron 성공/실패 + 운영 메타를 사장님 텔레그램으로.
       # 비차단(continue-on-error + || true). secret 미설정 시 [SKIP]. 메시지 text 는 인자로 안 넘김(로그 노출 차단).
       - name: Send Telegram notification (즉시 보고)
-        if: always()
+        # 사람이 일부러 중단(취소)한 실행은 알리지 않는다 — 2026-07-23 사장님이
+        # "❌ 점검 실패(시작 전 중단)" 알림을 받았는데, 원인은 코드 교체를 위해 Claude 가
+        # 그 실행을 취소한 것이었다. 진짜 고장과 구분이 안 되면 알림을 믿을 수 없게 된다.
+        if: ${{ !cancelled() }}
         continue-on-error: true
         shell: bash
         env:

@@ -437,12 +437,29 @@ class TestM33BoxClassification:
         assert "AB" in order
 
     def test_ab_box_without_cafe_link_skipped(self):
-        """h2 없음 + cafe 0 (blog/web 만) = AB 분류 X (T-M33 핵심 fix)."""
+        """h2 없음 + cafe 0 (blog/web 만) = AB 분류 X (T-M33 핵심 fix).
+
+        다른 구좌가 하나라도 잡히는 페이지에서는 종전대로 blog-only 박스를 AB 로 세지 않는다.
+        """
         box = self._make_box(["https://blog.naver.com/x/1", "https://blog.naver.com/y/2"])
-        html = f"<html><body>{self._PADDING}{box}</body></html>"
+        popular = self._make_box(["https://cafe.naver.com/z/9"], has_h2=True, h2_text="비듬샴푸 인기글")
+        html = f"<html><body>{self._PADDING}{box}{popular}</body></html>"
         from src.parser import _detect_block_order
         order = _detect_block_order(html)
         assert "AB" not in order
+        assert "인기글" in order
+
+    def test_blog_only_page_falls_back_to_ab_instead_of_blank(self):
+        """구좌를 하나도 못 알아본 경우에만 2차 시도 — 유형이 빈칸으로 남지 않게.
+
+        실측(2026-07-23): 민트샴푸·식초샴푸·남성샴푸·헤어스크럽·어성초비누는 최상단이
+        카페 없는 통합 리스트라 유형이 5건 빈칸이었다. 사장님이 원하는 건 '최상단 구좌가 뭐냐' 이므로
+        카페가 없어도 그 자리는 AB 로 본다.
+        """
+        box = self._make_box(["https://blog.naver.com/x/1", "https://blog.naver.com/y/2"])
+        html = f"<html><body>{self._PADDING}{box}</body></html>"
+        from src.parser import _detect_block_order
+        assert _detect_block_order(html) == ["AB"]
 
     def test_ab_box_without_cafe_not_matched_in_parse(self):
         """h2 없음 + cafe 0 박스 = _parse_ab_list 도 AB 매치 X."""

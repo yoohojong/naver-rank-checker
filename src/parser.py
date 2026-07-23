@@ -146,7 +146,21 @@ def _detect_block_order(html: str) -> list[str]:
                 kind = ExposureArea.SMART_BLOCK.value
         if kind and kind not in seen:
             seen.append(kind)
-    return seen
+
+    if seen:
+        return seen
+
+    # ── 2차 시도: 한 종류도 못 알아본 경우만 (2026-07-23 사장님 "유형 갱신이 안 되고 있다")
+    # 최상단이 카페 없이 블로그·웹만 있는 통합 리스트면 위 규칙이 전부 걸러내 유형이 빈칸으로 남았다
+    # (실측: 민트샴푸·식초샴푸·남성샴푸·헤어스크럽·어성초비누 5건).
+    # 사장님이 원하는 건 "최상단에 나오는 구좌가 무엇이냐" 이므로, 카페가 없어도 그 자리는 AB 다.
+    # 1차에서 뭐라도 잡힌 페이지는 건드리지 않으므로 기존 값이 바뀌지 않는다(회귀 0).
+    for box in boxes:
+        if box.find("h2") is not None:
+            continue
+        if _extract_main_link(box):
+            return [ExposureArea.AB.value]
+    return []
 
 
 def _extract_cafe_slug(url: str) -> Optional[str]:
