@@ -257,8 +257,21 @@ def confirmed_rows(mentions: list, verdicts: dict, unified: dict | None = None) 
         kept.append({**m, "표시": name, "키": strip_generic_tail(name) or normalize_name(name)})
     rows = tally(kept, exclude_keys=OUR_PRODUCT_HINTS)
     for r in rows:                          # 몇 개 키워드에서 나왔나 (같은 브랜드끼리 합쳐서 센다)
-        r["키워드수"] = len({m.get("키워드") for m in kept
-                          if m["키"] == r["키"] and m.get("키워드")})
+        mine = [m for m in kept if m["키"] == r["키"]]
+        kw_count: dict = {}
+        for m in mine:
+            kw = m.get("키워드")
+            if kw:
+                kw_count[kw] = kw_count.get(kw, 0) + 1
+        r["키워드수"] = len(kw_count)
+        # 많이 나온 키워드부터 — "어디를 치고 들어와야 하나" 가 여기서 보인다
+        r["키워드들"] = [k for k, _ in sorted(kw_count.items(), key=lambda x: (-x[1], x[0]))]
+        seen_link: list = []
+        for m in mine:
+            link = m.get("글")
+            if link and link not in seen_link:
+                seen_link.append(link)
+        r["글들"] = seen_link
     return rows
 
 
@@ -286,7 +299,90 @@ def scan_keyword(crawler: CommentFetcher, kw: str, *, our_links: set, our_slugs:
     return mentions
 
 
-SHEET_HEADER = ["제품군", "경쟁 제품", "횟수", "나온 키워드 수", "확인일", "댓글 예시"]
+# 한 탭에 다 담는다 — 사장님 지시(2026-07-24): "여러개로 나누지 말고 아예 한 시트에 모아줘".
+# 한 줄 = 경쟁사 하나. 얼마나 나오나 · 늘고 있나 · 어느 키워드·어느 글에서 나왔나가 한눈에.
+FIXED_HEAD = ["제품군", "경쟁사", "최근7일 합계", "추세"]
+FIXED_TAIL = ["나온 키워드 수", "나온 키워드", "글 링크", "댓글 예시"]
+HISTORY_DAYS = 7                 # 날짜 열로 펼칠 날 수
+MAX_KEYWORDS_SHOWN, MAX_LINKS_SHOWN = 8, 3
+
+# 옛 표(제품군·경쟁 제품·횟수·나온 키워드 수·확인일·댓글 예시) — 이력 없이 그날치만 있던 시절.
+SHEET_HEADER = FIXED_HEAD + FIXED_TAIL
+
+
+def _prev_counts(values: list) -> tuple:
+    """지난 표에서 (제품군, 경쟁사) → {날짜: 횟수} 를 되살린다. 시트가 곧 기록이다."""
+    if not values or len(values) < 2:
+        return {}, []
+    head = [str(c).strip() for c in values[0]]
+    date_cols = [(i, c) for i, c in enumerate(head) if re.fullmatch(r"\d{4}-\d{2}-\d{2}", c)]
+    if not date_cols:
+        return {}, []
+    try:
+        ip, ib = head.index("제품군"), head.index("경쟁사")
+    except ValueError:
+        return {}, []
+    out: dict = {}
+    for row in values[1:]:
+        if len(row) <= ib or not str(row[ip]).strip() or not str(row[ib]).strip():
+            continue
+        per: dict = {}
+        for i, day in date_cols:
+            raw = str(row[i]).strip() if i < len(row) else ""
+            if raw.isdigit() and int(raw) > 0:
+                per[day] = int(raw)
+        out[(str(row[ip]).strip(), str(row[ib]).strip())] = per
+    return out, [d for _, d in date_cols]
+
+
+def build_table(prev_values: list, today_rows: list, today: str,
+                days: int = HISTORY_DAYS) -> list:
+    """지난 표 + 오늘 결과 → 시트에 쓸 표 전체 · 순수함수.
+
+    today_rows = [{"제품군","경쟁사","횟수","키워드수","키워드들","글들","댓글 예시"}]
+    """
+    prev, _ = _prev_counts(prev_values)
+    merged = {k: dict(v) for k, v in prev.items()}
+    extra: dict = {}
+    for r in today_rows or []:
+        key = (r["제품군"], r["경쟁사"])
+        merged.setdefault(key, {})[today] = int(r["횟수"])
+        extra[key] = r
+
+    # 날짜 열 = 오늘부터 거꾸로 days 일. 빠진 날도 자리를 두어야 추이가 안 헷갈린다.
+    from datetime import date, timedelta
+    base = date.fromisoformat(today)
+    dates = [(base - timedelta(days=i)).isoformat() for i in range(days)]
+
+    header = FIXED_HEAD + dates + FIXED_TAIL
+    rows = []
+    for (product, brand), per in merged.items():
+        counts = [per.get(d, 0) for d in dates]
+        total = sum(counts)
+        if not total:
+            continue                         # 7일 안에 한 번도 안 나온 경쟁사는 표에서 내린다
+        before = next((c for c in counts[1:] if c), 0)
+        now = counts[0]
+        if not before:
+            trend = "신규" if now else ""
+        elif now > before:
+            trend = f"▲ +{now - before}"
+        elif now < before:
+            trend = f"▼ -{before - now}"
+        else:
+            trend = "– 그대로"
+        r = extra.get((product, brand), {})
+        kws = list(r.get("키워드들") or [])
+        kw_text = ", ".join(kws[:MAX_KEYWORDS_SHOWN])
+        if len(kws) > MAX_KEYWORDS_SHOWN:
+            kw_text += f" 외 {len(kws) - MAX_KEYWORDS_SHOWN}개"
+        rows.append([product, brand, total, trend] + counts +
+                    [r.get("키워드수", ""), kw_text,
+                     "\n".join((r.get("글들") or [])[:MAX_LINKS_SHOWN]),
+                     str(r.get("댓글 예시") or "")[:120]])
+
+    rows.sort(key=lambda x: (x[0], -int(x[2]), x[1]))   # 제품군 묶고, 많이 나온 순
+    return [header] + rows
 
 # 판정을 못 받은 몫이 이만큼을 넘으면 시트를 덮지 않는다.
 # 반쪽짜리 표를 어제 표 위에 덮으면, 사장님은 그게 오늘의 전부인 줄 알게 된다.
@@ -389,12 +485,14 @@ def run_from_sheet(args) -> int:
         print(f"이름 묶기: {len(merged)}개를 정식 브랜드명으로 통일"
               + (f" (예: {', '.join(list(merged)[:3])})" if merged else ""))
 
-    out_rows: list[list] = []
+    out_rows: list[dict] = []
     for product, mentions in by_product.items():
         for r in confirmed_rows(mentions, verdicts, unified):
-            out_rows.append([product, r["제품"], r["횟수"], r["키워드수"], today,
-                             r["댓글 예시"][:120]])
-        print(f"[{product}] 경쟁 제품 {len([x for x in out_rows if x[0] == product])}종")
+            out_rows.append({"제품군": product, "경쟁사": r["제품"], "횟수": r["횟수"],
+                             "키워드수": r["키워드수"], "키워드들": r.get("키워드들") or [],
+                             "글들": r.get("글들") or [], "댓글 예시": r["댓글 예시"]})
+        print(f"[{product}] 경쟁 제품 "
+              f"{len([x for x in out_rows if x['제품군'] == product])}종")
 
     # 못 읽은 몫을 '언급 횟수' 로 잰다 — 표가 실제로 얼마나 비뚤어졌는지의 잣대.
     jstat["언급"] = len(all_mentions)
@@ -408,7 +506,8 @@ def run_from_sheet(args) -> int:
           f"· 판정 못 받음 {jstat['미판정']}종) · 호출 {jstat.get('호출', 0)}회"
           + (f" · 탈: {', '.join(jstat['탈'])}" if jstat.get("탈") else ""))
     for row in out_rows[:30]:
-        print(f"  {row[0]:<8}{row[1][:22]:<24}{row[2]:>3}회  키워드 {row[3]}개")
+        print(f"  {row['제품군']:<8}{row['경쟁사'][:22]:<24}{row['횟수']:>3}회  "
+              f"키워드 {row['키워드수']}개")
 
     # 판정이 많이 빈 run 은 표를 덮지 않는다 — 반쪽 표가 오늘의 전부로 읽히면 안 된다.
     print(f"댓글 언급 {jstat['언급']}건 중 판정 못 받은 것 {jstat['미판정언급']}건 "
@@ -423,16 +522,56 @@ def run_from_sheet(args) -> int:
         import gspread
         try:
             ws = client.spreadsheet.worksheet("경쟁사")
+            prev_values = ws.get_all_values()      # 어제까지의 기록 = 시트 자신
         except gspread.exceptions.WorksheetNotFound:
-            ws = client.spreadsheet.add_worksheet(title="경쟁사", rows=200,
-                                                  cols=max(len(SHEET_HEADER), 8))
-        payload = [SHEET_HEADER] + out_rows
-        # 격자를 내용에 맞춘 뒤 쓰고, 여유 줄은 빈 값으로 덮어 지난 줄이 안 남게 한다.
-        ws.resize(rows=len(payload) + 10, cols=max(len(SHEET_HEADER), 8))
-        blank = [""] * len(SHEET_HEADER)
-        ws.update("A1", payload + [list(blank) for _ in range(10)], value_input_option="RAW")
-        print(f"\n시트 '경쟁사' 갱신 — {len(out_rows)}줄")
+            ws = client.spreadsheet.add_worksheet(title="경쟁사", rows=400, cols=26)
+            prev_values = []
+
+        payload = build_table(prev_values, out_rows, today)
+        ws.resize(rows=len(payload) + 20, cols=max(len(payload[0]), 12))
+        blank = [""] * len(payload[0])
+        ws.update("A1", payload + [list(blank) for _ in range(20)], value_input_option="RAW")
+        _format_sheet(ws, payload)
+        print(f"\n시트 '경쟁사' 갱신 — 경쟁사 {len(payload) - 1}종 "
+              f"(날짜 {len(payload[0]) - len(FIXED_HEAD) - len(FIXED_TAIL)}일치)")
     return 0
+
+
+def _format_sheet(ws, payload: list) -> None:
+    """보기 좋게 — 머리줄 고정·굵게, 숫자 가운데, 글 링크 줄바꿈. 실패해도 값은 이미 들어갔다."""
+    n_dates = len(payload[0]) - len(FIXED_HEAD) - len(FIXED_TAIL)
+    num_from, num_to = 2, len(FIXED_HEAD) + n_dates      # C열~날짜 끝
+    try:
+        sid = ws.id
+        ws.spreadsheet.batch_update({"requests": [
+            {"updateSheetProperties": {                   # 머리줄 고정
+                "properties": {"sheetId": sid,
+                               "gridProperties": {"frozenRowCount": 1, "frozenColumnCount": 2}},
+                "fields": "gridProperties.frozenRowCount,gridProperties.frozenColumnCount"}},
+            {"repeatCell": {                              # 머리줄 굵게 + 배경
+                "range": {"sheetId": sid, "startRowIndex": 0, "endRowIndex": 1},
+                "cell": {"userEnteredFormat": {
+                    "textFormat": {"bold": True},
+                    "backgroundColor": {"red": .93, "green": .95, "blue": .98},
+                    "horizontalAlignment": "CENTER"}},
+                "fields": "userEnteredFormat(textFormat,backgroundColor,horizontalAlignment)"}},
+            {"repeatCell": {                              # 숫자칸 가운데 정렬
+                "range": {"sheetId": sid, "startRowIndex": 1,
+                          "startColumnIndex": num_from, "endColumnIndex": num_to},
+                "cell": {"userEnteredFormat": {"horizontalAlignment": "CENTER"}},
+                "fields": "userEnteredFormat.horizontalAlignment"}},
+            {"repeatCell": {                              # 키워드·링크·예시는 줄바꿈해서 보이게
+                "range": {"sheetId": sid, "startRowIndex": 1,
+                          "startColumnIndex": num_to, "endColumnIndex": len(payload[0])},
+                "cell": {"userEnteredFormat": {"wrapStrategy": "WRAP",
+                                               "verticalAlignment": "TOP"}},
+                "fields": "userEnteredFormat(wrapStrategy,verticalAlignment)"}},
+            {"autoResizeDimensions": {
+                "dimensions": {"sheetId": sid, "dimension": "COLUMNS",
+                               "startIndex": 0, "endIndex": num_to}}},
+        ]})
+    except Exception as e:                                # 서식은 곁다리 — 값이 먼저다
+        print(f"서식 적용 건너뜀: {type(e).__name__}")
 
 
 def main() -> int:

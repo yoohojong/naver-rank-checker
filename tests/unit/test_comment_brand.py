@@ -15,7 +15,7 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 
 from scripts.collect_comment_brands import (  # noqa: E402
-    confirmed_rows, should_skip_write)
+    build_table, confirmed_rows, should_skip_write)
 from src import brand_verdicts, comment_brand_llm  # noqa: E402
 from src.comment_brand import (  # noqa: E402
     extract_candidates, is_inflected, looks_like_candidate, normalize_name)
@@ -182,6 +182,52 @@ def test_막는_잣대는_이름_수가_아니라_언급_횟수():
     # 제품이 하나도 안 남았으면 뭔가 잘못된 것 — 덮지 않는다.
     텅빔 = {"후보": 72, "미판정": 0, "언급": 300, "미판정언급": 0, "확정제품": 0}
     assert should_skip_write(텅빔) is True
+
+
+# ── 한 탭에 다 담기 (사장님 2026-07-24: "여러개로 나누지 말고 아예 한 시트에") ──────
+
+def _today_row(brand="안티트로", n=12, product="샴푸"):
+    return {"제품군": product, "경쟁사": brand, "횟수": n, "키워드수": 3,
+            "키워드들": ["두피각질", "두피여드름", "비듬샴푸"],
+            "글들": ["https://cafe.naver.com/a/1", "https://cafe.naver.com/b/2"],
+            "댓글 예시": "안ㅌ티트로 쓰는데 좋아요"}
+
+
+def test_한_탭에_경쟁사_한_줄로_담긴다():
+    table = build_table([], [_today_row()], "2026-07-24")
+    head, row = table[0], table[1]
+    assert head[:4] == ["제품군", "경쟁사", "최근7일 합계", "추세"]
+    assert "2026-07-24" in head                      # 날짜가 열로 펼쳐진다
+    assert head[-4:] == ["나온 키워드 수", "나온 키워드", "글 링크", "댓글 예시"]
+    assert row[1] == "안티트로" and row[2] == 12 and row[3] == "신규"
+    assert "두피각질" in row[head.index("나온 키워드")]
+    assert row[head.index("글 링크")].count("http") == 2
+
+
+def test_어제_기록_위에_오늘을_얹는다():
+    어제표 = build_table([], [_today_row(n=8)], "2026-07-23")
+    오늘표 = build_table(어제표, [_today_row(n=12)], "2026-07-24")
+    head, row = 오늘표[0], 오늘표[1]
+    assert row[head.index("2026-07-24")] == 12
+    assert row[head.index("2026-07-23")] == 8        # 어제 값이 살아 있다
+    assert row[2] == 20                              # 합계
+    assert row[3] == "▲ +4"                          # 늘었다
+
+
+def test_줄었으면_내림표시_안나오면_표에서_내린다():
+    어제표 = build_table([], [_today_row(n=10), _today_row("맥단비", 5)], "2026-07-23")
+    오늘표 = build_table(어제표, [_today_row(n=3)], "2026-07-24")
+    head = 오늘표[0]
+    brands = {r[1]: r for r in 오늘표[1:]}
+    assert brands["안티트로"][3] == "▼ -7"
+    assert brands["맥단비"][head.index("2026-07-24")] == 0   # 오늘은 0, 기록은 남는다
+
+
+def test_이레_넘게_안나오면_표에서_사라진다():
+    표 = build_table([], [_today_row(n=4)], "2026-07-01")
+    for day in range(2, 10):
+        표 = build_table(표, [], f"2026-07-{day:02d}")
+    assert len(표) == 1                               # 머리줄만 남는다
 
 
 # ── 판정 저장 ───────────────────────────────────────────────────────────────
