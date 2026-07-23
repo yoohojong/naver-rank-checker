@@ -202,6 +202,22 @@ def candidates_from_comments(comments: list) -> list:
     return out
 
 
+def candidates_from_title(title: str) -> list:
+    """상위 구좌를 차지한 **남의 글 제목** → 제품 후보.
+
+    사장님 2026-07-23 원문: "누락시킨거 보고 상위노출된 경쟁사 리스트업 (매번 갱신)
+    제일 많이 보이는 애들 횟수 체크해서 갱신해주는 시스템".
+    처음엔 이걸 '카페 이름' 으로 읽어 표를 만들었다가 사장님이 "싹다 정리해" 하셨다 —
+    카페는 글이 올라간 장소지 경쟁 상대가 아니다. 상대는 그 글이 밀고 있는 **제품**이다.
+    제목은 순위 검사가 이미 받아둔 화면에서 나오므로 새로 긁는 건 0이다.
+    """
+    t = str(title or "")
+    if not t:
+        return []
+    return [{"표시": shown, "키": key, "종류": suffix, "댓글": t[:120]}
+            for shown, key, suffix in extract_candidates(t)]
+
+
 def judge_candidates(mentions: list, *, verdict_path: str = brand_verdicts.DEFAULT_PATH,
                      today: str = "") -> tuple:
     """후보 → 판정. (판정표, 통계) · 이미 판정한 이름은 다시 묻지 않는다.
@@ -272,6 +288,12 @@ def confirmed_rows(mentions: list, verdicts: dict, unified: dict | None = None) 
             if link and link not in seen_link:
                 seen_link.append(link)
         r["글들"] = seen_link
+        # 상위 구좌를 몇 개 키워드에서 차지했나 / 그중 우리 글이 아예 없던 키워드는 몇 개인가.
+        상위 = {m.get("키워드") for m in mine
+                if m.get("원천") == "상위노출" and m.get("키워드")}
+        r["상위노출"] = len(상위)
+        r["놓친"] = len({m.get("키워드") for m in mine
+                        if m.get("원천") == "상위노출" and m.get("우리놓침") and m.get("키워드")})
     return rows
 
 
@@ -282,6 +304,8 @@ def scan_keyword(crawler: CommentFetcher, kw: str, *, our_links: set, our_slugs:
     items = [i for i in collect_slot_items(html) if i.kind == "cafe"]
     mentions: list[dict] = []
     seen_url: set = set()
+    # 이 키워드의 상위 구좌에 우리 글이 하나도 없나 — "우리가 놓친" 을 세는 잣대.
+    우리놓침 = not any(is_our_item(i.url, our_links, our_slugs) for i in items)
     for it in items:
         if len(seen_url) >= top_posts:
             break
@@ -290,11 +314,13 @@ def scan_keyword(crawler: CommentFetcher, kw: str, *, our_links: set, our_slugs:
         if it.url in seen_url:
             continue
         seen_url.add(it.url)
+        같이 = {"키워드": kw, "글": it.url, "카페": it.source_name or "", "우리놓침": 우리놓침}
+        # ① 그 글이 제목에서 밀고 있는 제품 = 상위 구좌를 차지한 경쟁사
+        for m in candidates_from_title(it.title):
+            mentions.append({**m, **같이, "원천": "상위노출"})
+        # ② 그 글 댓글에서 오가는 제품
         for m in candidates_from_comments(fetcher.comments(it.url)):
-            m["키워드"] = kw
-            m["글"] = it.url
-            m["카페"] = it.source_name or ""
-            mentions.append(m)
+            mentions.append({**m, **같이, "원천": "댓글"})
         time.sleep(1.0)       # 네이버 부담 줄이기
     return mentions
 
@@ -302,7 +328,7 @@ def scan_keyword(crawler: CommentFetcher, kw: str, *, our_links: set, our_slugs:
 # 한 탭에 다 담는다 — 사장님 지시(2026-07-24): "여러개로 나누지 말고 아예 한 시트에 모아줘".
 # 한 줄 = 경쟁사 하나. 얼마나 나오나 · 늘고 있나 · 어느 키워드·어느 글에서 나왔나가 한눈에.
 FIXED_HEAD = ["제품군", "경쟁사", "최근7일 합계", "추세"]
-FIXED_TAIL = ["나온 키워드 수", "나온 키워드", "글 링크", "댓글 예시"]
+FIXED_TAIL = ["상위노출 차지", "우리가 놓친", "나온 키워드 수", "나온 키워드", "글 링크", "댓글 예시"]
 HISTORY_DAYS = 7                 # 날짜 열로 펼칠 날 수
 MAX_KEYWORDS_SHOWN, MAX_LINKS_SHOWN = 8, 3
 
@@ -377,7 +403,8 @@ def build_table(prev_values: list, today_rows: list, today: str,
         if len(kws) > MAX_KEYWORDS_SHOWN:
             kw_text += f" 외 {len(kws) - MAX_KEYWORDS_SHOWN}개"
         rows.append([product, brand, total, trend] + counts +
-                    [r.get("키워드수", ""), kw_text,
+                    [r.get("상위노출", ""), r.get("놓친", ""),
+                     r.get("키워드수", ""), kw_text,
                      "\n".join((r.get("글들") or [])[:MAX_LINKS_SHOWN]),
                      str(r.get("댓글 예시") or "")[:120]])
 
@@ -489,6 +516,7 @@ def run_from_sheet(args) -> int:
     for product, mentions in by_product.items():
         for r in confirmed_rows(mentions, verdicts, unified):
             out_rows.append({"제품군": product, "경쟁사": r["제품"], "횟수": r["횟수"],
+                             "상위노출": r.get("상위노출", 0), "놓친": r.get("놓친", 0),
                              "키워드수": r["키워드수"], "키워드들": r.get("키워드들") or [],
                              "글들": r.get("글들") or [], "댓글 예시": r["댓글 예시"]})
         print(f"[{product}] 경쟁 제품 "
@@ -540,7 +568,8 @@ def run_from_sheet(args) -> int:
 def _format_sheet(ws, payload: list) -> None:
     """보기 좋게 — 머리줄 고정·굵게, 숫자 가운데, 글 링크 줄바꿈. 실패해도 값은 이미 들어갔다."""
     n_dates = len(payload[0]) - len(FIXED_HEAD) - len(FIXED_TAIL)
-    num_from, num_to = 2, len(FIXED_HEAD) + n_dates      # C열~날짜 끝
+    # C열~날짜 끝 + 꼬리의 숫자 3칸(상위노출 차지·우리가 놓친·나온 키워드 수)
+    num_from, num_to = 2, len(FIXED_HEAD) + n_dates + 3
     try:
         sid = ws.id
         ws.spreadsheet.batch_update({"requests": [

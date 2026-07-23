@@ -15,7 +15,7 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 
 from scripts.collect_comment_brands import (  # noqa: E402
-    build_table, confirmed_rows, should_skip_write)
+    build_table, candidates_from_title, confirmed_rows, should_skip_write)
 from src import brand_verdicts, comment_brand_llm  # noqa: E402
 from src.comment_brand import (  # noqa: E402
     extract_candidates, is_inflected, looks_like_candidate, normalize_name)
@@ -436,3 +436,36 @@ def test_유료가_답하지_않으면_지어내지_않는다(monkeypatch):
     _유료판정기_대신(monkeypatch, 답="", stop_reason="refusal")
     got, stat = comment_brand_llm.judge([{"키": "일리윤", "표시": "일리윤", "예시": ""}])
     assert got == {} and stat["미판정"] == 1
+
+
+# ── 상위노출 차지 (사장님 2026-07-23: "상위노출된 경쟁사 리스트업 + 횟수 체크") ──
+
+def test_상위_구좌_글_제목에서_경쟁사를_뽑는다():
+    got = candidates_from_title("맥단비 탈모샴푸 3개월 후기")
+    assert any("맥단비" in c["표시"] for c in got)
+    assert candidates_from_title("") == []
+
+
+def test_상위노출_차지_횟수와_우리가_놓친_키워드를_센다():
+    mentions = [
+        # 같은 브랜드가 두 키워드의 상위 구좌를 차지했고, 그중 하나는 우리 글이 아예 없다.
+        {"표시": "맥단비", "키": "맥단비", "종류": "제품", "댓글": "맥단비 탈모샴푸 후기",
+         "키워드": "비듬샴푸", "원천": "상위노출", "우리놓침": True},
+        {"표시": "맥단비", "키": "맥단비", "종류": "제품", "댓글": "맥단비 샴푸 써봄",
+         "키워드": "두피각질", "원천": "상위노출", "우리놓침": False},
+        # 댓글에서 나온 언급은 '상위노출 차지' 로 세지 않는다.
+        {"표시": "맥단비", "키": "맥단비", "종류": "제품", "댓글": "맥단비 써요",
+         "키워드": "지루성두피", "원천": "댓글", "우리놓침": True},
+    ]
+    rows = confirmed_rows(mentions, {"맥단비": {"제품": True, "이름": "맥단비"}})
+    assert len(rows) == 1
+    assert rows[0]["횟수"] == 3        # 몇 번 나왔나는 원천을 가리지 않는다
+    assert rows[0]["상위노출"] == 2    # 상위 구좌를 차지한 키워드 수
+    assert rows[0]["놓친"] == 1        # 그중 우리 글이 아예 없던 키워드
+
+
+def test_상위노출_열이_표에_들어간다():
+    table = build_table([], [{**_today_row(), "상위노출": 4, "놓친": 3}], "2026-07-24")
+    head, row = table[0], table[1]
+    assert row[head.index("상위노출 차지")] == 4
+    assert row[head.index("우리가 놓친")] == 3
