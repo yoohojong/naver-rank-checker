@@ -1,0 +1,58 @@
+name: 발행검수-probe
+# 발행 검수 자동화의 설계 갈림길 하나를 확정하는 실증 워크플로 (2026-07-23).
+#
+# 묻는 것: 서버에서 카페 글 본문·댓글을 로그인 없이 가져올 수 있는가?
+#   된다   → 크론이 시트 link 를 읽어 자동 검수 (직원 손 0)
+#   안 된다 → 직원 브라우저 확장이 도는 순간에만 수집 가능
+#
+# 사장님 PC·Claude 환경에서는 네이버 접속이 정책으로 막혀 있어 여기서만 답이 나온다.
+# ⚠️ 읽기 전용 — 시트도 카페도 아무것도 쓰지 않는다.
+# ⚠️ cron 없음. 사장님 승인 없이 자동으로 도는 일은 없다(수동 실행 전용).
+
+on:
+  workflow_dispatch:
+    inputs:
+      limit:
+        description: '찔러볼 카페 글 수'
+        required: false
+        default: '3'
+
+concurrency:
+  group: balhaeng-geomsu-probe
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6.0.2
+        with:
+          token: ${{ github.token }}
+
+      - name: Setup Python 3.13
+        uses: actions/setup-python@v6.2.0
+        with:
+          python-version: '3.13'
+
+      - name: Setup venv + install deps
+        shell: bash
+        run: |
+          python -m venv .venv
+          ./.venv/bin/python -m pip install --upgrade pip
+          ./.venv/bin/python -m pip install -r requirements.txt
+
+      - name: Probe cafe article access
+        shell: bash
+        env:
+          SPREADSHEET_ID: ${{ secrets.SPREADSHEET_ID }}
+          SERVICE_ACCOUNT_JSON: ${{ secrets.SERVICE_ACCOUNT_JSON }}
+          PROBE_LIMIT: ${{ github.event.inputs.limit }}
+          PYTHONIOENCODING: 'utf-8'
+        run: |
+          ./.venv/bin/python -u -m scripts.probe_cafe_article_access
