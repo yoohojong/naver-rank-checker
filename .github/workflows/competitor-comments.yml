@@ -1,0 +1,54 @@
+name: 경쟁사-댓글-제품명
+
+# 키워드 검색 → 상위노출된 남의 글 → 댓글 → 경쟁 제품명·횟수 → 시트 '경쟁사'
+#
+# 사장님 정의(2026-07-23): 경쟁사 = 남의 글 댓글에서 팔리는 **제품**(카페 이름이 아님).
+# 여기(Actions)서 도는 이유: 카페 댓글 접근이 되고(2026-07-23 실증), 제품명 판정용
+# Groq 키가 여기 있다. 사장님 PC 에서는 둘 다 안 된다.
+
+on:
+  workflow_dispatch:
+    inputs:
+      limit:
+        description: 제품군마다 볼 키워드 수
+        default: '20'
+      top_posts:
+        description: 키워드마다 볼 남의 글 수
+        default: '4'
+      write_sheet:
+        description: 시트에 쓸지 (false 면 로그로만 확인)
+        default: 'true'
+
+concurrency:
+  group: competitor-comments
+  cancel-in-progress: false
+
+jobs:
+  collect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v6.0.2
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - name: Setup venv + install deps
+        run: |
+          python -m venv .venv
+          ./.venv/bin/pip install -q --upgrade pip
+          ./.venv/bin/pip install -q -r requirements.txt
+
+      - name: Collect competitor products from comments
+        env:
+          SPREADSHEET_ID: ${{ secrets.SPREADSHEET_ID }}
+          SERVICE_ACCOUNT_JSON: ${{ secrets.SERVICE_ACCOUNT_JSON }}
+          CAFE_WHITELIST_SLUGS: ${{ secrets.CAFE_WHITELIST_SLUGS }}
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}   # 제품명 판정. 없으면 규칙으로 폴백
+          NAVER_SLOWDOWN_BASE_SEC: '4.0'
+          PYTHONIOENCODING: 'utf-8'
+        run: |
+          ./.venv/bin/python -u -m scripts.collect_comment_brands \
+            --from-sheet \
+            --limit "${{ inputs.limit }}" \
+            --top-posts "${{ inputs.top_posts }}" \
+            ${{ inputs.write_sheet == 'true' && '--write-sheet' || '' }}
