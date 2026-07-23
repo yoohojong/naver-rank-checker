@@ -137,8 +137,14 @@ def 찔러보기(url: str) -> dict:
     time.sleep(간격())
     if c.status_code == 200:
         try:
-            cres = c.json().get("result", {})
+            body = c.json()
+            cres = body.get("result") or (body.get("message") or {}).get("result") or {}
             cs = cres.get("comments", [])
+            # 댓글이 리스트가 아니라 {"items":[...]} 로 한 겹 더 싸여 온다(실측 2026-07-23:
+            # cs[0] 이 KeyError 를 내며 '댓글 0건'으로 잘못 집계됐다).
+            if isinstance(cs, dict):
+                cres = {**cres, **{k: v for k, v in cs.items() if k != "items"}}
+                cs = cs.get("items", [])
             r["댓글API"].update({
                 "가져온수": len(cs),
                 "전체수": cres.get("commentCount") or (cres.get("pageInfo") or {}).get("totalCount"),
@@ -149,7 +155,9 @@ def 찔러보기(url: str) -> dict:
                                   ("isref", "refid", "parentid", "depth", "refcommentid")] if cs else [],
             })
         except Exception as e:
-            r["댓글API"]["파싱실패"] = type(e).__name__
+            # 왜 실패했는지 모르면 또 헛다리를 짚는다 — 응답 앞부분을 남긴다
+            r["댓글API"]["파싱실패"] = f"{type(e).__name__}: {e}"
+            r["댓글API"]["맛보기"] = " ".join((c.text or "")[:300].split())
     return r
 
 
