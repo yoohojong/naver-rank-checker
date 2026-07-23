@@ -19,6 +19,7 @@ on:
 permissions:
   actions: read     # rank-check 의 sheet-backup artifact 다운로드용
   contents: read
+  issues: write
 
 concurrency:
   group: weekly-digest
@@ -53,3 +54,15 @@ jobs:
           if [ "$INPUT_SEND" = "true" ]; then ARG="send"; fi
           # 의존성 없음(stdlib + transitions). gh 는 ubuntu-latest 기본 제공. secret 없으면 [SKIP].
           python -u scripts/send_weekly_digest.py "$ARG" || true
+
+      # ── 자가치유 보고 (2026-07-24) ──────────────────────────────────────
+      - name: 자가치유 보고
+        if: always()
+        continue-on-error: true
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          WORKFLOW_FILE: weekly-digest.yml
+          PYTHONIOENCODING: utf-8
+        run: python scripts/자가치유.py --이름 "주간 다이제스트" --결과 ${{ job.status }} --크론 "0 22 * * 0"

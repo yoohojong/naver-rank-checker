@@ -25,6 +25,11 @@ on:
           - "true"
           - "false"
 
+permissions:
+  contents: read
+  actions: read
+  issues: write
+
 jobs:
   exposure-trend-alert:
     runs-on: ubuntu-latest
@@ -63,3 +68,15 @@ jobs:
           else
             python scripts/exposure_trend_alert.py --live --send
           fi
+
+      # ── 자가치유 보고 (2026-07-24) ──────────────────────────────────────
+      - name: 자가치유 보고
+        if: always()
+        continue-on-error: true
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          WORKFLOW_FILE: exposure-trend.yml
+          PYTHONIOENCODING: utf-8
+        run: python scripts/자가치유.py --이름 "상위노출 감소 감시" --결과 ${{ job.status }} --크론 "0 0 * * *"

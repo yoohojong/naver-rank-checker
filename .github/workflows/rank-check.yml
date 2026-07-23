@@ -56,6 +56,7 @@ concurrency:
 permissions:
   issues: write
   contents: read
+  actions: read
 
 jobs:
   # T-M40.3 (2026-05-14): self-hosted runner 폐기 결정 — 사장님 명시.
@@ -238,3 +239,15 @@ jobs:
       # fix = issue #1 댓글 알림 (Step 6) 만 의존. 사장님 GitHub 계정 알림 설정 = 자동 이메일.
 
       # 2026-05-14 T-M40.3: fallback job 폐기 (self-hosted 의존 제거 + 단일 ubuntu-latest 안정).
+
+      # ── 자가치유 보고 (2026-07-24) ──────────────────────────────────────
+      - name: 자가치유 보고
+        if: always()
+        continue-on-error: true
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          WORKFLOW_FILE: rank-check.yml
+          PYTHONIOENCODING: utf-8
+        run: python scripts/자가치유.py --이름 "상위노출 순위검사" --결과 ${{ job.status }} --크론 "7,27 15,21,3,9 * * *"

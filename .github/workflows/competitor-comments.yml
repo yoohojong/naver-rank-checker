@@ -27,6 +27,11 @@ concurrency:
   group: competitor-comments
   cancel-in-progress: false
 
+permissions:
+  contents: read
+  actions: read
+  issues: write
+
 jobs:
   collect:
     runs-on: ubuntu-latest
@@ -100,3 +105,15 @@ jobs:
               --data-urlencode "text=❌ 경쟁사 댓글 수집 실패 — 시트 '경쟁사' 는 어제 값 그대로입니다. 다음 예약(내일 05시)에 다시 시도합니다." \
               > /dev/null || true
           fi
+
+      # ── 자가치유 보고 (2026-07-24) ──────────────────────────────────────
+      - name: 자가치유 보고
+        if: always()
+        continue-on-error: true
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          WORKFLOW_FILE: competitor-comments.yml
+          PYTHONIOENCODING: utf-8
+        run: python scripts/자가치유.py --이름 "댓글 경쟁제품 수집" --결과 ${{ job.status }} --크론 "0 20 * * *"

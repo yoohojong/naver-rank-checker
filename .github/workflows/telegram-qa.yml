@@ -12,6 +12,7 @@ on:
 permissions:
   actions: read     # rank-check sheet-backup artifact 다운로드
   contents: read
+  issues: write
 
 concurrency:
   group: telegram-qa
@@ -40,3 +41,15 @@ jobs:
           GH_REPO: ${{ github.repository }}
           PYTHONIOENCODING: 'utf-8'
         run: python -u scripts/telegram_qa_bot.py || true
+
+      # ── 자가치유 보고 (2026-07-24) ──────────────────────────────────────
+      - name: 자가치유 보고
+        if: always()
+        continue-on-error: true
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          WORKFLOW_FILE: telegram-qa.yml
+          PYTHONIOENCODING: utf-8
+        run: python scripts/자가치유.py --이름 "텔레그램 Q&A 봇" --결과 ${{ job.status }} --크론 "*/5 * * * *"

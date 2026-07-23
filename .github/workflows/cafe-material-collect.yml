@@ -19,6 +19,8 @@ concurrency:
 
 permissions:
   contents: read
+  actions: read
+  issues: write
 
 jobs:
   collect:
@@ -87,3 +89,15 @@ jobs:
           mark = "✅ 성공" if status == "success" else f"⚠️ {status}"
           send_report(f"[카페외부 재료수집] cron 종료 — {mark}")
           PY
+
+      # ── 자가치유 보고 (2026-07-24) ──────────────────────────────────────
+      - name: 자가치유 보고
+        if: always()
+        continue-on-error: true
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          WORKFLOW_FILE: cafe-material-collect.yml
+          PYTHONIOENCODING: utf-8
+        run: python scripts/자가치유.py --이름 "카외 재료 수집" --결과 ${{ job.status }} --크론 "0 12 * * 1"

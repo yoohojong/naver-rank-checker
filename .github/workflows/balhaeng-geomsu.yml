@@ -30,6 +30,8 @@ concurrency:
 
 permissions:
   contents: read
+  actions: read
+  issues: write
 
 jobs:
   audit:
@@ -110,3 +112,15 @@ jobs:
           send_report("🚨 발행 검수가 중간에 멈췄습니다\n"
                       f"마지막 기록:\n{꼬리}\n\n{os.environ.get('RUN_URL','')}")
           PY
+
+      # ── 자가치유 보고 (2026-07-24) ──────────────────────────────────────
+      - name: 자가치유 보고
+        if: always()
+        continue-on-error: true
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          WORKFLOW_FILE: balhaeng-geomsu.yml
+          PYTHONIOENCODING: utf-8
+        run: python scripts/자가치유.py --이름 "발행본 검수" --결과 ${{ job.status }} --크론 "0 19 * * *"
