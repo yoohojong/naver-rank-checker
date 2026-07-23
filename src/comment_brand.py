@@ -82,11 +82,12 @@ _INFLECTED_TAILS = (
     # 조사
     "에서", "에게", "한테", "부터", "까지", "으로", "로서", "로써", "이나",
     "이랑", "처럼", "만큼", "보다", "마다", "조차", "밖에", "이라", "라는",
-    "이란", "마저", "대로", "이든", "이며", "이자",
+    "이란", "마저", "대로", "이든", "이며", "이자", "걸로", "으론",
 )
 
 # 한 글자 꼬리 — 세 글자 이상일 때만 본다(두 글자 브랜드를 죽이지 않으려고).
-_TAIL_CHARS_LONG = ("서", "면", "고", "며", "까", "히", "듯", "던", "로")
+# '로' 는 넣지 않는다 — '안티트로' 같은 브랜드가 통째로 걸려 사라진다(2026-07-23 실측).
+_TAIL_CHARS_LONG = ("서", "면", "고", "며", "까", "히", "듯", "던")
 
 # 이름 뒤에 흔히 붙는 조사 — 떼고 나서 판단한다("바디워시를" → "바디워시").
 _TRAILING_JOSA = ("으로", "이랑", "을", "를", "은", "는", "이", "가", "도",
@@ -110,9 +111,16 @@ _USE_RE = re.compile(
 # 이름에 이런 조각이 섞여 있으면 사람 말이지 제품 이름이 아니다.
 _NOT_NAME_PARTS = ("한테", "에게", "까지", "부터", "보다", "처럼", "라고", "하고", "인데", "이라")
 
-# 검열 피하려 끼워 넣는 글자: 영문·숫자·홑자모.
-# 이것들을 걷어내면 "모zi젠"→"모젠", "맥단ㅂI"→"맥단", "뽀ㅇ얀"→"뽀얀" 으로 모인다.
-_NOISE_CHARS_RE = re.compile(r"[A-Za-z0-9ㄱ-ㅎㅏ-ㅣ]")
+# 검열 피하려 끼워 넣는 글자: 영문·숫자·홑자모·기호.
+# 이것들을 걷어내면 "모zi젠"→"모젠", "맥단ㅂI"→"맥단", "뽀.ㅇ얀"→"뽀얀" 으로 모인다.
+# 기호(. , * · _ -)도 같은 용도로 쓰인다 — 안 지우면 '뽀.얀' 과 '뽀얀' 이 남남이 된다.
+_NOISE_CHARS_RE = re.compile(r"[^가-힣]")
+
+# 한글 사이에 딴 글자를 끼워 넣은 말 = 이름을 숨긴 것이다.
+# "안ㅌ티트로" "안티트ㄹ로" "모zi젠" "맥단ㅂI" "뽀.ㅇ얀" — 보통 한국어 문장엔 이런 게 없다.
+# 꼬리말도 쓰는 말투도 없이 이름만 툭 던지는 경쟁사를 잡는 유일한 실마리다(2026-07-23).
+_HIDDEN_NAME_RE = re.compile(
+    r"[가-힣]{1,8}[A-Za-z0-9ㄱ-ㅎㅏ-ㅣ.,*·_\-]{1,3}[가-힣]{1,8}")
 
 # 꼬리말 없이 이름만 던지는 경우가 많다("니조랄은요?"). 조사만 떼고 후보로 본다.
 _BARE_RE = re.compile(r"([가-힣]{2,10}?)(?:은요|는요|이요|요\?|은\?|는\?)")
@@ -173,8 +181,9 @@ def strip_generic_tail(key: str) -> str:
     띄어쓰기가 없으면 '탈모샴푸' 가 이름에 들러붙는다. 글자로 벗겨야 같은 제품으로 모인다.
     """
     key = normalize_name(key)
+    tails = sorted(set(GENERIC_WORDS) | set(PRODUCT_SUFFIXES), key=len, reverse=True)
     for _ in range(4):                       # 몇 겹 붙어도 벗기되, 끝없이 돌지는 않는다
-        for g in sorted(GENERIC_WORDS, key=len, reverse=True):
+        for g in tails:                      # '안티트로샴푸' → '안티트로' 로 한데 모인다
             if len(g) >= 2 and key.endswith(g) and len(key) - len(g) >= MIN_NAME:
                 key = key[: -len(g)]
                 break
@@ -229,8 +238,10 @@ def extract_candidates(text: str) -> list[tuple]:
     out: list[tuple] = []
     seen: set = set()
 
-    def add(name_raw: str, suffix: str):
-        shown = strip_josa(str(name_raw).strip())
+    def add(name_raw: str, suffix: str, *, cut_josa: bool = True):
+        # 꼬리말 바로 앞자리(①)에서는 조사를 떼지 않는다 —
+        # "안티ㅣ트로 샴푸" 의 '로' 를 조사로 알고 떼면 브랜드가 '안티트' 가 된다.
+        shown = strip_josa(str(name_raw).strip()) if cut_josa else str(name_raw).strip()
         key = strip_generic_tail(shown)   # "맥단ㅂi탈모샴푸" 도 '맥단' 으로 모인다
         if not looks_like_candidate(key):
             return
@@ -247,7 +258,8 @@ def extract_candidates(text: str) -> list[tuple]:
             tokens.pop()                      # '탈모샴푸' 의 '탈모' 처럼 일반어는 벗겨낸다
         if not tokens:
             continue
-        add(tokens[-1], suffix)   # 바로 앞 한 덩어리만 이름 후보로 (여러 개 이으면 문장이 섞인다)
+        # 바로 앞 한 덩어리만 이름 후보로 (여러 개 이으면 문장이 섞인다)
+        add(tokens[-1], suffix, cut_josa=False)
 
     # ② 쓰는 말투로 찾기 (꼬리말이 없는 브랜드)
     for m in _USE_RE.finditer(text):
@@ -256,6 +268,10 @@ def extract_candidates(text: str) -> list[tuple]:
     # ③ 이름만 툭 던지는 경우 ("니조랄은요?")
     for m in _BARE_RE.finditer(text):
         add(m.group(1), "")
+
+    # ④ 글자를 숨긴 이름 ("안ㅌ티트로 저도 쓰는데") — 꼬리말도 말투도 없이 던져도 잡는다
+    for m in _HIDDEN_NAME_RE.finditer(text):
+        add(m.group(0), "", cut_josa=False)
 
     return out
 

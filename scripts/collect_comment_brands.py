@@ -46,6 +46,12 @@ UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/126.0 Safari/537.36")
 _CAFE_URL = re.compile(r"cafe\.naver\.com/([^/?#]+)/(\d+)")
 _CLUB_ID = re.compile(r'g_sClubId\s*=\s*"(\d+)"')
+# 검색에서 온 주소에 붙어 있는 열쇠. 회원 전용 카페 글도 이게 있으면 열린다.
+# 이걸 버리고 부르면 403 — 전체 실행에서 1,106개 중 548개를 그렇게 놓쳤다(2026-07-23 실측).
+_ART_TOKEN = re.compile(r"[?&]art=([^&#]+)")
+
+# 댓글 한 장에 100개. 뒷장까지 따라가되 끝없이 돌지는 않는다.
+COMMENT_PAGE_SIZE, COMMENT_PAGE_CAP = 100, 20
 
 # 우리 제품 — 세지 않는다(경쟁이 아니다). 흐트러뜨린 표기·되살린 표기 둘 다 막는다.
 # 샴푸만 넣어놨다가 바디워시 표기('ㅃ얀 바디워시')가 표에 남았다(2026-07-23 실측) → 브랜드로 막는다.
@@ -70,19 +76,15 @@ def is_real_brand(name: str) -> bool:
 
 
 class CommentFetcher:
-    """카페 글 → 댓글. 못 여는 글(회원 전용)은 조용히 건너뛴다."""
+    """카페 글 → 댓글 **전부**. 뒷장까지 따라가고, 검색 주소의 열쇠(art)를 쓴다."""
 
     def __init__(self) -> None:
         self.s = requests.Session()
         self.s.headers["User-Agent"] = UA
         self._club: dict = {}
-        self.stat = {"열림": 0, "막힘": 0}
+        self.stat = {"열림": 0, "막힘": 0, "댓글": 0, "뒷장": 0}
 
-    def comments(self, url: str) -> list:
-        m = _CAFE_URL.search(url)
-        if not m:
-            return []
-        slug, article = m.group(1), m.group(2)
+    def _club_id(self, url: str, slug: str) -> str:
         club = self._club.get(slug)
         if club is None:
             try:
@@ -92,30 +94,72 @@ class CommentFetcher:
             except Exception:
                 club = ""
             self._club[slug] = club
-        if not club:
-            self.stat["막힘"] += 1
-            return []
-        try:
-            r = self.s.get(
-                f"https://apis.naver.com/cafe-web/cafe-articleapi/v2/cafes/{club}"
-                f"/articles/{article}/comments/pages/1?requestFrom=A",
-                headers={"Referer": url}, timeout=25)
-        except Exception:
-            self.stat["막힘"] += 1
-            return []
-        if r.status_code != 200:
-            self.stat["막힘"] += 1   # 회원 전용 카페 = 403
-            return []
-        try:
-            res = r.json().get("result", {})
-        except Exception:
-            self.stat["막힘"] += 1
-            return []
+        return club
+
+    @staticmethod
+    def _items_of(res: dict) -> list:
         items = res.get("comments")
         if isinstance(items, dict):
             items = items.get("items") or items.get("comments") or []
-        self.stat["열림"] += 1
         return items if isinstance(items, list) else []
+
+    @staticmethod
+    def _cursor_of(items: list) -> str:
+        """다음 장을 부를 때 쓸 마지막 댓글 번호. 못 찾으면 빈 값(=거기서 멈춘다)."""
+        last = items[-1] if items else {}
+        for k in ("id", "commentId", "refId", "objectId"):
+            v = (last or {}).get(k)
+            if v:
+                return str(v)
+        return ""
+
+    def comments(self, url: str) -> list:
+        m = _CAFE_URL.search(url)
+        if not m:
+            return []
+        article = m.group(2)
+        club = self._club_id(url, m.group(1))
+        if not club:
+            self.stat["막힘"] += 1
+            return []
+        tok = _ART_TOKEN.search(url)
+        art = f"&art={tok.group(1)}" if tok else ""
+
+        out: list = []
+        cursor = ""
+        for page in range(COMMENT_PAGE_CAP):
+            api = (f"https://apis.naver.com/cafe-web/cafe-articleapi/v3/cafes/{club}"
+                   f"/articles/{article}/comments?fromObjectId={cursor}"
+                   f"&limit={COMMENT_PAGE_SIZE}&orderBy=asc{art}")
+            try:
+                r = self.s.get(api, headers={"Referer": url}, timeout=25)
+            except Exception:
+                break
+            if r.status_code != 200:
+                break                        # 열쇠가 있어도 안 열리면 진짜 회원 전용
+            try:
+                res = r.json().get("result", {})
+            except Exception:
+                break
+            items = self._items_of(res)
+            if not items:
+                break
+            out.extend(items)
+            if page:
+                self.stat["뒷장"] += 1
+            if not res.get("hasNext"):
+                break
+            nxt = self._cursor_of(items)
+            if not nxt or nxt == cursor:
+                break                        # 같은 장을 또 받으면 멈춘다(무한 반복 방지)
+            cursor = nxt
+
+        if not out:
+            self.stat["막힘"] += 1
+            return []
+        self.stat["열림"] += 1
+        self.stat["댓글"] += len(out)
+        return out
 
 
 def is_our_item(url: str, our_links: set, our_slugs: set) -> bool:
@@ -127,7 +171,12 @@ def is_our_item(url: str, our_links: set, our_slugs: set) -> bool:
 
 
 def tikitaka_texts(comments: list, *, window: int = 2) -> list:
-    """묻는 댓글 바로 다음 window 개 — 사장님이 말한 '두 번째 댓글 티키타카' 자리."""
+    """묻는 댓글 바로 다음 window 개 — '두 번째 댓글 티키타카' 자리.
+
+    ★지금은 쓰지 않는다(2026-07-23). 이 자리만 보니 댓글의 81%를 버렸고
+    (144건 중 28건만 통과), 후보 이름도 41종 중 10종밖에 못 잡았다.
+    질문 없이 첫 댓글부터 제품을 미는 글이 훨씬 많다. 판별은 뒤(LLM)에서 하면 된다.
+    """
     out, left = [], 0
     for c in comments or []:
         text = str((c or {}).get("content") or "")
@@ -141,9 +190,12 @@ def tikitaka_texts(comments: list, *, window: int = 2) -> list:
 
 
 def candidates_from_comments(comments: list) -> list:
-    """티키타카 자리 댓글 → 제품 **후보**. 제품이냐 아니냐는 여기서 정하지 않는다."""
+    """글의 **모든 댓글** → 제품 후보. 제품이냐 아니냐는 여기서 정하지 않는다."""
     out = []
-    for t in tikitaka_texts(comments):
+    for c in comments or []:
+        t = str((c or {}).get("content") or "")
+        if not t:
+            continue
         for shown, key, suffix in extract_candidates(t):
             out.append({"표시": shown, "키": key, "종류": suffix, "댓글": t[:120]})
     return out
@@ -326,7 +378,8 @@ def run_from_sheet(args) -> int:
     jstat["미판정언급"] = sum(1 for m in all_mentions if m["키"] not in verdicts)
     jstat["확정제품"] = len(out_rows)
 
-    print(f"\n댓글 연 글 {fetcher.stat['열림']}개 · 못 연 글 {fetcher.stat['막힘']}개")
+    print(f"\n댓글 연 글 {fetcher.stat['열림']}개 · 못 연 글 {fetcher.stat['막힘']}개 "
+          f"· 댓글 {fetcher.stat.get('댓글', 0)}건(뒷장 {fetcher.stat.get('뒷장', 0)}장 포함)")
     print(f"후보 {jstat['후보'] + jstat.get('캐시적중', 0)}종 "
           f"(전에 판정해둔 것 {jstat.get('캐시적중', 0)}종 · 새로 물어본 것 {jstat['판정']}종 "
           f"· 판정 못 받음 {jstat['미판정']}종) · 호출 {jstat.get('호출', 0)}회"
