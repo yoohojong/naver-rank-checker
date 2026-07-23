@@ -1,46 +1,58 @@
 # -*- coding: utf-8 -*-
-"""실증 1건 — 서버에서 카페 글 본문·댓글을 로그인 없이 가져올 수 있는가?
+"""발행 검수 실증 v2 — 서버에서 카페 글을 '검수에 쓸 만큼' 온전히 가져올 수 있는가?
 
-이 답 하나로 '발행 검수' 자동화 설계가 갈린다:
-  된다   → Actions 크론이 시트 link 를 읽어 자동 수집·검수 (직원 손 0)
-  안 된다 → 직원 브라우저 확장이 도는 순간에만 수집 가능
+v1 은 결론이 성급했다(독립검증 판정 '성급함'). 고친 것:
+  - 표본 중복: URL 문자열로 중복을 걸러 같은 글이 두 번 셌다 → (cafeId, articleId) 로.
+  - 12칸 정본 글 미검증: 우리 정본은 댓글 12칸인데 표본이 3개짜리였다 → 표본을 넓혀
+    **댓글 12개인 글을 찾는 것 자체를 목표**로 둔다.
+  - 본문 온전성 미확인: 키 존재만 봤다 → 태그 제거 글자수 + 앞/끝 100자를 찍는다
+    (끝이 살아 있어야 잘린 게 아니다).
+  - 댓글 완전성 미확인: 개수만 셌다 → totalCount·페이지정보·첫 댓글의 **필드 키 전체**를
+    찍는다. 검수기는 닉네임과 답글깊이가 있어야 돌아간다.
+  - 차단 위험: plain requests 로 간격 없이 불렀다. 이 레포는 그 방식으로 네이버에
+    차단당한 이력이 있어 curl_cffi(TLS 지문 위장)+3.5~5초 간격을 쓴다 → 같은 방식으로.
 
-사장님 PC·Claude 환경에서는 네이버 접속이 정책으로 막혀 있어 여기(Actions)서만 답이 나온다.
-읽기만 한다 — 시트도 카페도 아무것도 쓰지 않는다.
+읽기만 한다. 시트도 카페도 쓰지 않는다.
 
-실행:  python -m scripts.probe_cafe_article_access
-환경:  SPREADSHEET_ID, SERVICE_ACCOUNT_JSON (기존 워크플로와 동일)
-       PROBE_LIMIT (선택, 기본 3) — 몇 개 글을 찔러볼지
+환경: SPREADSHEET_ID, SERVICE_ACCOUNT_JSON / PROBE_LIMIT(기본 20)
 """
 from __future__ import annotations
 
 import json
 import os
+import random
 import re
 import sys
+import time
 
-import requests
+from curl_cffi import requests            # 레포 표준(차단 회피)
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from src.sheets import SheetsClient  # noqa: E402
 
-UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-      "(KHTML, like Gecko) Chrome/126.0 Safari/537.36")
+IMPERSONATE = "chrome131"
 CAFE_LINK = re.compile(r"cafe\.naver\.com/(?:f-e/cafes/(\d+)/articles/(\d+)|([^/?#]+)/(\d+))")
+간격 = lambda: random.uniform(3.5, 5.25)   # noqa: E731 — 레포 표준 간격
+
+
+def 태그빼기(html: str) -> str:
+    t = re.sub(r"<(script|style)[^>]*>.*?</\1>", " ", html or "", flags=re.S | re.I)
+    t = re.sub(r"<br\s*/?>|</p>|</div>", "\n", t, flags=re.I)
+    t = re.sub(r"<[^>]+>", "", t)
+    t = t.replace("&nbsp;", " ").replace("&amp;", "&").replace("&lt;", "<").replace("&gt;", ">")
+    return re.sub(r"[ \t]+", " ", t).strip()
 
 
 def 링크모으기(limit: int) -> list[str]:
-    """시트에서 카페 글 링크를 몇 개만 꺼낸다(읽기 전용)."""
-    sid = os.environ.get("SPREADSHEET_ID", "")
-    sa = os.environ.get("SERVICE_ACCOUNT_JSON", "")
+    sid, sa = os.environ.get("SPREADSHEET_ID", ""), os.environ.get("SERVICE_ACCOUNT_JSON", "")
     if not sid or not sa:
         print("SPREADSHEET_ID / SERVICE_ACCOUNT_JSON 이 없습니다.")
         return []
     sc = SheetsClient(sid, sa)
-    out: list[str] = []
+    제외 = ("백업", "삭제전", "복사본", "이력", "스테이징")
+    본, 키 = [], set()
     for ws in sc.spreadsheet.worksheets():
-        제외 = ("백업", "삭제전", "복사본", "이력", "스테이징")
         if "카외" not in ws.title or any(x in ws.title for x in 제외):
             continue
         try:
@@ -48,107 +60,131 @@ def 링크모으기(limit: int) -> list[str]:
         except Exception as e:
             print(f"  탭 '{ws.title}' 읽기 실패: {type(e).__name__}")
             continue
-        for row in rows:
+        before = len(본)
+        # ★최근 발행분이 아래쪽에 쌓이므로 뒤에서부터 — 12칸 정본(2026-07-22 확정)을 만날 확률↑
+        for row in reversed(rows):
             for cell in row:
                 if not isinstance(cell, str):
                     continue
                 link = cell.strip()
-                if link.startswith("http") and CAFE_LINK.search(link):
-                    if link not in out:
-                        out.append(link)
-                    if len(out) >= limit:
-                        print(f"  탭 '{ws.title}' 에서 링크 수집 — 총 {len(out)}개")
-                        return out
-    print(f"  링크 {len(out)}개 수집")
-    return out
+                if not link.startswith("http"):
+                    continue
+                m = CAFE_LINK.search(link)
+                if not m:
+                    continue
+                ident = (m.group(1) or m.group(3), m.group(2) or m.group(4))   # 같은 글은 한 번만
+                if ident in 키:
+                    continue
+                키.add(ident)
+                본.append(link)
+                if len(본) >= limit:
+                    print(f"  '{ws.title}' 까지 {len(본)}건 수집(고유 글 기준)")
+                    return 본
+        print(f"  '{ws.title}' 에서 +{len(본)-before}건")
+    print(f"  총 {len(본)}건(고유 글)")
+    return 본
 
 
 def 찔러보기(url: str) -> dict:
     m = CAFE_LINK.search(url)
     cafe_id, art_id = (m.group(1), m.group(2)) if m.group(1) else (None, m.group(4))
-    slug = m.group(3)
-    r: dict = {"url": url, "cafeId": cafe_id, "slug": slug, "articleId": art_id}
+    r: dict = {"url": url.split("?")[0], "slug": m.group(3), "articleId": art_id}
 
-    def 부르기(이름, addr, **kw):
+    def 부르기(addr, ref=None):
         try:
-            resp = requests.get(addr, headers={"User-Agent": UA, **kw.pop("headers", {})},
-                                timeout=25, **kw)
-            r[이름] = {"status": resp.status_code, "len": len(resp.text)}
-            if resp.status_code != 200 or len(resp.text) < 300:
-                r[이름]["맛보기"] = " ".join(resp.text[:180].split())
-            return resp
+            return requests.get(addr, impersonate=IMPERSONATE, timeout=25,
+                                headers={"Referer": ref} if ref else None)
         except Exception as e:
-            r[이름] = {"error": type(e).__name__}
-            return None
+            return type("X", (), {"status_code": -1, "text": f"{type(e).__name__}"})()
 
-    # ① 사람이 보는 주소 그대로
-    resp = 부르기("①페이지", url)
-    if resp is not None and resp.status_code == 200:
-        r["①페이지"]["본문DOM"] = bool(
-            re.search(r"(se-main-container|article_viewer|ArticleContentBox|postViewArea)", resp.text))
-        r["①페이지"]["로그인유도"] = "nid.naver.com" in resp.text[:20000]
+    page = 부르기(url)
+    r["페이지"] = {"status": page.status_code, "len": len(page.text)}
+    time.sleep(간격())
 
-    # slug 만 있으면 cafeId 를 얻는다.
-    # 1차 실증: CafeGate.json 이 87자짜리 빈 응답을 줘 cafeId 를 못 얻었고
-    # 그래서 정작 중요한 글·댓글 API 를 한 번도 못 찔러봤다 → 글 페이지 HTML 에서 뽑는다.
-    global_id = cafe_id
-    if not global_id and resp is not None and getattr(resp, "text", ""):
-        for pat in (r'"cafeId"\s*:\s*"?(\d{4,})', r'g_sClubId\s*=\s*"(\d+)"',
-                    r'clubid=(\d+)', r'cafes/(\d+)/'):
-            mm = re.search(pat, resp.text)
+    gid = cafe_id
+    if not gid:
+        for pat in (r'g_sClubId\s*=\s*"(\d+)"', r'"cafeId"\s*:\s*"?(\d{4,})', r'clubid=(\d+)'):
+            mm = re.search(pat, page.text or "")
             if mm:
-                global_id = mm.group(1)
-                r["②카페번호"] = {"찾음": global_id, "출처": pat}
+                gid = mm.group(1)
                 break
-        else:
-            r["②카페번호"] = {"찾음": None}
+    r["cafeId"] = gid
+    if not gid:
+        r["판정"] = "카페번호 못 찾음"
+        return r
 
-    if global_id:
-        resp = 부르기("③글API",
-                     f"https://apis.naver.com/cafe-web/cafe-articleapi/v3/cafes/{global_id}/articles/{art_id}",
-                     headers={"Referer": url})
-        if resp is not None and resp.status_code == 200:
-            try:
-                res = resp.json().get("result", {})
-                art = res.get("article", res)
-                r["③글API"]["제목있음"] = bool(art.get("subject"))
-                r["③글API"]["본문있음"] = bool(art.get("contentHtml") or art.get("content"))
-            except Exception:
-                pass
-        resp = 부르기("④댓글API",
-                     f"https://apis.naver.com/cafe-web/cafe-articleapi/v2/cafes/{global_id}"
-                     f"/articles/{art_id}/comments/pages/1?requestFrom=A",
-                     headers={"Referer": url})
-        if resp is not None and resp.status_code == 200:
-            try:
-                cs = resp.json().get("result", {}).get("comments", [])
-                r["④댓글API"]["댓글수"] = len(cs)
-            except Exception:
-                pass
+    a = 부르기(f"https://apis.naver.com/cafe-web/cafe-articleapi/v3/cafes/{gid}/articles/{art_id}", url)
+    r["글API"] = {"status": a.status_code}
+    time.sleep(간격())
+    if a.status_code == 200:
+        try:
+            res = a.json().get("result", {})
+            art = res.get("article", res)
+            본문 = 태그빼기(art.get("contentHtml") or art.get("content") or "")
+            r["글API"].update({
+                "제목": (art.get("subject") or "")[:40],
+                "본문글자수": len(re.sub(r"\s", "", 본문)),
+                "본문_앞": 본문[:80].replace("\n", " "),
+                "본문_끝": 본문[-80:].replace("\n", " "),     # 끝이 살아야 안 잘린 것
+                "작성자": (art.get("writer") or {}).get("nick") or (art.get("writer") or {}).get("nickName"),
+            })
+        except Exception as e:
+            r["글API"]["파싱실패"] = type(e).__name__
+
+    c = 부르기(f"https://apis.naver.com/cafe-web/cafe-articleapi/v2/cafes/{gid}"
+               f"/articles/{art_id}/comments/pages/1?requestFrom=A&orderBy=asc&perPage=100", url)
+    r["댓글API"] = {"status": c.status_code}
+    time.sleep(간격())
+    if c.status_code == 200:
+        try:
+            cres = c.json().get("result", {})
+            cs = cres.get("comments", [])
+            r["댓글API"].update({
+                "가져온수": len(cs),
+                "전체수": cres.get("commentCount") or (cres.get("pageInfo") or {}).get("totalCount"),
+                "페이지정보": cres.get("pageInfo"),
+                "첫댓글_필드키": sorted((cs[0] or {}).keys())[:25] if cs else [],
+                "닉네임_예": ((cs[0] or {}).get("writer") or {}).get("nick") if cs else None,
+                "답글관계_후보": [k for k in (cs[0] or {}) if k.lower() in
+                                  ("isref", "refid", "parentid", "depth", "refcommentid")] if cs else [],
+            })
+        except Exception as e:
+            r["댓글API"]["파싱실패"] = type(e).__name__
     return r
 
 
 def main() -> int:
-    limit = int(os.environ.get("PROBE_LIMIT", "3"))
-    print("=== 발행 검수 · 카페 글 서버 접근 실증 ===")
+    limit = int((os.environ.get("PROBE_LIMIT") or "20").strip() or "20")
+    print(f"=== 발행 검수 · 카페 글 서버 접근 실증 v2 (표본 {limit}건) ===")
     링크 = 링크모으기(limit)
     if not 링크:
         print("찔러볼 카페 링크를 못 찾았습니다.")
         return 2
 
-    결과 = [찔러보기(u) for u in 링크]
+    결과 = []
+    for i, u in enumerate(링크, 1):
+        print(f"  [{i}/{len(링크)}] {u.split('?')[0]}", flush=True)
+        결과.append(찔러보기(u))
     print(json.dumps(결과, ensure_ascii=False, indent=1))
 
-    본문성공 = sum(1 for r in 결과 if (r.get("③글API") or {}).get("본문있음"))
-    댓글성공 = sum(1 for r in 결과 if (r.get("④댓글API") or {}).get("댓글수"))
+    본문ok = [r for r in 결과 if (r.get("글API") or {}).get("본문글자수", 0) > 300]
+    댓글ok = [r for r in 결과 if (r.get("댓글API") or {}).get("가져온수", 0) > 0]
+    십이칸 = [r for r in 결과 if (r.get("댓글API") or {}).get("가져온수", 0) == 12]
+    필드ok = [r for r in 결과 if (r.get("댓글API") or {}).get("닉네임_예")
+              and (r.get("댓글API") or {}).get("답글관계_후보")]
+
     print("\n=== 판정 ===")
-    print(f"  본문 가져옴 {본문성공}/{len(결과)} · 댓글 가져옴 {댓글성공}/{len(결과)}")
-    if 본문성공 and 댓글성공:
-        print("  → 서버 자동 크롤링 가능. 크론이 알아서 검수한다(직원 손 0).")
-    elif 본문성공:
-        print("  → 본문만 가능. 댓글은 직원 확장이 필요하다(반쪽 자동).")
+    print(f"  고유 글 {len(결과)}건")
+    print(f"  본문 300자 이상 가져옴 : {len(본문ok)}")
+    print(f"  댓글 1개 이상 가져옴   : {len(댓글ok)}")
+    print(f"  ★댓글 정확히 12개(정본): {len(십이칸)}")
+    print(f"  닉네임+답글관계 필드 확인: {len(필드ok)}")
+    if 십이칸 and 필드ok:
+        print("  → 12칸 정본 글을 검수에 쓸 만큼 온전히 가져온다. 서버 자동화 근거 확보.")
+    elif 본문ok and 댓글ok:
+        print("  → 본문·댓글은 오지만 12칸 정본 글이 표본에 없다. 아직 확정 못 함.")
     else:
-        print("  → 서버로는 못 읽는다. 직원 확장이 유일한 길이다.")
+        print("  → 서버로는 부족하다.")
     return 0
 
 

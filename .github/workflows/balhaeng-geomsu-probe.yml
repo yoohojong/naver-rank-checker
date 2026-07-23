@@ -15,7 +15,7 @@ on:
       limit:
         description: '찔러볼 카페 글 수'
         required: false
-        default: '3'
+        default: '20'
 
 concurrency:
   group: balhaeng-geomsu-probe
@@ -27,7 +27,7 @@ permissions:
 jobs:
   probe:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 45
 
     steps:
       - name: Checkout
