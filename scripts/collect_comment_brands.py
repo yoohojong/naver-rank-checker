@@ -7,8 +7,14 @@
   1) 키워드 검색 (순위 검사와 같은 크롤러)
   2) 상위 구좌 카페 글 중 **우리 글 제외**
   3) 각 글의 댓글 가져오기 (로그인 없이 됨 — 2026-07-23 실증)
-  4) 묻는 댓글 다음에 나온 제품명 추출 + 흐트러뜨린 글자 정리
-  5) 제품군(시트 탭)별 · 제품별 횟수 집계
+  4) 묻는 댓글 다음에서 제품 **후보** 뽑기 + 흐트러뜨린 글자 정리
+  5) 후보를 한데 모아 중복 없이 **판정**(언어모델) — 판정된 것만 제품으로 인정
+  6) 제품군(시트 탭)별 · 제품별 횟수 집계
+
+★판정 못 받은 후보는 표에 넣지 않는다 (2026-07-23 재설계)
+  전에는 판정이 실패하면 글자규칙 결과를 그대로 표에 넣었다. 그래서 '약국에서'(30회)
+  '꾸준히' '공감' 같은 게 경쟁 제품으로 올라갔다. 지금은 빈칸으로 둔다 —
+  적게 세는 오류는 고칠 수 있지만, 지어낸 표는 사장님을 잘못된 판단으로 이끈다.
 
 읽기만 한다. 시트에 쓰는 건 호출부(sheet_out) 가 정할 때만.
 
@@ -29,7 +35,8 @@ import requests
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from src.comment_brand import extract_products, is_asking, normalize_name, tally  # noqa: E402
+from src.comment_brand import extract_candidates, is_asking, normalize_name, tally  # noqa: E402
+from src import brand_verdicts  # noqa: E402
 from src import comment_brand_llm  # noqa: E402
 from src.crawler import Crawler  # noqa: E402
 from src.parser import cafe_slug_of, is_known_url  # noqa: E402
@@ -132,21 +139,50 @@ def tikitaka_texts(comments: list, *, window: int = 2) -> list:
     return out
 
 
-def mentions_from_comments(comments: list) -> list:
-    """티키타카 자리 댓글 → 제품 언급. 판정은 LLM, 키 없으면 규칙으로 폴백."""
-    texts = tikitaka_texts(comments)
-    if not texts:
-        return []
-    names = comment_brand_llm.extract(texts)
-    if names is None:                      # 키 없음·실패 → 규칙 폴백(적게 잡히지만 멈추지 않는다)
-        out = []
-        for t in texts:
-            for shown, key, suffix in extract_products(t):
-                out.append({"표시": shown, "키": key, "종류": suffix, "댓글": t[:120], "판정": "규칙"})
-        return out
-    joined = " / ".join(texts)[:200]
-    return [{"표시": n, "키": normalize_name(n), "종류": "제품", "댓글": joined, "판정": "LLM"}
-            for n in names if is_real_brand(n)]
+def candidates_from_comments(comments: list) -> list:
+    """티키타카 자리 댓글 → 제품 **후보**. 제품이냐 아니냐는 여기서 정하지 않는다."""
+    out = []
+    for t in tikitaka_texts(comments):
+        for shown, key, suffix in extract_candidates(t):
+            out.append({"표시": shown, "키": key, "종류": suffix, "댓글": t[:120]})
+    return out
+
+
+def judge_candidates(mentions: list, *, verdict_path: str = brand_verdicts.DEFAULT_PATH,
+                     today: str = "") -> tuple:
+    """후보 → 판정. (판정표, 통계) · 이미 판정한 이름은 다시 묻지 않는다.
+
+    돌아온 판정표에 없는 후보 = 미판정 → 표에 넣지 않는다(지어내기 금지).
+    """
+    cached = brand_verdicts.load(verdict_path)
+    unknown, seen = [], set()
+    for m in mentions or []:
+        key = m["키"]
+        if key in cached or key in seen:
+            continue
+        seen.add(key)
+        unknown.append({"키": key, "표시": m["표시"], "예시": m["댓글"]})
+
+    fresh, stat = comment_brand_llm.judge(unknown)
+    stat["캐시적중"] = len({m["키"] for m in (mentions or [])}) - len(unknown)
+    verdicts = brand_verdicts.merge(cached, fresh, today=today)
+    if fresh:
+        brand_verdicts.save(verdicts, verdict_path)
+    return verdicts, stat
+
+
+def confirmed_rows(mentions: list, verdicts: dict) -> list:
+    """판정된 제품만 남겨 집계. 미판정·제품아님은 조용히 뺀다."""
+    kept = []
+    for m in mentions or []:
+        key = m["키"]
+        if not brand_verdicts.is_product(verdicts, key):
+            continue
+        name = brand_verdicts.display_name(verdicts, key, m["표시"])
+        if not is_real_brand(name):        # 마지막 그물 — 종류 이름·장소가 판정을 뚫어도 여기서 막는다
+            continue
+        kept.append({**m, "표시": name})
+    return tally(kept, exclude_keys=OUR_PRODUCT_HINTS)
 
 
 def scan_keyword(crawler: CommentFetcher, kw: str, *, our_links: set, our_slugs: set,
@@ -164,7 +200,7 @@ def scan_keyword(crawler: CommentFetcher, kw: str, *, our_links: set, our_slugs:
         if it.url in seen_url:
             continue
         seen_url.add(it.url)
-        for m in mentions_from_comments(fetcher.comments(it.url)):
+        for m in candidates_from_comments(fetcher.comments(it.url)):
             m["키워드"] = kw
             m["글"] = it.url
             m["카페"] = it.source_name or ""
@@ -174,6 +210,18 @@ def scan_keyword(crawler: CommentFetcher, kw: str, *, our_links: set, our_slugs:
 
 
 SHEET_HEADER = ["제품군", "경쟁 제품", "횟수", "나온 키워드 수", "확인일", "댓글 예시"]
+
+# 판정을 못 받은 후보가 이만큼을 넘으면 시트를 덮지 않는다.
+# 반쪽짜리 표를 어제 표 위에 덮으면, 사장님은 그게 오늘의 전부인 줄 알게 된다.
+MAX_UNJUDGED_RATIO = 0.2
+
+
+def should_skip_write(stat: dict) -> bool:
+    """판정이 많이 비었나 — 비었으면 시트를 덮지 않는다 · 순수함수."""
+    asked = int((stat or {}).get("후보") or 0)
+    if not asked:
+        return False                        # 물어볼 게 없던 run 은 정상
+    return (int(stat.get("미판정") or 0) / asked) > MAX_UNJUDGED_RATIO
 
 
 def run_from_sheet(args) -> int:
@@ -190,7 +238,7 @@ def run_from_sheet(args) -> int:
 
     crawler, fetcher = Crawler(), CommentFetcher()
     today = datetime.now(timezone(timedelta(hours=9))).strftime("%Y-%m-%d")
-    out_rows: list[list] = []
+    by_product: dict = {}
 
     for ws in client.spreadsheet.worksheets():
         tab = ws.title
@@ -224,14 +272,32 @@ def run_from_sheet(args) -> int:
                                              fetcher=fetcher, top_posts=args.top_posts))
             except Exception as e:          # 키워드 하나 실패가 전체를 죽이지 않는다
                 print(f"   {kw} 건너뜀: {type(e).__name__}")
-        for r in tally(mentions, exclude_keys=OUR_PRODUCT_HINTS):
+        by_product[product] = mentions
+        print(f"[{product}] 제품 후보 {len({m['키'] for m in mentions})}종")
+
+    # 후보를 한데 모아 한 번에 판정한다 — 제품군이 달라도 같은 이름은 한 번만 묻는다.
+    all_mentions = [m for ms in by_product.values() for m in ms]
+    verdicts, jstat = judge_candidates(all_mentions, today=today)
+
+    out_rows: list[list] = []
+    for product, mentions in by_product.items():
+        for r in confirmed_rows(mentions, verdicts):
             kws = {m["키워드"] for m in mentions if m["키"] == r["키"]}
             out_rows.append([product, r["제품"], r["횟수"], len(kws), today, r["댓글 예시"][:120]])
         print(f"[{product}] 경쟁 제품 {len([x for x in out_rows if x[0] == product])}종")
 
     print(f"\n댓글 연 글 {fetcher.stat['열림']}개 · 못 연 글 {fetcher.stat['막힘']}개")
+    print(f"후보 {jstat['후보'] + jstat.get('캐시적중', 0)}종 "
+          f"(전에 판정해둔 것 {jstat.get('캐시적중', 0)}종 · 새로 물어본 것 {jstat['판정']}종 "
+          f"· 판정 못 받음 {jstat['미판정']}종)")
     for row in out_rows[:30]:
         print(f"  {row[0]:<8}{row[1][:22]:<24}{row[2]:>3}회  키워드 {row[3]}개")
+
+    # 판정이 많이 빈 run 은 표를 덮지 않는다 — 반쪽 표가 오늘의 전부로 읽히면 안 된다.
+    if should_skip_write(jstat):
+        print(f"\n❌ 제품명 판정이 {jstat['미판정']}/{jstat['후보']}종 비었습니다 "
+              f"(Groq 하루 한도·오류 의심). 시트는 손대지 않았습니다 — 어제 값 그대로입니다.")
+        return 3
 
     if args.write_sheet and out_rows:
         import gspread
@@ -279,8 +345,13 @@ def main() -> int:
         all_mentions.extend(found)
         print(f"  {kw}: 제품 언급 {len(found)}건")
 
-    rows = tally(all_mentions, exclude_keys=OUR_PRODUCT_HINTS)
+    from datetime import datetime, timedelta, timezone
+    today = datetime.now(timezone(timedelta(hours=9))).strftime("%Y-%m-%d")
+    verdicts, jstat = judge_candidates(all_mentions, today=today)
+    rows = confirmed_rows(all_mentions, verdicts)
     print(f"\n댓글 연 글 {fetcher.stat['열림']}개 · 못 연 글 {fetcher.stat['막힘']}개")
+    print(f"후보 {jstat['후보'] + jstat.get('캐시적중', 0)}종 · 판정 못 받음 {jstat['미판정']}종"
+          f"{' (판정 없이는 표에 넣지 않습니다)' if jstat['미판정'] else ''}")
     print(f"{'제품':<22}{'종류':<8}{'횟수':>4}")
     for r in rows[:25]:
         print(f"{r['제품'][:20]:<22}{r['종류']:<8}{r['횟수']:>4}")

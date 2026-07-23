@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""댓글에서 경쟁 제품명 뽑기.
+"""댓글에서 경쟁 제품 **후보**를 뽑는다. (확정은 여기서 하지 않는다)
 
 사장님 정의 (2026-07-23 원문):
     "경쟁사는 카페이름이 아니라 키워드 검색해서 상위노출된 카페에서 들어가면 달리는 댓글
@@ -14,17 +14,30 @@
 경쟁사들은 카페 정책·검색을 피하려고 **글자를 일부러 흐트러뜨린다**(모zi젠, 맥단ㅂI, ㅃ얀).
 그대로 세면 같은 제품이 다른 이름으로 흩어지므로 글자를 정리한 뒤 센다.
 
+★이 파일의 역할은 '후보 고르기'까지다 (2026-07-23 재설계)
+--------------------------------------------------------
+글자 규칙만으로 제품명을 확정하려다 표가 망가졌다. 실제로 나온 것:
+    약국에서(30회) · 꾸준히 · 공감 · 지금 · 있는데 · 못할정도였는데 샴푸
+"샴푸/쓰고 앞의 말은 제품"이라는 규칙 때문인데, 한국어는 활용형이 끝없이 늘어나서
+막을 낱말을 아무리 더 적어도 새 변주가 계속 들어온다(금지어 목록으로는 못 막는다).
+→ 그래서 **여기서는 후보만 고르고, 제품이냐 아니냐는 comment_brand_llm 이 판정한다.**
+   판정을 못 받은 후보는 표에 넣지 않는다(빈칸이 낫지 지어낸 이름은 안 된다).
+
+여기 있는 걸러내기(문법 꼬리·종류 이름·흔한 낱말)는 **정답 보증이 아니라 비용 절약**이다.
+뻔한 문장 조각을 미리 버려서 판정에 보낼 후보 수를 줄이는 용도.
+
 원칙(이 프로젝트 확정): **적게 세는 오류 > 지어내는 오류.**
-  애매하면 세지 않는다. 없는 경쟁 제품을 만들어내지 않는다.
 """
 from __future__ import annotations
 
 import re
 
 # 제품을 가리키는 꼬리말. 이 앞에 붙는 말이 제품 이름이다.
+# ★긴 것부터 적는다 — '바디워시' 가 '워시' 보다 먼저 잡혀야
+#   "다시꽃 바디워시" 에서 '다시꽃' 이 살아남는다 (짧은 게 먼저면 '바디' 가 이름이 된다).
 PRODUCT_SUFFIXES = (
-    "샴푸", "앰플", "토닉", "세럼", "크림", "비누", "바디워시", "워시",
-    "트리트먼트", "에센스", "로션", "연고", "스프레이", "필링",
+    "트리트먼트", "바디워시", "샴푸", "앰플", "토닉", "세럼", "크림", "비누",
+    "워시", "에센스", "로션", "연고", "스프레이", "필링",
 )
 
 # 이름이 아니라 '무엇'을 가리키는 말 — 이게 앞에 붙으면 브랜드가 아니다.
@@ -36,23 +49,53 @@ GENERIC_WORDS = {
     "남성", "여성", "임산부", "새치", "염색", "볼륨", "손상", "곱슬",
     "그", "이", "저", "무슨", "어떤", "다른", "같은", "제", "저희", "우리",
     "인생", "최고", "국민", "요즘", "그냥", "진짜", "완전", "제일",
-    "일반", "아무", "무슨", "건선", "지루", "각질제거", "두피각질",
+    "일반", "아무", "건선", "지루", "각질제거", "두피각질", "바디", "헤어",
     "대충", "계속", "바꿔가며", "가끔", "매일", "한번", "그런", "이런", "저런",
-    "쓰던", "쓰는", "좋은", "괜찮은", "유명한", "비싼", "싼", "새",
+    "쓰던", "쓰는", "좋은", "괜찮은", "유명한", "비싼", "싼", "새", "치료용",
 }
 
-# 앞말이 조사·어미로 끝나면 이름이 아니라 문장 조각이다.
-# 실물에서 "받은 샴푸"·"맞는 샴푸"·"저는 샴푸"·"끊고 샴푸" 가 이렇게 잡혔다(2026-07-23).
-_JOSA_TAIL = (
-    "은", "는", "이", "가", "을", "를", "도", "만", "의", "에", "로", "서",
-    "고", "며", "나", "랑", "과", "와", "듯", "던", "면", "게", "지", "네",
+# 제품이 아니라 장소·행위·상태를 가리키는 흔한 말.
+# 문법으로는 못 거른다(다 멀쩡한 명사·부사다) — 실물 표에 올라온 것들을 모았다(2026-07-23).
+COMMON_WORDS = {
+    "지금", "제품", "제품들", "공감", "신경", "추천", "예약", "라인", "가격",
+    "정보", "사진", "성분", "효과", "사용", "구매", "주문", "후기", "댓글",
+    "카페", "링크", "쪽지", "가장", "직접", "정도", "어느정도", "요즘", "오늘",
+    "어제", "내일", "처음", "나중", "다음", "이번", "저번", "가끔", "매번",
+    "약국", "병원", "피부과", "대학병원", "한의원", "올리브영", "다이소",
+    "공홈", "본사", "약사", "교수", "원장", "지인", "친구", "동네", "화장품",
+    "스케일러", "클렌저", "필링", "앰플", "토닉", "샴푸", "린스", "비누",
+}
+
+# 한국어 활용형·조사 꼬리. **닫힌 집합**이다 — 낱말과 달리 개수가 늘지 않는다.
+# 실물에서 "못할정도였는데 샴푸"·"약국에서"·"올라와서 샴푸" 가 이렇게 잡혔다(2026-07-23).
+_INFLECTED_TAILS = (
+    # 연결·종결 어미
+    "는데", "은데", "인데", "니까", "으니", "면서", "지만", "라서", "래서",
+    "더라", "드라", "라구", "구요", "군요", "네요", "나요", "까요", "세요",
+    "예요", "에요", "어요", "아요", "여요", "해요", "지요", "이요", "잖아", "거든",
+    "다가", "도록", "든지", "는지", "려고", "려면", "라고", "다고", "냐고",
+    "했어", "됐어", "셨어", "렸어", "났어", "왔어", "갔어", "봤어", "줬어",
+    "았어", "었어", "겠어", "는거", "거에", "만한", "으세", "하게", "면요",
+    # 조사
+    "에서", "에게", "한테", "부터", "까지", "으로", "로서", "로써", "이나",
+    "이랑", "처럼", "만큼", "보다", "마다", "조차", "밖에", "이라", "라는",
+    "이란", "마저", "대로", "이든", "이며", "이자",
 )
+
+# 한 글자 꼬리 — 세 글자 이상일 때만 본다(두 글자 브랜드를 죽이지 않으려고).
+_TAIL_CHARS_LONG = ("서", "면", "고", "며", "까", "히", "듯", "던", "로")
+
+# 이름 뒤에 흔히 붙는 조사 — 떼고 나서 판단한다("바디워시를" → "바디워시").
+_TRAILING_JOSA = ("으로", "이랑", "을", "를", "은", "는", "이", "가", "도",
+                  "만", "의", "에", "로", "랑", "과", "와")
 
 # 이름 길이 한계 — 너무 짧으면 조사·감탄사, 너무 길면 문장을 통째로 집는다.
 MIN_NAME, MAX_NAME = 2, 12
 
+# 앞말을 **짧게** 잡는다(?) — 그래야 '바디워시' 가 '워시' 보다 먼저 걸린다.
+# 욕심껏 잡으면 "다시꽃 바디워시" 에서 앞말이 '…바디' 까지 먹고 '워시' 만 꼬리말이 된다.
 _TOKEN_RE = re.compile(
-    r"([가-힣A-Za-z0-9ㄱ-ㅎㅏ-ㅣ][가-힣A-Za-z0-9ㄱ-ㅎㅏ-ㅣ ]{0,28})(%s)" % "|".join(PRODUCT_SUFFIXES)
+    r"([가-힣A-Za-z0-9ㄱ-ㅎㅏ-ㅣ][가-힣A-Za-z0-9ㄱ-ㅎㅏ-ㅣ ]{0,28}?)(%s)" % "|".join(PRODUCT_SUFFIXES)
 )
 
 # 꼬리말이 없어도 제품을 가리키는 말투 — "헤드앤숄더 써보세요", "○○ 쓰고 있어요".
@@ -95,47 +138,103 @@ def is_asking(text: str) -> bool:
     return any(p in t for p in ASKING_PATTERNS)
 
 
-def _looks_like_name(key: str) -> bool:
-    """이 말이 제품 이름일 만한가 — 사람 말 조각이면 버린다."""
-    if len(key) < MIN_NAME or len(key) > MAX_NAME:
+def strip_josa(word: str) -> str:
+    """이름 뒤 조사를 뗀다 — "바디워시를" → "바디워시" (떼고 나면 종류 이름인 게 보인다)."""
+    w = str(word or "").strip()
+    for j in _TRAILING_JOSA:
+        if len(w) > len(j) + 1 and w.endswith(j):
+            return w[: -len(j)]
+    return w
+
+
+def is_inflected(word: str) -> bool:
+    """이 말이 활용형·조사가 붙은 문장 조각인가 — 문법 꼬리만 본다(닫힌 집합)."""
+    w = str(word or "")
+    if len(w) < 2:
         return False
-    if any(key.endswith(g) or key == g for g in GENERIC_WORDS):
-        return False
-    if any(part in key for part in _NOT_NAME_PARTS):
-        return False
-    if key[-1] in _JOSA_TAIL and len(key) <= 3:
-        return False
-    # 종류 이름 자체는 브랜드가 아니다 ("샴푸", "탈모샴푸")
-    if key in PRODUCT_SUFFIXES:
-        return False
+    if any(w.endswith(t) for t in _INFLECTED_TAILS):
+        return True
+    if len(w) >= 3 and w[-1] in _TAIL_CHARS_LONG:
+        return True
+    return any(p in w for p in _NOT_NAME_PARTS)
+
+
+# 증상·용도를 가리키는 끝 글자. '지루성두피염샴푸'·'미산성 샴푸'·'치료용' 처럼
+# 앞말이 이걸로 끝나면 브랜드가 아니라 무엇에 쓰는 것인지를 말한 것이다.
+_SYMPTOM_TAIL_CHARS = ("염", "증", "성", "용")
+
+
+def strip_generic_tail(key: str) -> str:
+    """이름 뒤에 붙은 일반어를 벗긴다 — "맥단ㅂi탈모"(→맥단탈모) → "맥단".
+
+    띄어쓰기가 없으면 '탈모샴푸' 가 이름에 들러붙는다. 글자로 벗겨야 같은 제품으로 모인다.
+    """
+    key = normalize_name(key)
+    for _ in range(4):                       # 몇 겹 붙어도 벗기되, 끝없이 돌지는 않는다
+        for g in sorted(GENERIC_WORDS, key=len, reverse=True):
+            if len(g) >= 2 and key.endswith(g) and len(key) - len(g) >= MIN_NAME:
+                key = key[: -len(g)]
+                break
+        else:
+            break
+    return key
+
+
+def is_category_word(word: str) -> bool:
+    """종류 이름 자체인가 — '샴푸'·'탈모샴푸'·'바디워시' 는 브랜드가 아니다."""
+    key = normalize_name(word)
+    if not key:
+        return True
+    if key in PRODUCT_SUFFIXES or key in GENERIC_WORDS:
+        return True
     for suf in PRODUCT_SUFFIXES:
         if key.endswith(suf):
             stem = key[: -len(suf)]
             if not stem or stem in GENERIC_WORDS:
-                return False
+                return True
+            if stem[-1] in _SYMPTOM_TAIL_CHARS:   # '지루성두피염'샴푸 · '미산'성 샴푸
+                return True
+    return False
+
+
+def looks_like_candidate(key: str) -> bool:
+    """판정에 보낼 만한 후보인가 — 뻔한 문장 조각·종류 이름·흔한 낱말은 여기서 버린다.
+
+    ★통과 = '제품이다' 가 아니다. '사람(LLM)이 봐줄 값어치가 있다' 는 뜻일 뿐.
+    """
+    key = normalize_name(key)
+    if len(key) < MIN_NAME or len(key) > MAX_NAME:
+        return False
+    if key in COMMON_WORDS or key in GENERIC_WORDS:
+        return False
+    if is_inflected(key):
+        return False
+    if is_category_word(key):
+        return False
     return True
 
 
-def extract_products(text: str) -> list[tuple]:
-    """댓글 한 줄 → [(보이는 이름, 묶음 키, 제품종류)] · 순수함수.
+def extract_candidates(text: str) -> list[tuple]:
+    """댓글 한 줄 → [(보이는 이름, 묶음 키, 제품종류)] · 순수함수. **후보일 뿐이다.**
 
-    두 갈래로 잡는다.
+    세 갈래로 잡는다.
       ① 이름 + 꼬리말      "맥단ㅂI 탈모샴푸" → 맥단ㅂI (사이의 '탈모' 같은 일반어는 벗겨냄)
       ② 이름 + 쓰는 말투   "헤드앤숄더 써보세요" → 헤드앤숄더 (꼬리말이 없어도 잡는다)
+      ③ 이름만 툭          "니조랄은요?" → 니조랄
     """
     text = str(text or "")
     out: list[tuple] = []
     seen: set = set()
 
     def add(name_raw: str, suffix: str):
-        key = normalize_name(name_raw)
-        if not _looks_like_name(key):
+        shown = strip_josa(str(name_raw).strip())
+        key = strip_generic_tail(shown)   # "맥단ㅂi탈모샴푸" 도 '맥단' 으로 모인다
+        if not looks_like_candidate(key):
             return
-        full = key + suffix
-        if full in seen:
+        if key in seen:          # 묶음 키는 브랜드만 — '닥터이노브' 와 '닥터이노브 샴푸' 는 한 제품
             return
-        seen.add(full)
-        out.append((name_raw.strip() + (" " + suffix if suffix else ""), full, suffix or "제품"))
+        seen.add(key)
+        out.append((shown + (" " + suffix if suffix else ""), key, suffix or "제품"))
 
     # ① 꼬리말 앞에서 이름 찾기
     for m in _TOKEN_RE.finditer(text):
@@ -158,9 +257,9 @@ def extract_products(text: str) -> list[tuple]:
     return out
 
 
-def products_from_comments(comments: list, *, only_after_question: bool = True,
-                           window: int = 2) -> list[dict]:
-    """댓글 목록 → 제품 언급 목록 · 순수함수.
+def candidates_from_comments(comments: list, *, only_after_question: bool = True,
+                             window: int = 2) -> list[dict]:
+    """댓글 목록 → 제품 **후보** 목록 · 순수함수.
 
     only_after_question=True 면 **묻는 댓글 바로 다음 window 개**만 본다.
     사장님이 말한 티키타카가 정확히 이 자리다 — "그게 뭔데요?" → "○○샴푸 쓰고 있어요".
@@ -175,7 +274,7 @@ def products_from_comments(comments: list, *, only_after_question: bool = True,
             continue
         if left <= 0:
             continue
-        for shown, key, suffix in extract_products(text):
+        for shown, key, suffix in extract_candidates(text):
             out.append({"표시": shown, "키": key, "종류": suffix, "댓글": text[:120]})
         if only_after_question:
             left -= 1

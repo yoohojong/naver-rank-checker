@@ -30,6 +30,8 @@ concurrency:
 jobs:
   collect:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write        # 판정 결과(data/brand_verdicts.json)를 되돌려 저장한다
     # 전체 키워드(약 400개) × 글 4개 = 90분 안팎. 넉넉히 잡되 무한정 돌지는 않게.
     timeout-minutes: 180
     steps:
@@ -59,7 +61,22 @@ jobs:
             --top-posts "${{ inputs.top_posts || '4' }}" \
             ${{ (inputs.write_sheet == 'false') && ' ' || '--write-sheet' }}
 
+      # 한 번 내린 제품 판정은 남긴다 — 다음 run 은 새로 나온 이름만 물어본다.
+      # (Groq 무료 하루치를 아끼는 핵심. 사장님이 파일에서 직접 고칠 수도 있다.)
+      - name: 제품 판정 저장
+        if: always()
+        run: |
+          if [ -n "$(git status --porcelain data/brand_verdicts.json)" ]; then
+            git config user.name  "github-actions[bot]"
+            git config user.email "github-actions[bot]@users.noreply.github.com"
+            git add data/brand_verdicts.json
+            git commit -m "chore(경쟁사): 제품명 판정 갱신 [skip ci]"
+            git pull --rebase --autostash origin main || true
+            git push origin HEAD:main || true
+          fi
+
       # 조용히 실패하면 사장님은 어제 표를 오늘 것으로 믿게 된다 → 실패는 반드시 알린다.
+      # 판정이 많이 비어 시트를 건너뛴 경우(종료코드 3)도 여기로 온다.
       - name: 실패 알림
         if: failure()
         env:
