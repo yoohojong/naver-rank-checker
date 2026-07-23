@@ -88,7 +88,10 @@ jobs:
             echo "이미 이유를 담아 알렸다 — 두 번 보내지 않는다"
             exit 0
           fi
-          ./.venv/bin/python - <<'PY' || true
+          # ★venv 설치가 깨진 경우가 바로 이 알림이 가장 필요한 때다.
+          #   .venv 를 쓰면 그때 알림도 같이 죽는다 → 시스템 파이썬으로 보낸다
+          #   (src/notify 는 표준 라이브러리만 쓴다).
+          python - <<'PY' || true
           import os
           from src.notify import send_report
           꼬리 = ""
