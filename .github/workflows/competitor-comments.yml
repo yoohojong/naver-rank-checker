@@ -60,7 +60,10 @@ jobs:
           SPREADSHEET_ID: ${{ secrets.SPREADSHEET_ID }}
           SERVICE_ACCOUNT_JSON: ${{ secrets.SERVICE_ACCOUNT_JSON }}
           CAFE_WHITELIST_SLUGS: ${{ secrets.CAFE_WHITELIST_SLUGS }}
-          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}   # 제품명 판정. 없으면 규칙으로 폴백
+          # 제품명 판정. 유료(ANTHROPIC) 먼저, 없거나 못 하면 무료(GROQ).
+          # 무료 하루 한도가 짧아 7-23 실행 4번 중 2번이 시트를 못 채웠다 → 유료를 앞에 둔다.
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
           NAVER_SLOWDOWN_BASE_SEC: '4.0'
           PYTHONIOENCODING: 'utf-8'
         run: |

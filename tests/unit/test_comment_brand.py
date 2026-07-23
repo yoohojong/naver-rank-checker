@@ -355,3 +355,84 @@ def test_한도초과면_기다렸다_다시_묻는다(monkeypatch):
     out = comment_brand_llm._post({}, timeout=1, sleep=waited.append)
     assert calls["n"] == 2 and waited == [7.0]      # 알려준 만큼 쉬고 다시
     assert out is not None
+
+
+# ── 유료 판정기(Anthropic) ─────────────────────────────────────────────────
+
+def _유료판정기_대신(monkeypatch, 답=None, stop_reason="end_turn"):
+    """anthropic 꾸러미의 손님(Anthropic)만 가짜로 바꾼다 → 부른 횟수를 돌려준다."""
+    import anthropic
+
+    부른횟수 = {"n": 0}
+
+    class _블록:
+        type = "text"
+
+        def __init__(self, text):
+            self.text = text
+
+    class _답:
+        def __init__(self):
+            self.content = [_블록(답 or "")]
+            self.stop_reason = stop_reason
+
+    class _메시지:
+        def create(self, **kwargs):
+            부른횟수["n"] += 1
+            return _답()
+
+    class _손님:
+        def __init__(self, **kw):
+            self.messages = _메시지()
+
+    monkeypatch.setattr(anthropic, "Anthropic", _손님)
+    return 부른횟수
+
+
+def test_유료_열쇠가_있으면_유료로_판정한다(monkeypatch):
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-paid")
+    monkeypatch.delenv("GROQ_API_KEY", raising=False)
+    부른횟수 = _유료판정기_대신(monkeypatch, 답=json.dumps(
+        {"판정": [{"n": 1, "후보": "맥단비", "제품": True, "이름": "맥단비"}]},
+        ensure_ascii=False))
+    got, stat = comment_brand_llm.judge(
+        [{"키": "맥단비", "표시": "맥단비", "예시": "맥단비 샴푸 써요"}])
+    assert got["맥단비"] == {"제품": True, "이름": "맥단비"}
+    assert stat["미판정"] == 0 and 부른횟수["n"] == 1
+
+
+def test_유료가_못하면_무료로_넘어간다(monkeypatch):
+    # 유료가 한도·오류로 못 해도 무료가 살아 있으면 그 날 표는 채워진다.
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-paid")
+    monkeypatch.setenv("GROQ_API_KEY", "test-free")
+    monkeypatch.setattr(comment_brand_llm, "_anthropic_call",
+                        lambda *a, **k: (None, False))
+    reply = {"choices": [{"message": {"content": json.dumps(
+        {"판정": [{"n": 1, "후보": "일리윤", "제품": True, "이름": "일리윤"}]},
+        ensure_ascii=False)}}]}
+    monkeypatch.setattr(comment_brand_llm, "_post", lambda *a, **k: reply)
+    got, stat = comment_brand_llm.judge([{"키": "일리윤", "표시": "일리윤", "예시": ""}])
+    assert got["일리윤"]["제품"] is True and stat["미판정"] == 0
+
+
+def test_유료_답이_잘려도_읽히는_줄은_건진다(monkeypatch):
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-paid")
+    monkeypatch.delenv("GROQ_API_KEY", raising=False)
+    잘린답 = ('{"판정": [{"n":1,"후보":"일리윤","제품":true,"이름":"일리윤"},'
+            ' {"n":2,"후보":"약국에')
+    _유료판정기_대신(monkeypatch, 답=잘린답, stop_reason="max_tokens")
+    got, stat = comment_brand_llm.judge(
+        [{"키": "일리윤", "표시": "일리윤", "예시": ""},
+         {"키": "약국에서", "표시": "약국에서", "예시": ""}])
+    assert got["일리윤"]["제품"] is True
+    assert "약국에서" not in got                   # 못 받은 건 지어내지 않는다
+    assert stat["미판정"] == 1
+
+
+def test_유료가_답하지_않으면_지어내지_않는다(monkeypatch):
+    # 안전 판정으로 답을 거절하면(stop_reason=refusal) 빈칸으로 둔다.
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-paid")
+    monkeypatch.delenv("GROQ_API_KEY", raising=False)
+    _유료판정기_대신(monkeypatch, 답="", stop_reason="refusal")
+    got, stat = comment_brand_llm.judge([{"키": "일리윤", "표시": "일리윤", "예시": ""}])
+    assert got == {} and stat["미판정"] == 1

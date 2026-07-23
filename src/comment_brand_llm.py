@@ -1,5 +1,14 @@
 # -*- coding: utf-8 -*-
-"""제품 후보 → "이게 진짜 팔리는 제품인가" 판정 (Groq 무료 LLM).
+"""제품 후보 → "이게 진짜 팔리는 제품인가" 판정.
+
+★판정기를 갈아끼울 수 있게 했다 (2026-07-24)
+--------------------------------------------
+전에는 무료 Groq 하나뿐이었다. 무료 한도(요청 1,000회·토큰 100,000)가 하루를 못 버텨
+7-23 실행 4번 중 2번이 "판정이 60/72종 비었습니다"로 시트를 못 덮었다. 채워지는 날과
+어제 값이 굳는 날이 섞이니, 보는 사람 눈에는 "추출이 안 된다".
+지금은 ANTHROPIC_API_KEY 가 있으면 그쪽으로 판정하고, 없을 때만 Groq 으로 간다.
+Anthropic 이 한도·오류로 못 하면 그 자리에서 Groq 으로 한 번 더 시도한다.
+
 
 왜 규칙만으로 안 되나 (2026-07-23 실측)
 ---------------------------------------
@@ -36,6 +45,8 @@ import urllib.request
 _BASE_URL = os.environ.get(
     "GROQ_BASE_URL", "https://api.groq.com/openai/v1/chat/completions")
 _MODEL = os.environ.get("GROQ_MODEL", "llama-3.3-70b-versatile")
+# 유료 판정기. 하루 몇백 건이라 비용은 작고, 무료 한도에 안 막힌다.
+_ANTHROPIC_MODEL = os.environ.get("ANTHROPIC_MODEL", "claude-opus-4-8")
 _USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
@@ -102,21 +113,10 @@ def unify(names: list, *, timeout: int = 30, sleep=time.sleep) -> dict:
     names = [str(n).strip() for n in (names or []) if str(n).strip()]
     if not _api_key() or len(names) < 2:
         return {}
-    payload = {
-        "model": _MODEL,
-        "messages": [
-            {"role": "system", "content": _UNIFY_SYSTEM},
-            {"role": "user", "content": "같은 브랜드끼리 묶어줘.\n" + "\n".join(names[:200])},
-        ],
-        "temperature": 0,
-        "max_tokens": 3000,
-    }
-    data = _post(payload, timeout=timeout, sleep=sleep)
-    if not data:
-        return {}
-    try:
-        content = data["choices"][0]["message"]["content"]
-    except (KeyError, IndexError, TypeError):
+    content, _ = _call(
+        _UNIFY_SYSTEM, "같은 브랜드끼리 묶어줘.\n" + "\n".join(names[:200]),
+        max_tokens=3000, timeout=timeout, sleep=sleep)
+    if not content:
         return {}
     obj = _extract_json(content)
     groups = obj.get("묶음") if isinstance(obj, dict) else None
@@ -138,8 +138,17 @@ def unify(names: list, *, timeout: int = 30, sleep=time.sleep) -> dict:
     return out
 
 
-def _api_key() -> str:
+def _groq_key() -> str:
     return os.environ.get("GROQ_API_KEY", "").strip()
+
+
+def _anthropic_key() -> str:
+    return os.environ.get("ANTHROPIC_API_KEY", "").strip()
+
+
+def _api_key() -> str:
+    """판정에 쓸 열쇠 — 유료(Anthropic)가 있으면 그것, 없으면 무료(Groq)."""
+    return _anthropic_key() or _groq_key()
 
 
 def available() -> bool:
@@ -203,7 +212,7 @@ def _post(payload: dict, *, timeout: int, tries: int = 3, sleep=time.sleep,
         if errors is not None:
             errors.append(reason)
 
-    key = _api_key()
+    key = _groq_key()
     body = json.dumps(payload).encode("utf-8")
     for attempt in range(tries):
         req = urllib.request.Request(
@@ -233,6 +242,109 @@ def _post(payload: dict, *, timeout: int, tries: int = 3, sleep=time.sleep,
     return None
 
 
+def _anthropic_call(system: str, user: str, *, max_tokens: int, timeout: int,
+                    tries: int = 3, sleep=time.sleep, errors: list | None = None):
+    """유료 판정기에 물어본다 → (답 글자, 잘렸는지). 못 하면 (None, False).
+
+    열쇠가 없거나 꾸러미가 안 깔려 있으면 조용히 물러난다 — 호출부가 무료로 넘어간다.
+    """
+    def note(reason: str):
+        if errors is not None:
+            errors.append(f"유료:{reason}")
+
+    key = _anthropic_key()
+    if not key:
+        return None, False
+    try:
+        import anthropic
+    except ImportError:
+        note("꾸러미 없음")
+        return None, False
+
+    client = anthropic.Anthropic(api_key=key, timeout=float(timeout), max_retries=0)
+    for attempt in range(tries):
+        try:
+            resp = client.messages.create(
+                model=_ANTHROPIC_MODEL,
+                max_tokens=max_tokens,
+                system=system,
+                messages=[{"role": "user", "content": user}],
+            )
+        except anthropic.RateLimitError as e:
+            note("한도(429)")
+            if attempt < tries - 1:
+                wait = 5.0
+                try:
+                    wait = float((getattr(e, "response", None).headers or {}).get("retry-after") or 5.0)
+                except (AttributeError, TypeError, ValueError):
+                    pass
+                sleep(min(wait, 60.0))
+                continue
+            return None, False
+        except anthropic.APIStatusError as e:
+            note(f"HTTP {e.status_code}")
+            if e.status_code >= 500 and attempt < tries - 1:
+                sleep(2.0 * (attempt + 1))
+                continue
+            return None, False
+        except anthropic.APIConnectionError:
+            note("연결 실패")
+            if attempt < tries - 1:
+                sleep(2.0 * (attempt + 1))
+                continue
+            return None, False
+
+        stop = str(getattr(resp, "stop_reason", "") or "")
+        if stop == "refusal":
+            note("답하지 않음")
+            return None, False
+        text = "".join(
+            b.text for b in (getattr(resp, "content", None) or [])
+            if getattr(b, "type", "") == "text"
+        )
+        if not text:
+            note("빈 답")
+            return None, False
+        return text, stop == "max_tokens"
+    return None, False
+
+
+def _call(system: str, user: str, *, max_tokens: int, timeout: int,
+          sleep=time.sleep, errors: list | None = None):
+    """판정기 호출 → (답 글자, 잘렸는지). 유료 먼저, 안 되면 무료로 한 번 더.
+
+    한쪽이 하루 한도에 걸려도 다른 쪽이 살아 있으면 그 날 표는 채워진다 —
+    무료 한 곳만 쓰다 4번 중 2번을 통째로 못 채운 게 이 구조를 만든 이유다(2026-07-23).
+    """
+    content, truncated = _anthropic_call(
+        system, user, max_tokens=max_tokens, timeout=timeout, sleep=sleep, errors=errors)
+    if content:
+        return content, truncated
+
+    if not _groq_key():
+        return None, False
+    payload = {
+        "model": _MODEL,
+        "messages": [
+            {"role": "system", "content": system},
+            {"role": "user", "content": user},
+        ],
+        "temperature": 0,
+        "max_tokens": max_tokens,
+    }
+    data = _post(payload, timeout=timeout, sleep=sleep, errors=errors)
+    if not data:
+        return None, False
+    try:
+        content = data["choices"][0]["message"]["content"]
+    except (KeyError, IndexError, TypeError):
+        if errors is not None:
+            errors.append("답 모양이 다름")
+        return None, False
+    truncated = str((data.get("choices") or [{}])[0].get("finish_reason") or "") == "length"
+    return content, truncated
+
+
 def judge_batch(items: list, *, timeout: int = 30, sleep=time.sleep,
                 errors: list | None = None) -> dict | None:
     """후보 묶음 하나 판정. {키: {"제품": bool, "이름": str}}. 실패하면 None.
@@ -255,25 +367,13 @@ def judge_batch(items: list, *, timeout: int = 30, sleep=time.sleep,
         example = str(it.get("예시") or "").replace("\n", " ")[:80]
         lines.append(f"{n}. {it.get('표시') or it['키']} | {example}")
 
-    payload = {
-        "model": _MODEL,
-        "messages": [
-            {"role": "system", "content": _SYSTEM},
-            {"role": "user", "content": "각 후보가 제품인지 판정해줘.\n" + "\n".join(lines)},
-        ],
-        "temperature": 0,
+    content, truncated = _call(
+        _SYSTEM, "각 후보가 제품인지 판정해줘.\n" + "\n".join(lines),
         # 답이 잘리면 JSON 이 깨져 묶음 전체가 미판정이 된다 — 넉넉히 준다.
-        "max_tokens": 4000,
-    }
-    data = _post(payload, timeout=timeout, sleep=sleep, errors=errors)
-    if not data:
+        max_tokens=4000, timeout=timeout, sleep=sleep, errors=errors)
+    if not content:
         return None
-    try:
-        content = data["choices"][0]["message"]["content"]
-    except (KeyError, IndexError, TypeError):
-        note("답 모양이 다름")
-        return None
-    if str((data.get("choices") or [{}])[0].get("finish_reason") or "") == "length":
+    if truncated:
         note("답 잘림")           # 그래도 아래에서 읽히는 만큼은 건진다
 
     obj = _extract_json(content)

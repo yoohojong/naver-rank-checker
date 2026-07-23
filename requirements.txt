@@ -5,5 +5,6 @@ lxml==5.3.0
 gspread==6.1.4
 google-auth==2.36.0
 PyYAML==6.0.3
+anthropic>=0.40,<1        # 제품명 판정(유료). 없으면 무료 Groq 으로 돌아간다
 
 playwright>=1.40,<2
