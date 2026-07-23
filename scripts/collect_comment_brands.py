@@ -298,7 +298,8 @@ def run_from_sheet(args) -> int:
     print(f"\n댓글 연 글 {fetcher.stat['열림']}개 · 못 연 글 {fetcher.stat['막힘']}개")
     print(f"후보 {jstat['후보'] + jstat.get('캐시적중', 0)}종 "
           f"(전에 판정해둔 것 {jstat.get('캐시적중', 0)}종 · 새로 물어본 것 {jstat['판정']}종 "
-          f"· 판정 못 받음 {jstat['미판정']}종)")
+          f"· 판정 못 받음 {jstat['미판정']}종) · 호출 {jstat.get('호출', 0)}회"
+          + (f" · 탈: {', '.join(jstat['탈'])}" if jstat.get("탈") else ""))
     for row in out_rows[:30]:
         print(f"  {row[0]:<8}{row[1][:22]:<24}{row[2]:>3}회  키워드 {row[3]}개")
 

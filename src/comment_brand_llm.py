@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import time
 import urllib.error
 import urllib.request
@@ -40,9 +41,9 @@ _USER_AGENT = (
     "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
 )
 
-# 한 번에 물어볼 후보 수. 25개면 요청 하나가 2천 토큰 안팎 —
-# 무료 하루치(10만 토큰) 안에서 40회 넘게 물어볼 수 있다.
-BATCH = 25
+# 한 번에 물어볼 후보 수. 답이 길어지면 잘려서 묶음 통째로 미판정이 되므로 크게 잡지 않는다
+# (25개로 돌렸더니 113종 중 67종이 답을 못 받았다 — 2026-07-23 실측).
+BATCH = 12
 
 _SYSTEM = (
     "너는 네이버 카페 댓글에서 나온 말이 **실제로 팔리는 제품의 브랜드명인지** 판정한다.\n"
@@ -116,8 +117,32 @@ def _extract_json(content: str):
     return None
 
 
-def _post(payload: dict, *, timeout: int, tries: int = 3, sleep=time.sleep):
-    """Groq 호출. 한도 초과(429)면 알려준 만큼 쉬었다 다시 — 조용히 포기하지 않는다."""
+_ONE_VERDICT_RE = re.compile(r"\{[^{}]*\"n\"\s*:\s*\d+[^{}]*\}")
+
+
+def _salvage(content: str) -> list:
+    """답이 중간에 잘려도 온전한 줄만 골라 읽는다 — 묶음 전체를 버리지 않으려고."""
+    out = []
+    for m in _ONE_VERDICT_RE.finditer(str(content or "")):
+        try:
+            v = json.loads(m.group(0))
+        except (ValueError, TypeError):
+            continue
+        if isinstance(v, dict):
+            out.append(v)
+    return out
+
+
+def _post(payload: dict, *, timeout: int, tries: int = 3, sleep=time.sleep,
+          errors: list | None = None):
+    """Groq 호출. 한도 초과(429)면 알려준 만큼 쉬었다 다시 — 조용히 포기하지 않는다.
+
+    실패하면 왜 실패했는지 errors 에 남긴다. 안 남기면 다음에 또 깜깜이가 된다.
+    """
+    def note(reason: str):
+        if errors is not None:
+            errors.append(reason)
+
     key = _api_key()
     body = json.dumps(payload).encode("utf-8")
     for attempt in range(tries):
@@ -130,6 +155,7 @@ def _post(payload: dict, *, timeout: int, tries: int = 3, sleep=time.sleep):
             with urllib.request.urlopen(req, timeout=timeout) as resp:
                 return json.loads(resp.read().decode("utf-8"))
         except urllib.error.HTTPError as e:
+            note(f"HTTP {e.code}")
             if e.code == 429 and attempt < tries - 1:
                 wait = 5.0
                 try:                       # 얼마나 기다리라고 알려준다
@@ -147,12 +173,18 @@ def _post(payload: dict, *, timeout: int, tries: int = 3, sleep=time.sleep):
     return None
 
 
-def judge_batch(items: list, *, timeout: int = 30, sleep=time.sleep) -> dict | None:
+def judge_batch(items: list, *, timeout: int = 30, sleep=time.sleep,
+                errors: list | None = None) -> dict | None:
     """후보 묶음 하나 판정. {키: {"제품": bool, "이름": str}}. 실패하면 None.
 
     items = [{"키": ..., "표시": ..., "예시": 댓글토막}, ...]
     """
+    def note(reason: str):
+        if errors is not None:
+            errors.append(reason)
+
     if not _api_key():
+        note("키 없음")
         return None
     items = [i for i in (items or []) if i.get("키")]
     if not items:
@@ -170,22 +202,28 @@ def judge_batch(items: list, *, timeout: int = 30, sleep=time.sleep) -> dict | N
             {"role": "user", "content": "각 후보가 제품인지 판정해줘.\n" + "\n".join(lines)},
         ],
         "temperature": 0,
-        "max_tokens": 1200,
+        # 답이 잘리면 JSON 이 깨져 묶음 전체가 미판정이 된다 — 넉넉히 준다.
+        "max_tokens": 4000,
     }
-    data = _post(payload, timeout=timeout, sleep=sleep)
+    data = _post(payload, timeout=timeout, sleep=sleep, errors=errors)
     if not data:
         return None
     try:
         content = data["choices"][0]["message"]["content"]
     except (KeyError, IndexError, TypeError):
+        note("답 모양이 다름")
         return None
+    if str((data.get("choices") or [{}])[0].get("finish_reason") or "") == "length":
+        note("답 잘림")           # 그래도 아래에서 읽히는 만큼은 건진다
 
     obj = _extract_json(content)
-    if not isinstance(obj, dict):
-        return None
-    verdicts = obj.get("판정")
+    verdicts = obj.get("판정") if isinstance(obj, dict) else None
     if not isinstance(verdicts, list):
-        return None
+        verdicts = _salvage(content)       # 잘린 답에서도 읽히는 줄은 건진다
+        if not verdicts:
+            note("JSON 아님")
+            return None
+        note("부분만 읽음")
 
     # 번호가 한 칸 밀리면 '스테로이드' 가 옆 후보의 이름을 달고 제품이 된다(2026-07-23 실측).
     # 그래서 되돌려받은 '후보' 글자로 대조하고, 어긋나면 그 이름으로 다시 찾는다.
@@ -219,23 +257,33 @@ def judge(items: list, *, batch: int = BATCH, max_calls: int = 60,
 
     판정 못 받은 후보는 dict 에 **없다** — 호출부가 표에서 뺀다(지어내지 않는다).
     """
-    stat = {"후보": len(items or []), "호출": 0, "판정": 0, "미판정": 0, "한도소진": False}
+    stat = {"후보": len(items or []), "호출": 0, "판정": 0, "미판정": 0,
+            "한도소진": False, "탈": []}
     if not _api_key():
         stat["미판정"] = stat["후보"]
         return {}, stat
 
     out: dict = {}
+    errors: list = []
     pending = list(items or [])
-    for start in range(0, len(pending), batch):
-        if stat["호출"] >= max_calls:
-            stat["한도소진"] = True
+
+    # 한 바퀴 돌고, 답을 못 받은 후보만 **작은 묶음**으로 한 번 더 묻는다.
+    # 묶음이 크면 답이 잘려 통째로 미판정이 되기 때문(2026-07-23 실측 67/113).
+    for size in (batch, max(5, batch // 3)):
+        if not pending:
             break
-        chunk = pending[start:start + batch]
-        stat["호출"] += 1
-        got = judge_batch(chunk, timeout=timeout, sleep=sleep)
-        if got is None:                    # 호출 실패 = 이 묶음은 미판정으로 남긴다
-            continue
-        out.update(got)
+        for start in range(0, len(pending), size):
+            if stat["호출"] >= max_calls:
+                stat["한도소진"] = True
+                break
+            chunk = pending[start:start + size]
+            stat["호출"] += 1
+            got = judge_batch(chunk, timeout=timeout, sleep=sleep, errors=errors)
+            if got:
+                out.update(got)
+        pending = [it for it in pending if it["키"] not in out]
+
     stat["판정"] = len(out)
     stat["미판정"] = stat["후보"] - stat["판정"]
+    stat["탈"] = sorted(set(errors))        # 왜 못 받았는지 — 다음엔 깜깜이로 두지 않는다
     return out, stat

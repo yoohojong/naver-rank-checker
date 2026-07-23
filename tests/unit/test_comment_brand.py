@@ -184,6 +184,38 @@ def test_모르는_후보_판정은_버린다(monkeypatch):
     assert got == {} and stat["미판정"] == 1
 
 
+def test_답이_잘려도_읽히는_줄은_건진다(monkeypatch):
+    # 답이 길어 잘리면 JSON 이 깨진다. 묶음 통째로 버리지 말고 온전한 줄은 살린다.
+    monkeypatch.setenv("GROQ_API_KEY", "test-key")
+    잘린답 = ('{"판정": [{"n":1,"후보":"일리윤","제품":true,"이름":"일리윤"},'
+            ' {"n":2,"후보":"약국에')
+    monkeypatch.setattr(comment_brand_llm, "_post",
+                        lambda *a, **k: {"choices": [{"message": {"content": 잘린답}}]})
+    items = [{"키": "일리윤", "표시": "일리윤", "예시": ""},
+             {"키": "약국에서", "표시": "약국에서", "예시": ""}]
+    got, stat = comment_brand_llm.judge(items)
+    assert got["일리윤"]["제품"] is True
+    assert "약국에서" not in got and stat["미판정"] == 1
+
+
+def test_답_못받은_후보는_다시_묻는다(monkeypatch):
+    monkeypatch.setenv("GROQ_API_KEY", "test-key")
+    calls = {"n": 0}
+
+    def fake_post(*a, **k):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return None                     # 첫 묶음 실패
+        return {"choices": [{"message": {"content": json.dumps(
+            {"판정": [{"n": 1, "후보": "일리윤", "제품": True, "이름": "일리윤"}]},
+            ensure_ascii=False)}}]}
+
+    monkeypatch.setattr(comment_brand_llm, "_post", fake_post)
+    got, stat = comment_brand_llm.judge([{"키": "일리윤", "표시": "일리윤", "예시": ""}])
+    assert got["일리윤"]["제품"] is True     # 두 번째 바퀴에서 받아냈다
+    assert stat["미판정"] == 0 and calls["n"] == 2
+
+
 def test_한도초과면_기다렸다_다시_묻는다(monkeypatch):
     import urllib.error
 
