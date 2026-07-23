@@ -72,17 +72,24 @@ def 본문풀기(html: str) -> tuple[str, int]:
     return re.sub(r"\n{3,}", "\n\n", 본문).strip(), 사진[0]
 
 
-def 단계뽑기(유형: str) -> int | None:
-    """시트 '유형' 칸이 '5 브랜드제품' 처럼 앞에 단계 숫자를 달고 있다."""
-    m = re.match(r"\s*([345])", 유형 or "")
+def 단계뽑기(분류: str) -> int | None:
+    """단계는 **'키워드 분류'** 칸에 있다('5 브랜드제품' / '4 대안' / '3 증상').
+
+    ★2026-07-23 치명 오류 정정: 처음에 '유형' 칸에서 뽑았는데, 그 칸은 이 레포가 관리하는
+      노출 구좌 타입(AB·인기글·스마트블록)이라 단계가 들어갈 리 없다. 그 결과 stage=None 이
+      되어 **글자수·키워드 횟수 검사가 통째로 빠진 채** 60행이 시트에 기록됐다.
+      (사장님이 첫째로 보고 싶다고 한 상위노출 로직을 하나도 안 재고 있었다.)
+    """
+    m = re.match(r"\s*([345])", 분류 or "")
     return int(m.group(1)) if m else None
 
 
 def 대상읽기(sc: SheetsClient, limit: int) -> list[dict]:
-    본, 키 = [], set()
-    for ws in sc.spreadsheet.worksheets():
-        if "카외" not in ws.title or any(x in ws.title for x in 제외탭):
-            continue
+    본, 키, 건너뜀 = [], set(), []
+    탭들 = [ws for ws in sc.spreadsheet.worksheets()
+            if "카외" in ws.title and not any(x in ws.title for x in 제외탭)]
+    탭몫 = max(1, limit // max(1, len(탭들)))    # 한 탭이 limit 을 독차지하지 않게
+    for 탭순, ws in enumerate(탭들):
         rows = ws.get_all_values()
         if not rows:
             continue
@@ -104,12 +111,18 @@ def 대상읽기(sc: SheetsClient, limit: int) -> list[dict]:
                 i = idx.get(이름)
                 return row[i].strip() if i is not None and i < len(row) else ""
 
-            본.append({"url": 링크, "keyword": 칸("키워드"),
-                       "stage": 단계뽑기(칸("유형")),
+            stage = 단계뽑기(칸("키워드 분류"))
+            if stage is None:
+                건너뜀.append((ws.title, 칸("키워드")))
+                continue
+            본.append({"url": 링크, "keyword": 칸("키워드"), "stage": stage,
                        "product": "바디" if "바디" in ws.title else "샴푸"})
-            if len(본) >= limit:
-                return 본
-    return 본
+            if len(본) >= 탭몫 * (탭순 + 1) or len(본) >= limit:
+                break
+    if 건너뜀:
+        print(f"  단계(키워드 분류) 없어 건너뜀 {len(건너뜀)}건 "
+              f"— 예: {', '.join(k for _, k in 건너뜀[:3])}")
+    return 본[:limit]
 
 
 def 한건수집(t: dict) -> dict:
@@ -204,13 +217,18 @@ def 시트반영(ws, 결과들: list[tuple[dict, dict]], 실패들: list[dict]):
             새행.append(row)
 
     for post in 실패들:
-        row = [post.get("keyword", ""), post["url"], "수집실패",
-               post.get("_실패", ""), "", 오늘, 오늘, "확인 필요"]
         r = 자리.get(post["url"])
         if r:
+            # 어제 잰 측정·처음 걸린 날을 지우지 않는다(일시 차단 한 번에 기록이 날아갔다)
+            옛 = 기존[r - 1]
+            측정옛 = 옛[4] if len(옛) > 4 else ""
+            처음옛 = 옛[5] if len(옛) > 5 else ""
+            row = [post.get("keyword", ""), post["url"], "수집실패",
+                   post.get("_실패", ""), 측정옛, 처음옛 or 오늘, 오늘, "확인 필요"]
             바꿀것.append({"range": f"A{r}:H{r}", "values": [row]})
         else:
-            새행.append(row)
+            새행.append([post.get("keyword", ""), post["url"], "수집실패",
+                        post.get("_실패", ""), "", 오늘, 오늘, "확인 필요"])
 
     if 바꿀것:
         ws.batch_update(바꿀것)
@@ -249,6 +267,15 @@ def main() -> int:
         시트반영(탭준비(sc), 결과들, 실패들)
     else:
         print("  (GEOMSU_WRITE=0 — 시트에 쓰지 않음)")
+
+    # ★조용히 성공으로 끝나면 아무도 안 본다. 결과가 이상하면 실패로 끝내 알림을 띄운다.
+    전체 = len(결과들) + len(실패들)
+    if 전체 and len(실패들) / 전체 > 0.5:
+        print("  ⚠️ 절반 넘게 수집 실패 — 링크가 낡았거나 차단일 수 있음")
+        return 1
+    if 결과들 and n["합격"] == 0 and n["보류"] == 0:
+        print("  ⚠️ 합격·보류가 하나도 없음 — 검수 기준이 현실과 어긋났을 수 있음")
+        return 1
     return 0
 
 
