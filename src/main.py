@@ -565,9 +565,11 @@ def run_cycle() -> dict:
         # 백업 실패 = log + 진행 (= cron 자체 중단 X). 사장님 가시성 = summary 안 표시.
         print(f"[T-M81 백업] 실패 = {e} (cron 진행)")
 
-    # 상위노출 실적 일별 아카이빙 (검증판 · OFF 기본). ARCHIVE_ENABLED truthy 일 때만.
+    # 상위노출 실적 일별 아카이빙 — **1차(안전망)**. ARCHIVE_ENABLED truthy 일 때만.
     # 공개 repo 라 데이터는 repo 아닌 비공개 시트 탭에만 남긴다. 날짜별 멱등(하루 1벌).
     # best-effort: 아카이빙 실패가 cron 을 죽이지 않도록 try/except 로 격리.
+    # ★여기 기록은 아직 이번 크롤 결과가 안 들어간 '직전 상태'다. 사이클이 중간에 죽어도
+    #   그날 기록이 남게 하는 안전망일 뿐이고, 진짜 그날 값은 4.7(사이클 끝)에서 덮어쓴다.
     if _env_truthy("ARCHIVE_ENABLED"):
         try:
             from src.archive import build_archive_rows, append_daily_archive
@@ -918,6 +920,7 @@ def run_cycle() -> dict:
     post_write_blocking_issues: list[dict] = []
     type_preview_write_audit_issues: list[dict] = []
     post_write_audit_error = ""
+    post_write_data: dict = {}   # 아래 read 가 실패해도 이름이 살아있게(4.7 아카이브가 참조)
     try:
         post_write_data = client.load_all_data_tabs(tab_filter=_carea_filter)
         post_write_audit_issues = audit_sheet_rows(post_write_data)
@@ -957,6 +960,37 @@ def run_cycle() -> dict:
     except Exception as e:
         post_write_audit_error = str(e)
         print(f"[D-032-POST-AUDIT] 실패 = {e} (cron 진행, summary 에 기록)")
+
+    # 4.7. 상위노출 실적 아카이빙 — **이번 사이클 결과가 반영된 뒤** 다시 기록.
+    #
+    # ★왜 두 번 쓰나 (2026-07-23 수정)
+    #   아카이브는 원래 사이클 '시작' 지점(위 1.6)에서만 기록했다. 그 시점 시트는 아직
+    #   이번 크롤 결과가 안 들어간 **직전 사이클 상태**다. 하루 마지막 cron(18:07)이
+    #   그날 블록을 12:07 상태로 덮어쓰고 끝나므로, 그날의 마지막 크롤 결과는 그날
+    #   기록에 영영 안 들어간다. 실측(2026-07-23): 이력 노출 155 vs 실제 시트 163,
+    #   396행 중 52행 불일치·8행은 노출/미노출 판정 자체가 뒤집힘 → 대시보드의
+    #   '오늘 상위노출/누락'이 반나절 옛 숫자였다.
+    #   이제 시작 기록은 '사이클이 중간에 죽어도 그날 기록은 남는다'는 안전망으로만 두고,
+    #   여기서 post_write_data(쓰기 후 실제 시트)로 같은 날짜 블록을 덮어써 최신화한다.
+    #   날짜별 멱등이라 행이 늘지 않는다(같은 날짜 블록을 새로 넣고 옛것을 지운다).
+    if _env_truthy("ARCHIVE_ENABLED"):
+        if post_write_data:
+            try:
+                from src.archive import append_daily_archive, build_archive_rows
+                archive_date = datetime.now(kst).strftime("%Y-%m-%d")
+                rows_after = build_archive_rows(post_write_data, archive_date)
+                res_after = append_daily_archive(client, rows_after, archive_date)
+                if res_after.get("error"):
+                    print(f"[아카이브:사이클끝] 실패 = {res_after['error']} (시작 시점 기록 유지)")
+                else:
+                    print(f"[아카이브:사이클끝] {res_after['rows_written']} 행으로 갱신 "
+                          f"(date={archive_date}, 이번 크롤 결과 반영)")
+            except Exception as e:
+                print(f"[아카이브:사이클끝] 실패 = {e} (시작 시점 기록 유지)")
+        else:
+            # post-write audit 이 실패해 시트를 다시 못 읽은 경우. 옛 상태로 덮어쓰면
+            # 오히려 더 나빠지므로 아무것도 하지 않고 그 사실만 남긴다.
+            print("[아카이브:사이클끝] 건너뜀 — 쓰기 후 시트를 못 읽음(시작 시점 기록 유지)")
 
     # 4.9. 경쟁사 이력 적재 + 랭킹 갱신 (2026-07-23, COMPETITOR_TRACK_ENABLED 일 때만).
     # 비공개 시트 탭 2개(경쟁사_이력 / 경쟁사_랭킹)만 건드린다 — 사장님 작업 탭은 손대지 않는다.

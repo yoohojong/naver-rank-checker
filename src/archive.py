@@ -83,6 +83,42 @@ def _get_or_create_archive_ws(client, tab_name: str):
         return ws, True
 
 
+def _date_block_rows(ws, date_str: str) -> list[int]:
+    """아카이브 탭에서 date_str(1열) 이 일치하는 행번호 목록(오름차순). 헤더행 제외."""
+    all_values = ws.get_all_values()
+    if not all_values:
+        return []
+    return sorted(
+        row_num
+        for row_num, row_values in enumerate(all_values[1:], start=2)
+        if row_values and str(row_values[0]).strip() == str(date_str).strip()
+    )
+
+
+def _delete_rows(ws, target_rows: list[int]) -> int:
+    """주어진 행번호들을 연속 구간으로 묶어 삭제(아래→위). 다른 행은 안 건드린다.
+
+    ★ 2026-07-02 429 fix: 예전엔 하나씩 delete_rows(row) 를 반복 → 그날 블록(키워드 수백)을
+      재실행마다 수백 번 API 호출 → 시트 '분당 쓰기 60회' 한도 초과(429)로 아카이브+본
+      순위체커까지 크래시. 이제 구간당 1회로 축소.
+    """
+    if not target_rows:
+        return 0
+    ranges: list[tuple[int, int]] = []
+    start = prev = target_rows[0]
+    for row_num in target_rows[1:]:
+        if row_num == prev + 1:
+            prev = row_num
+        else:
+            ranges.append((start, prev))
+            start = prev = row_num
+    ranges.append((start, prev))
+    # 아래 구간부터 지워야 위 구간의 행번호가 안 밀린다.
+    for start, end in sorted(ranges, reverse=True):
+        ws.delete_rows(start, end)  # start~end 한 번에 삭제(구간당 API 1회)
+    return len(target_rows)
+
+
 def _delete_date_block(ws, date_str: str) -> int:
     """아카이브 탭에서 date_str(1열) 이 일치하는 행만 삭제(멱등용).
 
@@ -97,31 +133,7 @@ def _delete_date_block(ws, date_str: str) -> int:
     Returns:
         삭제한 행 수.
     """
-    all_values = ws.get_all_values()
-    if not all_values:
-        return 0
-    # 1행 = 헤더. 2행부터 검사. 1열(날짜) 이 date_str 인 행만 대상.
-    target_rows = sorted(
-        row_num
-        for row_num, row_values in enumerate(all_values[1:], start=2)
-        if row_values and str(row_values[0]).strip() == str(date_str).strip()
-    )
-    if not target_rows:
-        return 0
-    # 연속된 행번호를 [start, end] 구간으로 묶는다(대개 그날 블록은 맨 아래 1구간).
-    ranges: list[tuple[int, int]] = []
-    start = prev = target_rows[0]
-    for row_num in target_rows[1:]:
-        if row_num == prev + 1:
-            prev = row_num
-        else:
-            ranges.append((start, prev))
-            start = prev = row_num
-    ranges.append((start, prev))
-    # 아래 구간부터 지워야 위 구간의 행번호가 안 밀린다.
-    for start, end in sorted(ranges, reverse=True):
-        ws.delete_rows(start, end)  # start~end 한 번에 삭제(구간당 API 1회)
-    return len(target_rows)
+    return _delete_rows(ws, _date_block_rows(ws, date_str))
 
 
 def append_daily_archive(
@@ -150,13 +162,20 @@ def append_daily_archive(
     """
     try:
         ws, created = _get_or_create_archive_ws(client, tab_name)
-        # 멱등: 그 날짜 블록만 제거(신규 생성 탭이면 지울 게 없음).
-        if not created:
-            _delete_date_block(ws, date_str)
+        # ★순서: 먼저 넣고 나중에 지운다 (2026-07-23 수정).
+        #   예전엔 지우고 나서 넣었다. 그 사이에 append 가 실패하면(429·네트워크)
+        #   그날 기록이 통째로 사라진다 — 대시보드에서 그 날짜가 아예 빠지고,
+        #   다음날 비교가 그저께와 붙어 '이탈 폭증'으로 보인다.
+        #   넣고 지우면 최악이 '그날 줄이 두 벌'이고, 읽는 쪽은 나중 값을 쓰므로
+        #   숫자는 맞고 다음 cron 이 알아서 정리한다. 손실보다 중복이 낫다.
+        old_rows = [] if created else _date_block_rows(ws, date_str)
         if rows:
             ws.append_rows(
                 rows, value_input_option="RAW", insert_data_option="INSERT_ROWS"
             )
-        return {"rows_written": len(rows), "date": date_str, "created_tab": created}
+        # 새 줄은 항상 아래에 붙으므로 위쪽 옛 줄의 행번호는 그대로다.
+        _delete_rows(ws, old_rows)
+        return {"rows_written": len(rows), "date": date_str, "created_tab": created,
+                "replaced_rows": len(old_rows)}
     except Exception as e:  # noqa: BLE001 — 아카이브 실패가 cron 죽이면 안 됨
         return {"rows_written": 0, "date": date_str, "created_tab": False, "error": str(e)}

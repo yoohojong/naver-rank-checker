@@ -382,3 +382,61 @@ class TestD032TraceAuditInvariant:
         assert summary["post_write_audit_preexisting_issues"] == 0
         assert summary["post_write_audit_violations"] == 0
         assert summary.get("code_change_suspected") is not True
+
+
+class TestArchiveReflectsThisCycle:
+    """2026-07-23 회귀 — 상위노출_이력이 '이번 크롤 결과'로 마감되는가.
+
+    옛 버그: 아카이브를 사이클 '시작'(크롤 전)에만 기록해, 하루 마지막 cron 이 그날
+    블록을 반나절 옛 상태로 덮어쓰고 끝났다 → 대시보드 '오늘 상위노출/누락'이 옛 숫자.
+    이제 사이클 끝에서 post-write 시트로 같은 날짜 블록을 다시 기록한다.
+    """
+
+    def _run(self, monkeypatch, before, after, calls, post_read_fails=False):
+        from unittest.mock import patch as upatch, MagicMock as UMM
+        monkeypatch.setenv("GITHUB_RUN_ID", "arch1")
+        monkeypatch.setenv("ARCHIVE_ENABLED", "1")
+        monkeypatch.setattr("src.main.SPREADSHEET_ID", "fake_id")
+        monkeypatch.setattr(
+            "src.main.SERVICE_ACCOUNT_JSON",
+            '{"type":"service_account","client_email":"x@x.iam.gserviceaccount.com",'
+            '"private_key":"-----BEGIN PRIVATE KEY-----\nFAKE\n-----END PRIVATE KEY-----\n",'
+            '"token_uri":"https://oauth2.googleapis.com/token"}')
+
+        mock_client = UMM()
+        mock_client.load_all_data_tabs.side_effect = (
+            [before, RuntimeError("시트 읽기 실패")] if post_read_fails else [before, after])
+        mock_client.write_results.return_value = 0
+        mock_client.write_timestamp.return_value = None
+        mock_crawler = UMM()
+        mock_crawler.warmup.return_value = None
+        mock_crawler.fetch_search.side_effect = CrawlerError("skip")
+
+        def _fake_append(client, rows, date_str, **kw):
+            calls.append(list(rows))
+            return {"rows_written": len(rows), "date": date_str, "created_tab": False}
+
+        with upatch("src.main.SheetsClient", return_value=mock_client),              upatch("src.main.Crawler", return_value=mock_crawler),              upatch("src.archive.append_daily_archive", side_effect=_fake_append):
+            from src.main import run_cycle
+            run_cycle()
+
+    def _rows(self, area):
+        return {"샴푸 카외": [{"_row": 2, "_tab": "샴푸 카외", "키워드": "kw1",
+                            HEADER_LINK: "https://cafe.naver.com/cosmania/111",
+                            HEADER_AREA: area, "raw_노출영역": area}]}
+
+    def test_마지막_기록은_크롤_후_상태다(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        calls: list = []
+        self._run(monkeypatch, self._rows("미노출"), self._rows("AB"), calls)
+        assert len(calls) == 2, f"시작·끝 두 번 기록되어야 함: {len(calls)}"
+        assert calls[0][0][3] == "미노출"          # 안전망(크롤 전 상태)
+        assert calls[-1][0][3] == "AB"             # 최종 = 이번 크롤 결과
+
+    def test_쓰기후_시트를_못_읽으면_덮어쓰지_않는다(self, tmp_path, monkeypatch):
+        """옛 상태로 덮어쓰면 더 나빠지므로, 시작 시점 기록만 남긴다."""
+        monkeypatch.chdir(tmp_path)
+        calls: list = []
+        self._run(monkeypatch, self._rows("미노출"), None, calls, post_read_fails=True)
+        assert len(calls) == 1
+        assert calls[0][0][3] == "미노출"
