@@ -565,6 +565,10 @@ def run_cycle() -> dict:
         # 백업 실패 = log + 진행 (= cron 자체 중단 X). 사장님 가시성 = summary 안 표시.
         print(f"[T-M81 백업] 실패 = {e} (cron 진행)")
 
+    # 아카이브 날짜는 사이클 시작 시각으로 한 번만 정한다(1.6·4.7 이 같은 블록을 쓰게).
+    archive_date_started = datetime.now(kst).strftime("%Y-%m-%d")
+    summary_archive_warn: list = []
+
     # 상위노출 실적 일별 아카이빙 — **1차(안전망)**. ARCHIVE_ENABLED truthy 일 때만.
     # 공개 repo 라 데이터는 repo 아닌 비공개 시트 탭에만 남긴다. 날짜별 멱등(하루 1벌).
     # best-effort: 아카이빙 실패가 cron 을 죽이지 않도록 try/except 로 격리.
@@ -573,7 +577,7 @@ def run_cycle() -> dict:
     if _env_truthy("ARCHIVE_ENABLED"):
         try:
             from src.archive import build_archive_rows, append_daily_archive
-            archive_date = datetime.now(kst).strftime("%Y-%m-%d")
+            archive_date = archive_date_started
             archive_rows = build_archive_rows(data, archive_date)
             archive_result = append_daily_archive(client, archive_rows, archive_date)
             if archive_result.get("error"):
@@ -977,12 +981,22 @@ def run_cycle() -> dict:
         if post_write_data:
             try:
                 from src.archive import append_daily_archive, build_archive_rows
-                archive_date = datetime.now(kst).strftime("%Y-%m-%d")
+                # ★1.6 이 쓴 날짜를 그대로 재사용한다. 여기서 now() 를 다시 부르면
+                #   사이클이 자정을 넘겼을 때 1.6 은 어제 블록, 4.7 은 오늘 블록에 써서
+                #   어제가 '크롤 전 상태'로 굳는다(독립검토 LOW-1).
+                archive_date = archive_date_started
                 rows_after = build_archive_rows(post_write_data, archive_date)
                 res_after = append_daily_archive(client, rows_after, archive_date)
                 if res_after.get("error"):
                     print(f"[아카이브:사이클끝] 실패 = {res_after['error']} (시작 시점 기록 유지)")
+                elif res_after.get("skipped"):
+                    # 0행 = 헤더가 바뀌었거나 읽기가 반쯤 실패한 것. 성공처럼 지나가면 안 된다.
+                    print(f"[아카이브:사이클끝] ⚠️ {res_after['skipped']}")
+                    summary_archive_warn.append(res_after["skipped"])
                 else:
+                    if res_after.get("skipped_delete"):
+                        print(f"[아카이브:사이클끝] ⚠️ {res_after['skipped_delete']}")
+                        summary_archive_warn.append(res_after["skipped_delete"])
                     print(f"[아카이브:사이클끝] {res_after['rows_written']} 행으로 갱신 "
                           f"(date={archive_date}, 이번 크롤 결과 반영)")
             except Exception as e:
@@ -1070,6 +1084,9 @@ def run_cycle() -> dict:
         print(f"[TYPE-PREVIEW] {type_preview_summary_path} 저장 (human-readable)")
     except Exception as e:
         print(f"[TYPE-PREVIEW] summary 저장 실패 = {e} (cron 진행)")
+    summary["archive_warnings"] = summary_archive_warn
+    if summary_archive_warn:
+        summary["code_change_suspected"] = True   # 아카이브가 조용히 반쪽이 되면 알림
     summary["github_run_id"] = run_id
     summary["github_run_url"] = f"https://github.com/yoohojong/naver-rank-checker/actions/runs/{run_id}"
     if post_write_audit_error:

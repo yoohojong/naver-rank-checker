@@ -119,6 +119,21 @@ def _delete_rows(ws, target_rows: list[int]) -> int:
     return len(target_rows)
 
 
+def _appended_start_row(res) -> int | None:
+    """append_rows 응답에서 '새 줄이 들어간 첫 행번호'를 뽑는다. 못 읽으면 None.
+
+    응답 예: {"updates": {"updatedRange": "'상위노출_이력'!A5396:E5791", ...}}
+    None 이면 '어디 들어갔는지 모름' → 호출부는 지우지 않는다(모르면 안 지운다).
+    """
+    try:
+        rng = res["updates"]["updatedRange"]
+    except (TypeError, KeyError):
+        return None
+    cell = str(rng).split("!")[-1].split(":")[0]      # 'A5396'
+    digits = "".join(ch for ch in cell if ch.isdigit())
+    return int(digits) if digits else None
+
+
 def _delete_date_block(ws, date_str: str) -> int:
     """아카이브 탭에서 date_str(1열) 이 일치하는 행만 삭제(멱등용).
 
@@ -162,18 +177,35 @@ def append_daily_archive(
     """
     try:
         ws, created = _get_or_create_archive_ws(client, tab_name)
-        # ★순서: 먼저 넣고 나중에 지운다 (2026-07-23 수정).
+
+        # ★기록할 게 0행이면 아무것도 지우지 않는다 (2026-07-23 독립검토 HIGH-2).
+        #   시트 헤더가 바뀌거나(예: '키워드' → '키워드명') 읽기가 반쯤 실패하면
+        #   build_archive_rows 가 전 행을 스킵해 rows=[] 가 된다. 그 상태로 지우면
+        #   '그날 기록이 통째로 사라짐' — 고치려던 바로 그 사고다. 지울 근거가 없으면 안 지운다.
+        if not rows:
+            return {"rows_written": 0, "date": date_str, "created_tab": created,
+                    "skipped": "생성된 행 0 — 기존 블록 보존(헤더/읽기 이상 의심)"}
+
+        # ★순서: 먼저 넣고 나중에 지운다 (2026-07-23).
         #   예전엔 지우고 나서 넣었다. 그 사이에 append 가 실패하면(429·네트워크)
-        #   그날 기록이 통째로 사라진다 — 대시보드에서 그 날짜가 아예 빠지고,
-        #   다음날 비교가 그저께와 붙어 '이탈 폭증'으로 보인다.
-        #   넣고 지우면 최악이 '그날 줄이 두 벌'이고, 읽는 쪽은 나중 값을 쓰므로
-        #   숫자는 맞고 다음 cron 이 알아서 정리한다. 손실보다 중복이 낫다.
+        #   그날 기록이 통째로 사라진다 — 다음날 비교가 그저께와 붙어 '이탈 폭증'으로 보인다.
+        #   넣고 지우면 최악이 '그날 줄이 두 벌'이고 다음 cron 이 알아서 정리한다.
         old_rows = [] if created else _date_block_rows(ws, date_str)
-        if rows:
-            ws.append_rows(
-                rows, value_input_option="RAW", insert_data_option="INSERT_ROWS"
-            )
-        # 새 줄은 항상 아래에 붙으므로 위쪽 옛 줄의 행번호는 그대로다.
+        res = ws.append_rows(
+            rows, value_input_option="RAW", insert_data_option="INSERT_ROWS"
+        )
+
+        # ★'새 줄은 항상 맨 아래' 는 가정일 뿐이라 확인하고 지운다 (독립검토 HIGH-1).
+        #   Sheets values.append 는 '시트 끝'이 아니라 '찾아낸 표의 끝' 다음에 넣는다.
+        #   시트 중간에 빈 줄이 있으면 거기서 표가 끊긴 것으로 보고 **중간에 끼워넣을** 수
+        #   있고(INSERT_ROWS), 그러면 아래 줄 번호가 전부 밀려 **엉뚱한 날짜를 지운다**.
+        #   API 가 넣은 위치를 돌려주므로, 옛 줄이 모두 그 위에 있을 때만 지운다.
+        start = _appended_start_row(res)
+        if start is None or any(r >= start for r in old_rows):
+            return {"rows_written": len(rows), "date": date_str, "created_tab": created,
+                    "replaced_rows": 0,
+                    "skipped_delete": f"append 위치({start})가 옛 블록 아래가 아님 — "
+                                      f"지우지 않음(그날 줄이 두 벌일 수 있음)"}
         _delete_rows(ws, old_rows)
         return {"rows_written": len(rows), "date": date_str, "created_tab": created,
                 "replaced_rows": len(old_rows)}

@@ -97,10 +97,12 @@ def test_build_archive_rows_empty_tabs():
 class FakeWorksheet:
     """in-memory worksheet 대역. 시트 그리드를 2D 리스트로 흉내낸다."""
 
-    def __init__(self, values=None):
+    def __init__(self, values=None, insert_at=None, title="상위노출_이력"):
         # values = [[...], ...] (1행 = 헤더 포함 가능)
         self.values = [list(r) for r in (values or [])]
         self.delete_calls = []  # (start, end) 기록 — 범위삭제(429 fix) 회귀검증용
+        self.insert_at = insert_at   # None = 맨 아래(정상). 숫자 = 그 행에 끼워넣기.
+        self.title = title
 
     def row_values(self, row_1based):
         idx = row_1based - 1
@@ -120,8 +122,17 @@ class FakeWorksheet:
                 self.values[0] = list(data[0])
 
     def append_rows(self, rows, value_input_option="RAW", insert_data_option="INSERT_ROWS"):
-        for r in rows:
-            self.values.append(list(r))
+        """실제 gspread 정합: 넣은 위치를 응답으로 돌려준다.
+
+        ★insert_at 을 주면 '표 중간에 끼워넣기'를 흉내낸다. Sheets values.append 는
+          '시트 끝'이 아니라 '찾아낸 표의 끝' 다음에 넣으므로, 중간에 빈 줄이 있으면
+          실제로 이렇게 동작할 수 있다(독립검토 HIGH-1 재현용).
+        """
+        at = self.insert_at if self.insert_at is not None else len(self.values) + 1
+        self.values[at - 1:at - 1] = [list(r) for r in rows]
+        return {"updates": {"updatedRange":
+                            "'%s'!A%d:E%d" % (self.title, at, at + len(rows) - 1),
+                            "updatedRows": len(rows)}}
 
     def delete_rows(self, start, end=None):
         # 실제 gspread 정합: start~end(1-based, inclusive) 를 한 번에 삭제.
@@ -276,3 +287,56 @@ def test_append_error_is_swallowed():
     result = append_daily_archive(client, _rows_for("2026-07-02", ["k"]), "2026-07-02")
     assert result["rows_written"] == 0
     assert "error" in result
+
+
+class TestAppendPositionGuard:
+    """2026-07-23 독립검토 HIGH-1/HIGH-2 회귀.
+
+    '넣고 지우기' 순서는 '새 줄이 항상 맨 아래' 라는 가정 위에 서 있다. 그 가정이
+    깨지면 옛 행번호가 밀려 **엉뚱한 날짜를 지운다**. 그래서 확인하고 지운다.
+    """
+
+    def _sheet(self, insert_at=None):
+        vals = [list(ARCHIVE_HEADER)]
+        vals += [["2026-07-01", "샴푸 카외", "old%d" % i, "AB", "1"] for i in range(3)]
+        vals += [["2026-07-23", "샴푸 카외", "today%d" % i, "미노출", ""] for i in range(2)]
+        return FakeWorksheet(vals, insert_at=insert_at)
+
+    def test_맨아래에_붙으면_그날_옛줄만_지운다(self):
+        ws = self._sheet()
+        client = FakeClient(FakeSpreadsheet({ARCHIVE_TAB_NAME: ws}))
+        res = append_daily_archive(
+            client, _rows_for("2026-07-23", ["a", "b"]), "2026-07-23")
+        assert res["replaced_rows"] == 2
+        dates = [r[0] for r in ws.values[1:]]
+        assert dates.count("2026-07-01") == 3, "다른 날짜를 건드리면 안 됨"
+        assert dates.count("2026-07-23") == 2, "그날은 새 것 한 벌만"
+
+    def test_중간에_끼워넣으면_아무것도_안_지운다(self):
+        """행번호가 밀렸으므로 지우면 7/01 을 지우게 된다 → 지우지 않는다."""
+        ws = self._sheet(insert_at=2)          # 헤더 바로 아래에 끼워넣기
+        client = FakeClient(FakeSpreadsheet({ARCHIVE_TAB_NAME: ws}))
+        res = append_daily_archive(
+            client, _rows_for("2026-07-23", ["a", "b"]), "2026-07-23")
+        assert "skipped_delete" in res, "위치가 어긋났는데 지우면 안 됨"
+        assert ws.delete_calls == [], "삭제 호출 자체가 없어야 함"
+        dates = [r[0] for r in ws.values[1:]]
+        assert dates.count("2026-07-01") == 3, "다른 날짜가 살아있어야 함"
+        assert dates.count("2026-07-23") == 4, "최악은 중복 한 벌(다음 cron 이 정리)"
+
+    def test_위치를_모르면_안_지운다(self):
+        ws = self._sheet()
+        ws.append_rows = lambda *a, **k: None       # 응답 없음 = 위치 모름
+        client = FakeClient(FakeSpreadsheet({ARCHIVE_TAB_NAME: ws}))
+        res = append_daily_archive(
+            client, _rows_for("2026-07-23", ["a"]), "2026-07-23")
+        assert "skipped_delete" in res and ws.delete_calls == []
+
+    def test_기록할게_0행이면_그날_블록을_안_지운다(self):
+        """헤더가 바뀌어 전 행이 스킵되면 rows=[] 가 된다. 그때 지우면 그날이 사라진다."""
+        ws = self._sheet()
+        client = FakeClient(FakeSpreadsheet({ARCHIVE_TAB_NAME: ws}))
+        res = append_daily_archive(client, [], "2026-07-23")
+        assert res["rows_written"] == 0 and "skipped" in res
+        assert ws.delete_calls == []
+        assert [r[0] for r in ws.values[1:]].count("2026-07-23") == 2, "그날 기록 보존"
