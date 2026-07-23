@@ -122,6 +122,10 @@ _NOISE_CHARS_RE = re.compile(r"[^가-힣]")
 _HIDDEN_NAME_RE = re.compile(
     r"[가-힣]{1,8}[A-Za-z0-9ㄱ-ㅎㅏ-ㅣ.,*·_\-]{1,3}[가-힣]{1,8}")
 
+# 이름 끝 글자를 별표로 가린 것 — "안티트* 샴푸". 뒤에 한글이 없어 위 규칙엔 안 걸린다.
+# 정식 이름은 뒤(LLM 이름 묶기)에서 되살린다.
+_MASKED_TAIL_RE = re.compile(r"([가-힣]{2,8})[*·]+(?=\s|$|[^가-힣])")
+
 # 꼬리말 없이 이름만 던지는 경우가 많다("니조랄은요?"). 조사만 떼고 후보로 본다.
 _BARE_RE = re.compile(r"([가-힣]{2,10}?)(?:은요|는요|이요|요\?|은\?|는\?)")
 
@@ -272,6 +276,10 @@ def extract_candidates(text: str) -> list[tuple]:
     # ④ 글자를 숨긴 이름 ("안ㅌ티트로 저도 쓰는데") — 꼬리말도 말투도 없이 던져도 잡는다
     for m in _HIDDEN_NAME_RE.finditer(text):
         add(m.group(0), "", cut_josa=False)
+
+    # ⑤ 끝 글자를 별표로 가린 이름 ("안티트* 샴푸")
+    for m in _MASKED_TAIL_RE.finditer(text):
+        add(m.group(1), "", cut_josa=False)
 
     return out
 

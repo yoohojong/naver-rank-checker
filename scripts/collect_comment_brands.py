@@ -35,7 +35,8 @@ import requests
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from src.comment_brand import extract_candidates, is_asking, normalize_name, tally  # noqa: E402
+from src.comment_brand import (extract_candidates, is_asking, normalize_name,  # noqa: E402
+                               strip_generic_tail, tally)
 from src import brand_verdicts  # noqa: E402
 from src import comment_brand_llm  # noqa: E402
 from src.crawler import Crawler  # noqa: E402
@@ -224,7 +225,20 @@ def judge_candidates(mentions: list, *, verdict_path: str = brand_verdicts.DEFAU
     return verdicts, stat
 
 
-def confirmed_rows(mentions: list, verdicts: dict) -> list:
+def brand_names(mentions: list, verdicts: dict) -> list:
+    """판정된 브랜드명 목록(중복 없이) — 이름 묶기에 넣을 재료."""
+    seen = []
+    for m in mentions or []:
+        key = m["키"]
+        if not brand_verdicts.is_product(verdicts, key):
+            continue
+        name = brand_verdicts.display_name(verdicts, key, m["표시"])
+        if is_real_brand(name) and name not in seen:
+            seen.append(name)
+    return seen
+
+
+def confirmed_rows(mentions: list, verdicts: dict, unified: dict | None = None) -> list:
     """판정된 제품만 남겨 집계. 미판정·제품아님은 조용히 뺀다.
 
     묶음은 **판정된 브랜드명** 으로 다시 한다 — '맥단' 과 '맥단탈모샴푸' 는 한 줄(맥단비)이다.
@@ -236,9 +250,11 @@ def confirmed_rows(mentions: list, verdicts: dict) -> list:
         if not brand_verdicts.is_product(verdicts, key):
             continue
         name = brand_verdicts.display_name(verdicts, key, m["표시"])
+        name = (unified or {}).get(name, name)   # 흐트러뜨린 표기를 정식 브랜드명 하나로
         if not is_real_brand(name):        # 마지막 그물 — 종류 이름·장소가 판정을 뚫어도 여기서 막는다
             continue
-        kept.append({**m, "표시": name, "키": normalize_name(name)})
+        # 종류 이름까지 벗겨 묶는다 — '안티트로' 와 '안티트로샴푸' 는 한 브랜드다
+        kept.append({**m, "표시": name, "키": strip_generic_tail(name) or normalize_name(name)})
     rows = tally(kept, exclude_keys=OUR_PRODUCT_HINTS)
     for r in rows:                          # 몇 개 키워드에서 나왔나 (같은 브랜드끼리 합쳐서 센다)
         r["키워드수"] = len({m.get("키워드") for m in kept
@@ -366,9 +382,16 @@ def run_from_sheet(args) -> int:
     all_mentions = [m for ms in by_product.values() for m in ms]
     verdicts, jstat = judge_candidates(all_mentions, today=today)
 
+    # 같은 브랜드가 여러 표기로 흩어져 있으면 정식 이름 하나로 묶는다(호출 1회).
+    unified = comment_brand_llm.unify(brand_names(all_mentions, verdicts))
+    if unified:
+        merged = {a: r for a, r in unified.items() if a != r}
+        print(f"이름 묶기: {len(merged)}개를 정식 브랜드명으로 통일"
+              + (f" (예: {', '.join(list(merged)[:3])})" if merged else ""))
+
     out_rows: list[list] = []
     for product, mentions in by_product.items():
-        for r in confirmed_rows(mentions, verdicts):
+        for r in confirmed_rows(mentions, verdicts, unified):
             out_rows.append([product, r["제품"], r["횟수"], r["키워드수"], today,
                              r["댓글 예시"][:120]])
         print(f"[{product}] 경쟁 제품 {len([x for x in out_rows if x[0] == product])}종")
@@ -447,7 +470,8 @@ def main() -> int:
     from datetime import datetime, timedelta, timezone
     today = datetime.now(timezone(timedelta(hours=9))).strftime("%Y-%m-%d")
     verdicts, jstat = judge_candidates(all_mentions, today=today)
-    rows = confirmed_rows(all_mentions, verdicts)
+    rows = confirmed_rows(all_mentions, verdicts,
+                          comment_brand_llm.unify(brand_names(all_mentions, verdicts)))
     print(f"\n댓글 연 글 {fetcher.stat['열림']}개 · 못 연 글 {fetcher.stat['막힘']}개")
     print(f"후보 {jstat['후보'] + jstat.get('캐시적중', 0)}종 · 판정 못 받음 {jstat['미판정']}종"
           f"{' (판정 없이는 표에 넣지 않습니다)' if jstat['미판정'] else ''}")

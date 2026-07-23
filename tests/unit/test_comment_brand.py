@@ -75,6 +75,35 @@ def test_글자_숨긴_이름을_잡는다():
         assert "안티트로" in keys(t), f"못 잡음: {t[:20]}"
 
 
+def test_별표로_가린_이름도_잡는다():
+    assert "안티트" in keys("윗분 말씀하신 안티트* 샴푸 남편이랑 같이 사용중인데")
+
+
+def test_흐트러진_표기를_정식_브랜드명_한개로_묶는다():
+    # 사장님 요구(2026-07-23): "본질적으로 어떤 브랜드인지 파악해서 브랜드명 한개만 남겨서".
+    mentions = [
+        {"표시": "안티트", "키": "안티트", "종류": "제품", "댓글": "안티트* 샴푸 써요", "키워드": "두피여드름"},
+        {"표시": "안티ㅣ트로", "키": "안티트로", "종류": "샴푸", "댓글": "안티ㅣ트로 샴푸요", "키워드": "두피각질"},
+        {"표시": "안ㅌ티트로", "키": "안티트로", "종류": "제품", "댓글": "안ㅌ티트로 쓰는데", "키워드": "두피각질"},
+    ]
+    verdicts = {"안티트": {"제품": True, "이름": "안티트"},
+                "안티트로": {"제품": True, "이름": "안티트로샴푸"}}
+    unified = {"안티트": "안티트로", "안티트로샴푸": "안티트로"}
+    rows = confirmed_rows(mentions, verdicts, unified)
+    assert len(rows) == 1
+    assert rows[0]["제품"] == "안티트로" and rows[0]["횟수"] == 3 and rows[0]["키워드수"] == 2
+
+
+def test_이름묶기_결과에_없는_이름은_무시(monkeypatch):
+    monkeypatch.setenv("GROQ_API_KEY", "test-key")
+    reply = {"choices": [{"message": {"content": json.dumps(
+        {"묶음": [{"대표": "안티트로", "별칭": ["안티트", "듣도보도못한것"]}]}, ensure_ascii=False)}}]}
+    monkeypatch.setattr(comment_brand_llm, "_post", lambda *a, **k: reply)
+    got = comment_brand_llm.unify(["안티트", "안티트로", "맥단비"])
+    assert got["안티트"] == "안티트로"
+    assert "듣도보도못한것" not in got      # 지어낸 이름은 버린다
+
+
 def test_기호로_흐트러뜨린_것도_모인다():
     # '뽀.ㅇ얀' 이 '뽀얀' 으로 모여야 우리 제품 빼기가 샌 곳 없이 걸린다.
     assert "뽀얀" in keys("저는 뽀.ㅇ얀샴푸 써요")

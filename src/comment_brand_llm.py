@@ -78,6 +78,66 @@ def _key(text) -> str:
     return "".join(ch for ch in str(text or "") if ch.isalnum()).lower()
 
 
+_UNIFY_SYSTEM = (
+    "너는 제품 브랜드명 목록을 받아 **같은 브랜드끼리 묶는다**.\n"
+    "카페 댓글에서 뽑은 이름이라, 검열을 피하려 글자를 흐트러뜨린 표기가 섞여 있다.\n"
+    "'안티트' '안티트로' '안티트로샴푸' 는 모두 같은 브랜드 **안티트로** 다.\n"
+    "'맥단' '맥단비' '맥단비탈모샴푸' 는 모두 **맥단비** 다.\n"
+    "규칙:\n"
+    "1. 같은 브랜드를 가리키는 이름끼리 한 묶음으로 만든다.\n"
+    "2. 대표는 **사람이 검색해서 살 수 있는 정식 브랜드명 하나**로 적는다(제품 종류는 뺀다).\n"
+    "3. 다른 브랜드를 억지로 묶지 마라. 애매하면 각자 두는 게 낫다.\n"
+    "4. 받은 이름은 하나도 빠뜨리지 않는다. 혼자인 것도 자기 자신이 대표다.\n"
+    '출력은 JSON 만: {"묶음": [{"대표":"안티트로","별칭":["안티트","안티트로샴푸"]}]}\n'
+    "다른 말은 절대 하지 않는다."
+)
+
+
+def unify(names: list, *, timeout: int = 30, sleep=time.sleep) -> dict:
+    """브랜드명 목록 → {이름: 대표이름}. 실패하면 빈 dict(그대로 둔다).
+
+    같은 브랜드가 표에 여러 줄로 남지 않게 하는 마지막 관문이다.
+    이름만 보내므로 한 번 호출로 끝난다(싸다).
+    """
+    names = [str(n).strip() for n in (names or []) if str(n).strip()]
+    if not _api_key() or len(names) < 2:
+        return {}
+    payload = {
+        "model": _MODEL,
+        "messages": [
+            {"role": "system", "content": _UNIFY_SYSTEM},
+            {"role": "user", "content": "같은 브랜드끼리 묶어줘.\n" + "\n".join(names[:200])},
+        ],
+        "temperature": 0,
+        "max_tokens": 3000,
+    }
+    data = _post(payload, timeout=timeout, sleep=sleep)
+    if not data:
+        return {}
+    try:
+        content = data["choices"][0]["message"]["content"]
+    except (KeyError, IndexError, TypeError):
+        return {}
+    obj = _extract_json(content)
+    groups = obj.get("묶음") if isinstance(obj, dict) else None
+    if not isinstance(groups, list):
+        return {}
+
+    known = {_key(n): n for n in names}
+    out: dict = {}
+    for g in groups:
+        if not isinstance(g, dict):
+            continue
+        rep = str(g.get("대표") or "").strip()
+        if not rep:
+            continue
+        for alias in [rep] + list(g.get("별칭") or []):
+            real = known.get(_key(alias))
+            if real:                        # 보내지 않은 이름을 지어내면 무시한다
+                out[real] = rep
+    return out
+
+
 def _api_key() -> str:
     return os.environ.get("GROQ_API_KEY", "").strip()
 
