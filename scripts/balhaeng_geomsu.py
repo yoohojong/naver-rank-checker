@@ -35,12 +35,20 @@ IMPERSONATE = "chrome131"
 CAFE_LINK = re.compile(r"cafe\.naver\.com/(?:f-e/cafes/(\d+)/articles/(\d+)|([^/?#]+)/(\d+))")
 제외탭 = ("백업", "삭제전", "복사본", "이력", "스테이징", "발행 검수")
 탭이름 = "발행 검수"
+# ★사장님 지적(2026-07-23): "처음걸린날 마지막검사 이것도 두개나 써줘야하나?
+#   상태는 굳이 필요한가?" → 셋 다 뺐다.
+#   · 상태 = 판정과 같은 말. 두 번 쓸 이유가 없다.
+#   · 처음 걸린 날 = 아무도 안 본다. 필요해지면 그때 넣는다.
+#   · 마지막 검사 → '검사일' 하나로. 이 값이 오래됐으면 검사가 멈춘 것이다.
 헤더 = ["키워드", "작업자", "작업일", "카페/게시판", "작업아이디", "글 링크",
-        "판정", "무엇이 걸렸나", "측정", "처음 걸린 날", "마지막 검사", "상태"]
-옛헤더 = ["키워드", "글 링크", "판정", "무엇이 걸렸나", "측정",
-          "처음 걸린 날", "마지막 검사", "상태"]
+        "판정", "무엇이 걸렸나", "측정", "검사일"]
+옛헤더들 = [
+    ["키워드", "글 링크", "판정", "무엇이 걸렸나", "측정",
+     "처음 걸린 날", "마지막 검사", "상태"],
+    ["키워드", "작업자", "작업일", "카페/게시판", "작업아이디", "글 링크",
+     "판정", "무엇이 걸렸나", "측정", "처음 걸린 날", "마지막 검사", "상태"],
+]
 링크열 = 헤더.index("글 링크")          # 행을 알아보는 열쇠
-처음열 = 헤더.index("처음 걸린 날")
 측정열 = 헤더.index("측정")
 
 
@@ -202,32 +210,29 @@ def 탭준비(sc: SheetsClient):
     # 이미 있는 탭이면 헤더가 옛 형태(8칸)인지 보고, 그렇다면 새 형태(12칸)로 옮긴다.
     # ★그냥 헤더만 바꾸면 기존 행의 값이 엉뚱한 열로 밀린다 → 값도 같이 옮겨야 한다.
     기존 = ws.get_all_values()
-    if 기존 and [x.strip() for x in 기존[0]] == 옛헤더:
-        print("  옛 헤더(8칸) 발견 — 새 헤더(12칸)로 옮깁니다")
+    지금헤더 = [x.strip() for x in 기존[0]] if 기존 else []
+    if 지금헤더 and 지금헤더 != 헤더 and any(지금헤더 == o for o in 옛헤더들):
+        print(f"  옛 헤더({len(지금헤더)}칸) 발견 — 새 헤더({len(헤더)}칸)로 옮깁니다")
+        폭 = max(len(지금헤더), len(헤더))     # 줄어든 칸은 빈 값으로 덮어쓴다(지우지 않음)
         옮긴행 = []
         for row in 기존[1:]:
-            r = list(row) + [""] * (len(옛헤더) - len(row))
-            새 = [""] * len(헤더)
-            새[헤더.index("키워드")] = r[0]
-            새[헤더.index("글 링크")] = r[1]
-            새[헤더.index("판정")] = r[2]
-            새[헤더.index("무엇이 걸렸나")] = r[3]
-            새[헤더.index("측정")] = r[4]
-            새[헤더.index("처음 걸린 날")] = r[5]
-            새[헤더.index("마지막 검사")] = r[6]
-            새[헤더.index("상태")] = r[7]
-            옮긴행.append(새)          # 작업자·작업일·카페 칸은 다음 검사 때 채워진다
-        ws.resize(rows=max(len(옮긴행) + 50, 500), cols=len(헤더))
-        _헤더쓰기(ws)
+            옛값 = dict(zip(지금헤더, list(row) + [""] * len(지금헤더)))
+            # 이름으로 옮긴다 — 열 순서가 바뀌어도 값이 엉뚱한 칸으로 가지 않는다.
+            새 = [옛값.get("마지막 검사", "") if 이름 == "검사일" else 옛값.get(이름, "")
+                  for 이름 in 헤더]
+            옮긴행.append(새 + [""] * (폭 - len(헤더)))
+        _헤더쓰기(ws, 폭)
         if 옮긴행:
-            ws.update(f"A2:{_끝열(len(헤더))}{len(옮긴행) + 1}", 옮긴행,
+            ws.update(values=옮긴행,
+                      range_name=f"A2:{_끝열(폭)}{len(옮긴행) + 1}",
                       value_input_option="USER_ENTERED")
         print(f"  {len(옮긴행)}행 옮김(값 보존)")
     return ws
 
 
-def _헤더쓰기(ws):
-    ws.update(values=[헤더], range_name="A1")
+def _헤더쓰기(ws, 폭=None):
+    폭 = 폭 or len(헤더)
+    ws.update(values=[헤더 + [""] * (폭 - len(헤더))], range_name="A1")
     ws.format(f"A1:{_끝열(len(헤더))}1",
               {"textFormat": {"bold": True},
                "backgroundColor": {"red": .93, "green": .95, "blue": .97}})
@@ -255,9 +260,7 @@ def 시트반영(ws, 결과들: list[tuple[dict, dict]], 실패들: list[dict]):
         칸[헤더.index("판정")] = 판정
         칸[헤더.index("무엇이 걸렸나")] = 걸린것
         칸[헤더.index("측정")] = 측정
-        칸[헤더.index("마지막 검사")] = 오늘
-        칸[헤더.index("상태")] = "해결" if 판정 == "합격" else (
-            "확인 필요" if 판정 == "수집실패" else "고쳐야 함")
+        칸[헤더.index("검사일")] = 오늘
         return 칸
 
     바꿀것, 새행 = [], []
@@ -269,12 +272,8 @@ def 시트반영(ws, 결과들: list[tuple[dict, dict]], 실패들: list[dict]):
         row = 행만들기(post, res["판정"], " / ".join(지적[:6]), 측정)
         r = 자리.get(post["url"])
         if r:
-            옛 = 기존[r - 1]
-            처음 = 옛[처음열] if len(옛) > 처음열 else ""
-            row[처음열] = 처음 or (오늘 if res["판정"] != "합격" else "")
             바꿀것.append({"range": f"A{r}:{끝}{r}", "values": [row]})
         else:
-            row[처음열] = 오늘 if res["판정"] != "합격" else ""
             새행.append(row)
 
     for post in 실패들:
@@ -284,12 +283,9 @@ def 시트반영(ws, 결과들: list[tuple[dict, dict]], 실패들: list[dict]):
             옛 = 기존[r - 1]
             row = 행만들기(post, "수집실패", post.get("_실패", ""),
                           옛[측정열] if len(옛) > 측정열 else "")
-            row[처음열] = (옛[처음열] if len(옛) > 처음열 else "") or 오늘
             바꿀것.append({"range": f"A{r}:{끝}{r}", "values": [row]})
         else:
-            row = 행만들기(post, "수집실패", post.get("_실패", ""), "")
-            row[처음열] = 오늘
-            새행.append(row)
+            새행.append(행만들기(post, "수집실패", post.get("_실패", ""), ""))
 
     보기 = (바꿀것[0]["values"][0] if 바꿀것 else (새행[0] if 새행 else None))
     if 보기:
