@@ -52,3 +52,7 @@ docs/사장님-가이드/screenshots/
 # cron 사이클 요약(시트ID·집계 k_distribution 포함). CI 러너 임시파일이나 로컬 실행 시
 # 워킹트리에 생겨 실수 커밋 위험 → 추적 제외 (security-reviewer 2026-07-02).
 cycle_summary.json
+
+# 발행 검수가 이유를 담아 스스로 알렸다는 표시(워크플로 중복 알림 방지)
+.geomsu_alerted
+geomsu.log

@@ -19,6 +19,10 @@ on:
         description: "시트에 쓸까요 (1=쓴다 / 0=결과만 보고 안 씀)"
         required: false
         default: '1'
+      notify:
+        description: "텔레그램으로 보고할까요 (1=보낸다 / 0=안 보냄)"
+        required: false
+        default: '1'
 
 concurrency:
   group: balhaeng-geomsu
@@ -50,19 +54,26 @@ jobs:
           ./.venv/bin/python -m pip install --upgrade pip
           ./.venv/bin/python -m pip install -r requirements.txt
 
+      # 검수 결과 보고(매일)와 고장 경보를 이 스텝 안에서 스스로 보낸다.
+      # 아래 'Notify on failure' 는 파이썬이 아예 못 뜬 경우만 받는 마지막 그물이다.
       - name: Run 발행 검수
         id: audit
         shell: bash
         env:
           SPREADSHEET_ID: ${{ secrets.SPREADSHEET_ID }}
           SERVICE_ACCOUNT_JSON: ${{ secrets.SERVICE_ACCOUNT_JSON }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           GEOMSU_LIMIT: ${{ github.event.inputs.limit || '150' }}
           GEOMSU_WRITE: ${{ github.event.inputs.write || '1' }}
+          GEOMSU_NOTIFY: ${{ github.event.inputs.notify || '1' }}
           PYTHONIOENCODING: 'utf-8'
         run: |
-          ./.venv/bin/python -u -m scripts.balhaeng_geomsu
+          set -o pipefail
+          ./.venv/bin/python -u -m scripts.balhaeng_geomsu 2>&1 | tee geomsu.log
 
-      # 조용히 죽지 않게 — 실패하면 사장님 텔레그램으로 알린다(secret 없으면 건너뜀).
+      # 파이썬이 못 뜬 경우(설치 실패·타임아웃·강제중단)만 여기서 알린다.
+      # ★"로그를 확인해 주세요" 만 보내지 않는다 — 마지막 오류 줄을 같이 보낸다.
       - name: Notify on failure
         if: failure()
         continue-on-error: true
@@ -70,9 +81,23 @@ jobs:
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           PYTHONIOENCODING: 'utf-8'
         run: |
+          if [ -f .geomsu_alerted ]; then
+            echo "이미 이유를 담아 알렸다 — 두 번 보내지 않는다"
+            exit 0
+          fi
           ./.venv/bin/python - <<'PY' || true
+          import os
           from src.notify import send_report
-          send_report("[발행 검수] 오늘 검수가 실패했습니다 — Actions 로그를 확인해 주세요.")
+          꼬리 = ""
+          try:
+              with open("geomsu.log", encoding="utf-8", errors="replace") as f:
+                  줄 = [x.rstrip() for x in f if x.strip()]
+              꼬리 = "\n".join(줄[-8:])
+          except Exception:
+              꼬리 = "(로그 파일이 남지 않았습니다 — 파이썬이 뜨기 전에 멈춘 것)"
+          send_report("🚨 발행 검수가 중간에 멈췄습니다\n"
+                      f"마지막 기록:\n{꼬리}\n\n{os.environ.get('RUN_URL','')}")
           PY

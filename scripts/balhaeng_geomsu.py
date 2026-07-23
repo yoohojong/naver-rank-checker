@@ -21,6 +21,7 @@ import random
 import re
 import sys
 import time
+from collections import Counter
 from datetime import datetime, timedelta, timezone
 
 from curl_cffi import requests
@@ -97,10 +98,25 @@ def 단계뽑기(분류: str) -> int | None:
     return int(m.group(1)) if m else None
 
 
-def 대상읽기(sc: SheetsClient, limit: int) -> list[dict]:
+def _숨김탭(ws) -> bool:
+    """구글시트에서 숨겨 둔 탭. 사장님 규칙 — 카외 보고·집계에서 숨김 탭은 뺀다.
+
+    ★2026-07-23: '두드러기 카외'(숨김)를 검수 대상에 넣는 바람에 매번 57건이
+      '단계 없어 건너뜀'으로 잡혔다. 그 탭엔 '키워드 분류' 열 자체가 없다 —
+      고칠 수 있는 문제가 아니라 애초에 안 봐야 할 탭이었다.
+    """
+    try:
+        return bool(ws._properties.get("hidden"))
+    except Exception:
+        return False
+
+
+def 대상읽기(sc: SheetsClient, limit: int) -> tuple[list[dict], list]:
     본, 키, 건너뜀 = [], set(), []
     탭들 = [ws for ws in sc.spreadsheet.worksheets()
-            if "카외" in ws.title and not any(x in ws.title for x in 제외탭)]
+            if "카외" in ws.title and not any(x in ws.title for x in 제외탭)
+            and not _숨김탭(ws)]
+    print(f"  검수 탭 {len(탭들)}개: {', '.join(ws.title for ws in 탭들)}")
     # 탭 크기에 비례해 몫을 준다(균등이면 큰 탭이 며칠씩 밀린다 — 실측 27행 미갱신).
     크기 = [max(1, ws.row_count) for ws in 탭들]
     총 = sum(크기) or 1
@@ -141,7 +157,8 @@ def 대상읽기(sc: SheetsClient, limit: int) -> list[dict]:
     if 건너뜀:
         print(f"  단계(키워드 분류) 없어 건너뜀 {len(건너뜀)}건 "
               f"— 예: {', '.join(k for _, k in 건너뜀[:3])}")
-    return 본[:limit]
+    # 건너뛴 글은 조용히 사라지면 안 된다 — 검사 못 한 몫으로 보고에 싣는다.
+    return 본[:limit], 건너뜀
 
 
 def 한건수집(t: dict) -> dict:
@@ -299,14 +316,12 @@ def 시트반영(ws, 결과들: list[tuple[dict, dict]], 실패들: list[dict]):
     print(f"  시트 반영 — 갱신 {len(바꿀것)}행 · 추가 {len(새행)}행")
 
 
-def main() -> int:
-    limit = int((os.environ.get("GEOMSU_LIMIT") or "60").strip() or "60")
-    쓰기 = (os.environ.get("GEOMSU_WRITE") or "1").strip() != "0"
-    print(f"=== 발행 검수 {datetime.now(KST):%Y-%m-%d %H:%M} (최대 {limit}건) ===", flush=True)
-
-    sc = SheetsClient(os.environ["SPREADSHEET_ID"], os.environ["SERVICE_ACCOUNT_JSON"])
-    대상 = 대상읽기(sc, limit)
+def 검수하기(sc: SheetsClient, limit: int, 쓰기: bool) -> dict:
+    """검수를 끝까지 돌리고 결과를 돌려준다. 여기서 나는 예외는 '고장'이다."""
+    대상, 건너뜀 = 대상읽기(sc, limit)
     print(f"  검수 대상 {len(대상)}건", flush=True)
+    if not 대상:
+        raise RuntimeError("검수할 글이 한 건도 안 잡혔다 — 시트 링크 열이나 탭 이름이 바뀌었을 수 있다")
 
     결과들, 실패들 = [], []
     for i, t in enumerate(대상, 1):
@@ -320,7 +335,6 @@ def main() -> int:
             continue
         결과들.append((post, 검수기.검수(post)))
 
-    from collections import Counter
     n = Counter(r["판정"] for _, r in 결과들)
     print(f"\n=== 결과 — 합격 {n['합격']} · 보류 {n['보류']} · 불합격 {n['불합격']} "
           f"· 수집실패 {len(실패들)}")
@@ -330,20 +344,120 @@ def main() -> int:
     else:
         print("  (GEOMSU_WRITE=0 — 시트에 쓰지 않음)")
 
-    # ★조용히 성공으로 끝나면 아무도 안 본다. 결과가 이상하면 실패로 끝내 알림을 띄운다.
-    전체 = len(결과들) + len(실패들)
-    if 전체 and len(실패들) / 전체 > 0.5:
-        print("  ⚠️ 절반 넘게 수집 실패 — 링크가 낡았거나 차단일 수 있음")
-        return 1
-    # ★불합격이 있는 것 자체는 정상이다(고칠 글이 있다는 뜻). 매번 경보가 울리면 아무도 안 본다.
-    #   기준이 현실과 어긋났다는 신호는 '전건이 **같은 한 가지 이유로** 불합격'일 때다.
-    if 결과들 and n["합격"] == 0 and n["보류"] == 0 and len(결과들) >= 5:
+    return {"결과들": 결과들, "실패들": 실패들, "건너뜀": 건너뜀, "수": n}
+
+
+def 보고문(요약: dict, 시트url: str) -> str:
+    """사장님이 이것만 읽고 다음 행동을 정할 수 있게 쓴다. 로그를 열게 만들지 않는다."""
+    결과들, 실패들, 건너뜀, n = (요약["결과들"], 요약["실패들"],
+                                 요약["건너뜀"], 요약["수"])
+    이제 = datetime.now(KST)
+    오늘 = f"{이제.month}/{이제.day}"
+    줄 = [f"📋 발행 검수 {오늘}",
+          f"검사 {len(결과들)}건 — 합격 {n['합격']} · 보류 {n['보류']} · "
+          f"고쳐야 함 {n['불합격']}"]
+    if 실패들:
+        줄.append(f"글을 못 읽은 것 {len(실패들)}건")
+
+    고칠것 = [(p, r) for p, r in 결과들 if r["판정"] != "합격"]
+    if 고칠것:
+        줄.append("")
+        줄.append("고쳐야 할 글")
+        for p, r in 고칠것[:12]:
+            지적 = [d["내용"] for d in r["지적"] if d["등급"] == "치명"] or \
+                   [d["내용"] for d in r["지적"] if d["등급"] == "주의"]
+            작업자 = f"({p.get('작업자')}) " if p.get("작업자") else ""
+            줄.append(f"· {p.get('keyword') or '?'} {작업자}— {' / '.join(지적[:2])}")
+        if len(고칠것) > 12:
+            줄.append(f"· … 외 {len(고칠것) - 12}건")
+    else:
+        줄.append("")
+        줄.append("고칠 글 없음 — 전부 통과")
+
+    if 건너뜀:
+        줄.append("")
+        줄.append(f"검사 못 한 글 {len(건너뜀)}건 — 시트 '키워드 분류' 칸이 비어 있어 "
+                  f"상위노출 기준(글자수·키워드 횟수)을 잴 수 없습니다")
+    # 전건이 같은 이유로 걸리면 기준 쪽을 의심해야 한다. 경보가 아니라 보고 안 한 줄로 알린다.
+    if 결과들 and n["합격"] == 0 and len(결과들) >= 5:
         사유 = {d["내용"].split("(")[0].split(":")[0].strip()
                 for _, r in 결과들 for d in r["지적"] if d["등급"] == "치명"}
         if len(사유) <= 1:
-            print(f"  ⚠️ 전건이 같은 이유로 불합격({사유 or '?'}) — 검수 기준이 어긋났을 수 있음")
-            return 1
+            줄.append(f"⚠️ 검사한 글 전부가 같은 이유로 걸렸습니다({', '.join(사유) or '?'}) "
+                      f"— 글이 아니라 검수 기준이 어긋난 것일 수 있습니다")
+    if 시트url:
+        줄.append("")
+        줄.append(f"시트: {시트url}")
+    return "\n".join(줄)
+
+
+def 알림보내기(본문: str) -> None:
+    """토큰이 없거나 발송이 막혀도 검수 자체는 성공으로 끝난다(알림이 본업이 아니다)."""
+    try:
+        from src.notify import send_report
+        send_report(본문)
+    except Exception as e:
+        print(f"  [알림] 발송 실패({type(e).__name__}) — 결과는 시트에 남아 있습니다")
+
+
+def main() -> int:
+    limit = int((os.environ.get("GEOMSU_LIMIT") or "60").strip() or "60")
+    쓰기 = (os.environ.get("GEOMSU_WRITE") or "1").strip() != "0"
+    알림 = (os.environ.get("GEOMSU_NOTIFY") or "1").strip() != "0"
+    print(f"=== 발행 검수 {datetime.now(KST):%Y-%m-%d %H:%M} (최대 {limit}건) ===", flush=True)
+
+    # ★보고와 경보를 나눈다(2026-07-23 영구 수정).
+    #   전에는 '조용히 끝나면 아무도 안 본다'는 이유로 결과가 마음에 안 들면 일부러
+    #   실패로 끝내 텔레그램을 울렸다. 그래서 ①고칠 글이 있는 정상 상태와 ②진짜 고장이
+    #   같은 문구("검수가 실패했습니다 — 로그를 확인해 주세요")로 나갔고, 사장님은
+    #   무슨 일인지 알 수 없었다. 매일 울리면 아무도 안 본다는 문제도 그대로였다.
+    #   → 결과는 **매일 보고**로 보낸다. 실패로 끝내는 건 **진짜 고장일 때만**이다.
+    try:
+        sc = SheetsClient(os.environ["SPREADSHEET_ID"], os.environ["SERVICE_ACCOUNT_JSON"])
+        요약 = 검수하기(sc, limit, 쓰기)
+    except Exception as e:
+        이유 = f"{type(e).__name__}: {e}".strip()[:400]
+        print(f"  ✗ 고장 — {이유}")
+        if 알림:
+            알림보내기(f"🚨 발행 검수가 돌지 못했습니다 "
+                       f"({datetime.now(KST):%m/%d})\n이유: {이유}\n{_런링크()}")
+        _알림표시남기기()
+        return 1
+
+    # 전멸은 자연스러운 결과가 아니다 — 링크가 낡았거나 네이버가 막고 있다.
+    전체 = len(요약["결과들"]) + len(요약["실패들"])
+    전멸 = bool(전체) and len(요약["실패들"]) / 전체 > 0.5
+    시트url = getattr(sc.spreadsheet, "url", "") or ""
+
+    if 알림:
+        본문 = 보고문(요약, 시트url)
+        if 전멸:
+            본문 = (f"🚨 글을 못 읽은 것이 절반을 넘습니다 — 링크가 낡았거나 "
+                    f"네이버가 막고 있을 수 있습니다\n\n{본문}")
+        알림보내기(본문)
+        print("  텔레그램 보고 보냄")
+
+    if 전멸:
+        _알림표시남기기()
+        return 1
     return 0
+
+
+def _런링크() -> str:
+    """Actions 실행 주소. 사장님이 눌러서 바로 볼 수 있게."""
+    서버 = os.environ.get("GITHUB_SERVER_URL", "")
+    repo = os.environ.get("GITHUB_REPOSITORY", "")
+    run = os.environ.get("GITHUB_RUN_ID", "")
+    return f"{서버}/{repo}/actions/runs/{run}" if all((서버, repo, run)) else ""
+
+
+def _알림표시남기기() -> None:
+    """이미 이유를 담아 알렸다는 표시. 워크플로가 두 번째 알림을 안 보내게."""
+    try:
+        with open(os.path.join(os.path.dirname(HERE), ".geomsu_alerted"), "w") as f:
+            f.write("1")
+    except Exception:
+        pass
 
 
 if __name__ == "__main__":
