@@ -1019,13 +1019,35 @@ def _collect_source_names(box) -> dict:
         )
         if not is_home:
             continue
-        text = a.get_text(strip=True)
+        text = _clean_source_name(a.get_text(strip=True))
         if not text:
             continue
         key = _owner_key(href)
         if key and key not in names:
-            names[key] = text[:80]
+            names[key] = text
     return names
+
+
+# 링크 글자에 같이 붙어 나오는 안내 문구·군더더기 (사람이 읽는 이름이 아니다).
+_NAME_NOISE = ("새 창 열림", "새창열림", "새 창열림", "바로가기")
+# "…카페85.3만 인용헤어 디자이너들의…" 처럼 이름 뒤에 회원수·설명이 통째로 붙는다.
+_NAME_TAIL_RE = re.compile(r"카페\s*\d[\d.,]*\s*[만천]?\s*인용.*$|\d[\d.,]*\s*[만천]\s*인용.*$")
+
+
+def _clean_source_name(text: str) -> str:
+    """링크 글자 → 사람이 읽는 이름만 남긴다.
+
+    실측(2026-07-23): 그대로 쓰면 이름 칸이 전부 "새 창 열림" 으로 채워졌다.
+    같은 대문 링크가 여러 번 나오는데 그중 하나는 글자가 "새 창 열림" 뿐이고,
+    다른 하나는 "인천맘톡 (인천맘 소중한인연)새 창 열림" 처럼 이름 뒤에 문구가 붙는다.
+    """
+    if not text:
+        return ""
+    for noise in _NAME_NOISE:
+        text = text.replace(noise, " ")
+    text = _NAME_TAIL_RE.sub("", text)
+    text = re.sub(r"\s+", " ", text).strip(" ·-–—|")
+    return text[:80]
 
 
 def _title_for_url(box, url: str) -> str:

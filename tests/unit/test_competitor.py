@@ -857,3 +857,31 @@ def test_run_competitor_update_no_tab_written_when_history_fails():
     result = run_competitor_update(FakeClient(BrokenSpreadsheet()), collector, "2026-07-23")
     assert "error" in result["history"]
     assert result["actors"] == 0
+
+
+def test_source_name_strips_accessibility_noise_and_tail():
+    """실측(2026-07-23): 이름 칸이 전부 '새 창 열림' 으로 채워졌다.
+
+    같은 대문 링크가 여러 번 나오는데 하나는 글자가 안내 문구뿐이고,
+    다른 하나는 '이름 + 안내 문구' 또는 '이름 + 회원수 + 설명' 형태다.
+    """
+    from src.parser import _clean_source_name as clean
+
+    assert clean("새 창 열림") == ""
+    assert clean("인천맘톡 (인천맘 소중한인연)새 창 열림") == "인천맘톡 (인천맘 소중한인연)"
+    assert clean("헤어쟁이들의 좋은만남카페85.3만 인용헤어 디자이너들의 기술적 난제") == "헤어쟁이들의 좋은만남"
+    assert clean("부산맘 카페 - 부산 맘카페") == "부산맘 카페 - 부산 맘카페"
+
+
+def test_source_name_skips_noise_only_anchor_and_takes_real_one():
+    """안내 문구만 있는 링크는 건너뛰고 이름이 있는 링크를 쓴다."""
+    box = """
+    <div class="desktop_mode api_subject_bx">
+      <h2>비듬샴푸 인기글</h2>
+      <a href="https://cafe.naver.com/baby8">새 창 열림</a>
+      <a href="https://cafe.naver.com/baby8">인천맘톡 (인천맘 소중한인연)새 창 열림</a>
+      <a href="https://cafe.naver.com/baby8/2697248">인기글 제목</a>
+    </div>
+    """
+    items = collect_slot_items(_html(box))
+    assert items and items[0].source_name == "인천맘톡 (인천맘 소중한인연)"
