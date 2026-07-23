@@ -1,0 +1,78 @@
+name: 발행검수
+# 발행 검수 — 매일 1회. 시트 링크 → 카페 글 수집 → 채점 → '발행 검수' 탭 기록.
+# 사장님 승인(2026-07-23): "전체로 자동으로 시트에 반영까지 해서 ㄱㄱ 매일 1번씩"
+#
+# 시간: KST 04:00 (= UTC 19:00 전날). 전날 발행분의 댓글이 다 달린 뒤에 재기 위함.
+# 쓰기 범위: **'발행 검수' 탭에만** 쓴다. 기존 탭은 건드리지 않는다.
+# 차단 회피: 레포 표준(curl_cffi chrome131 + 3.5~5초 간격).
+
+on:
+  schedule:
+    - cron: '0 19 * * *'      # KST 04:00
+  workflow_dispatch:
+    inputs:
+      limit:
+        description: '검수할 글 수'
+        required: false
+        default: '60'
+      write:
+        description: "시트에 쓸까요 (1=쓴다 / 0=결과만 보고 안 씀)"
+        required: false
+        default: '1'
+
+concurrency:
+  group: balhaeng-geomsu
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6.0.2
+        with:
+          token: ${{ github.token }}
+
+      - name: Setup Python 3.13
+        uses: actions/setup-python@v6.2.0
+        with:
+          python-version: '3.13'
+
+      - name: Setup venv + install deps
+        shell: bash
+        run: |
+          python -m venv .venv
+          ./.venv/bin/python -m pip install --upgrade pip
+          ./.venv/bin/python -m pip install -r requirements.txt
+
+      - name: Run 발행 검수
+        id: audit
+        shell: bash
+        env:
+          SPREADSHEET_ID: ${{ secrets.SPREADSHEET_ID }}
+          SERVICE_ACCOUNT_JSON: ${{ secrets.SERVICE_ACCOUNT_JSON }}
+          GEOMSU_LIMIT: ${{ github.event.inputs.limit || '60' }}
+          GEOMSU_WRITE: ${{ github.event.inputs.write || '1' }}
+          PYTHONIOENCODING: 'utf-8'
+        run: |
+          ./.venv/bin/python -u -m scripts.balhaeng_geomsu
+
+      # 조용히 죽지 않게 — 실패하면 사장님 텔레그램으로 알린다(secret 없으면 건너뜀).
+      - name: Notify on failure
+        if: failure()
+        continue-on-error: true
+        shell: bash
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          PYTHONIOENCODING: 'utf-8'
+        run: |
+          ./.venv/bin/python - <<'PY' || true
+          from src.notify import send_report
+          send_report("[발행 검수] 오늘 검수가 실패했습니다 — Actions 로그를 확인해 주세요.")
+          PY
