@@ -32,6 +32,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from src.comment_brand import extract_products, is_asking, normalize_name, tally  # noqa: E402
 from src import comment_brand_llm  # noqa: E402
 from src.crawler import Crawler  # noqa: E402
+from src.parser import cafe_slug_of, is_known_url  # noqa: E402
 from src.parser import collect_slot_items  # noqa: E402
 
 UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
@@ -109,6 +110,14 @@ class CommentFetcher:
         return items if isinstance(items, list) else []
 
 
+def is_our_item(url: str, our_links: set, our_slugs: set) -> bool:
+    """우리 글인지 — 시트 link 매치 또는 우리 카페 slug 매치. (사장님: "우리 글 말고 다른 글")"""
+    if is_known_url(url, our_links):
+        return True
+    slug = cafe_slug_of(url)
+    return bool(slug and slug in (our_slugs or set()))
+
+
 def tikitaka_texts(comments: list, *, window: int = 2) -> list:
     """묻는 댓글 바로 다음 window 개 — 사장님이 말한 '두 번째 댓글 티키타카' 자리."""
     out, left = [], 0
@@ -143,8 +152,6 @@ def mentions_from_comments(comments: list) -> list:
 def scan_keyword(crawler: CommentFetcher, kw: str, *, our_links: set, our_slugs: set,
                  fetcher: CommentFetcher, top_posts: int) -> list[dict]:
     """키워드 1건 → 그 키워드에서 나온 제품 언급 목록."""
-    from src.competitor import is_our_item
-
     html = crawler.fetch_search(kw)
     items = [i for i in collect_slot_items(html) if i.kind == "cafe"]
     mentions: list[dict] = []
@@ -227,8 +234,12 @@ def run_from_sheet(args) -> int:
         print(f"  {row[0]:<8}{row[1][:22]:<24}{row[2]:>3}회  키워드 {row[3]}개")
 
     if args.write_sheet and out_rows:
-        from src.competitor import _get_or_create_ws
-        ws, _ = _get_or_create_ws(client, "경쟁사", SHEET_HEADER)
+        import gspread
+        try:
+            ws = client.spreadsheet.worksheet("경쟁사")
+        except gspread.exceptions.WorksheetNotFound:
+            ws = client.spreadsheet.add_worksheet(title="경쟁사", rows=200,
+                                                  cols=max(len(SHEET_HEADER), 8))
         payload = [SHEET_HEADER] + out_rows
         # 격자를 내용에 맞춘 뒤 쓰고, 여유 줄은 빈 값으로 덮어 지난 줄이 안 남게 한다.
         ws.resize(rows=len(payload) + 10, cols=max(len(SHEET_HEADER), 8))

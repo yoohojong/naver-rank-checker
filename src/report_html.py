@@ -74,6 +74,10 @@ td.kw{max-width:150px;overflow:hidden;text-overflow:ellipsis;}
 .diag p{margin:0 0 7px;}
 .diag .hyp{color:var(--warn);}
 .empty{color:var(--mut);font-size:13px;padding:6px 0;}
+.warncard{border:1px solid var(--warn);border-left:4px solid var(--warn);}
+.warncard h2{color:var(--warn);}
+.warncard ul{margin:2px 0 0;padding-left:20px;}
+.warncard li{font-size:13px;line-height:1.55;margin:5px 0;color:var(--ink);}
 .foot{text-align:center;font-size:11px;color:var(--mut);margin-top:6px;}
 """
 
@@ -114,6 +118,19 @@ def _card(title: str, inner: str, hint: str = "") -> str:
     return f"<div class=\"card\">{h}{inner}</div>"
 
 
+def _warn_card(ctx: dict) -> str:
+    """자동 검증 경고(metric_guards) 카드. 경고 없으면 빈 문자열(미표시)."""
+    warnings = ctx.get("warnings") or []
+    if not warnings:
+        return ""
+    items = "".join(f"<li>{_esc(w)}</li>" for w in warnings)
+    return (
+        "<div class=\"card warncard\">"
+        "<h2>⚠️ 자동 검증 경고<span class=\"hint\">숫자 신뢰성 점검</span></h2>"
+        f"<ul>{items}</ul></div>"
+    )
+
+
 def _kpi(label: str, value, sub: str = "", cls: str = "") -> str:
     s = f"<div class=\"s {cls}\">{_esc(sub)}</div>" if sub else ""
     return f"<div class=\"kpi\"><div class=\"l\">{_esc(label)}</div><div class=\"v\">{_esc(value)}</div>{s}</div>"
@@ -150,6 +167,7 @@ def daily_html(ctx: dict) -> str:
     date_label = ctx["date_label"]
     body = [_head("카페외부 · 일간 대시보드", f"{date_label} 상위노출 리포트",
                   ctx["date_full"], ctx["status_line"])]
+    body.append(_warn_card(ctx))  # 경고 있으면 맨 위 카드(없으면 빈 문자열)
 
     # KPI
     dstr, dcls = _delta_str(ctx.get("exposed_delta"))
@@ -254,6 +272,7 @@ def weekly_html(ctx: dict) -> str:
 
     body = [_head("카페외부 · 주간 총괄", f"{ctx['date_range']} 주간 리포트",
                   ctx["date_full"], ctx["status_line"])]
+    body.append(_warn_card(ctx))  # 경고 있으면 맨 위 카드(없으면 빈 문자열)
 
     # KPI
     gain = ctx["week_gain"]
@@ -321,6 +340,7 @@ def monthly_html(ctx: dict) -> str:
     goal = ctx["goal_pct"]
     body = [_head("카페외부 · 월간 심층", f"{ctx['date_range']} 월간 리포트",
                   ctx["date_full"], ctx["status_line"])]
+    body.append(_warn_card(ctx))  # 경고 있으면 맨 위 카드(없으면 빈 문자열)
 
     # KPI
     kpis = [

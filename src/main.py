@@ -25,7 +25,7 @@ from typing import Optional
 from src.config import SPREADSHEET_ID, SERVICE_ACCOUNT_JSON, NAVER_SLOWDOWN_BASE_SEC, NAVER_SLOWDOWN_MAX_SEC, CAFE_WHITELIST
 from src.crawler import Crawler, SlowdownController, CrawlerError, CafeStatus, CircuitBreakerOpen, parse_cafe_url, resolve_short_url
 from src.health import HealthMonitor
-from src.parser import parse_search_result, collect_slot_items
+from src.parser import parse_search_result
 from src.retry import RetryQueue
 from src.audit import audit_sheet_rows, build_update_trace, filter_invalid_updates, write_jsonl
 from src.sheets import (
@@ -152,36 +152,6 @@ def _add_type_preview(collector: Optional[TypePreviewCollector], preview_row: di
         collector.add(preview_row)
 
 
-def _add_competitors(
-    collector,
-    *,
-    row: dict,
-    keyword: str,
-    html: str,
-    our_state: str,
-    date_str: str,
-) -> None:
-    """경쟁사 수집 (2026-07-23) — 이미 받아둔 html 재사용, 실패해도 순위 검사 진행.
-
-    수집만 하고 시트 write 는 run_cycle 끝에서 COMPETITOR_TRACK_ENABLED 일 때만 한다.
-    """
-    if collector is None:
-        return
-    try:
-        items = collect_slot_items(html)
-        if not items:
-            return
-        collector.add(
-            date_str=date_str,
-            tab=str(row.get("_tab", "") or ""),
-            keyword=keyword,
-            our_state=our_state,
-            items=items,
-        )
-    except Exception as e:  # noqa: BLE001 — 경쟁사 수집 실패가 순위 검사를 죽이면 안 됨
-        print(f"  [경쟁사] 수집 skip (키워드={keyword}): {e}")
-
-
 def _env_truthy(name: str) -> bool:
     return os.environ.get(name, "").strip().lower() in {"1", "true", "yes", "y", "on"}
 
@@ -213,8 +183,6 @@ def _process_row(
     url_alive_cache: Optional[dict] = None,  # 호환성 유지 — 미사용 (T-M10.5 폐기)
     today_stamp: Optional[str] = None,  # D-030 (2026-05-18): "5/18 03:00" — K 시점 통합
     type_preview_collector: Optional[TypePreviewCollector] = None,
-    competitor_collector=None,  # 2026-07-23: 경쟁사 수집기 (없으면 수집 X)
-    competitor_date: Optional[str] = None,  # "YYYY-MM-DD"
 ) -> Optional[dict]:
     """한 행 처리 → 새 컬럼 dict 또는 None (skip).
 
@@ -319,14 +287,6 @@ def _process_row(
                 type_preview_collector,
                 build_type_preview_row(row=row, result=result, columns=cols, html_status=html_status),
             )
-            _add_competitors(
-                competitor_collector,
-                row=row,
-                keyword=keyword,
-                html=html,
-                our_state=new_K_base,
-                date_str=competitor_date or "",
-            )
             return cols
 
         # 빈 link 행 + 매치 X = "미노출 (시점~)"
@@ -340,14 +300,6 @@ def _process_row(
         _add_type_preview(
             type_preview_collector,
             build_type_preview_row(row=row, result=result, columns=cols, html_status=html_status),
-        )
-        _add_competitors(
-            competitor_collector,
-            row=row,
-            keyword=keyword,
-            html=html,
-            our_state="미노출",
-            date_str=competitor_date or "",
         )
         return cols
 
@@ -422,14 +374,6 @@ def _process_row(
     _add_type_preview(
         type_preview_collector,
         build_type_preview_row(row=row, result=result, columns=cols, html_status=html_status),
-    )
-    _add_competitors(
-        competitor_collector,
-        row=row,
-        keyword=keyword,
-        html=html,
-        our_state=new_K_base,
-        date_str=competitor_date or "",
     )
     return cols
 
@@ -736,39 +680,6 @@ def run_cycle() -> dict:
                 all_known_links.add(row_link)
     print(f"[D-026] all_known_links 구성: {len(all_known_links)} link (CAFE_WHITELIST 필터)")
 
-    # 경쟁사 수집기 (2026-07-23 사장님 요청). COMPETITOR_TRACK_ENABLED 일 때만 수집·기록.
-    # 수집 자체가 추가 요청을 만들지는 않지만(같은 html 재사용), 라이브 시트에 새 탭을 만들므로
-    # 사장님 명시 go 전에는 켜지 않는다(자동 가동 금지 원칙).
-    competitor_collector = None
-    competitor_date = datetime.now(kst).strftime("%Y-%m-%d")
-    if _env_truthy("COMPETITOR_TRACK_ENABLED"):
-        if not CAFE_WHITELIST:
-            # 우리 카페 목록이 없으면 '우리 글' 을 가려낼 수 없어 우리 글이 경쟁사로 올라간다.
-            print("[경쟁사] 수집 skip — CAFE_WHITELIST_SLUGS 미설정 (우리 글 구분 불가)")
-        else:
-            from src.competitor import CompetitorCollector
-            # 사장님 규칙(2026-07-23 "두드러기는 섞지마"): 숨김 탭 = 작업 안 하는 제품 →
-            # 경쟁사 기록·집계에서 제외. 순위 검사 자체는 종전대로 돈다(여긴 기록만 뺀다).
-            hidden_tabs: set = set()
-            try:
-                meta = client.spreadsheet.fetch_sheet_metadata()
-                hidden_tabs = {
-                    s["properties"]["title"]
-                    for s in meta.get("sheets", [])
-                    if s.get("properties", {}).get("hidden")
-                }
-            except Exception as e:  # noqa: BLE001 — 못 읽으면 제외 없이 진행(조용한 누락보다 낫다)
-                print(f"[경쟁사] 숨김 탭 확인 실패 = {e} (전 탭 기록)")
-            competitor_collector = CompetitorCollector(
-                our_links=set(all_known_links),
-                our_cafe_slugs=set(CAFE_WHITELIST),
-                skip_tabs=hidden_tabs,
-            )
-            print(
-                "[경쟁사] 수집 ON — 전 키워드 상위 구좌에서 우리 글 제외한 주체 기록"
-                + (f" (숨김 탭 제외: {sorted(hidden_tabs)})" if hidden_tabs else "")
-            )
-
     # 2. 각 탭 + 행 처리
     # url_alive_cache: T-M10.5 폐기로 미사용. 호환성 유지용 빈 dict.
     url_alive_cache: dict[str, bool] = {}
@@ -807,8 +718,6 @@ def run_cycle() -> dict:
                     url_alive_cache=url_alive_cache,
                     today_stamp=today_kst_stamp,
                     type_preview_collector=type_preview,
-                    competitor_collector=competitor_collector,
-                    competitor_date=competitor_date,
                 )
                 if cols is None:
                     continue  # link 빈 행 skip
@@ -865,8 +774,6 @@ def run_cycle() -> dict:
                 url_alive_cache=url_alive_cache,
                 today_stamp=today_kst_stamp,
                 type_preview_collector=type_preview,
-                competitor_collector=competitor_collector,
-                competitor_date=competitor_date,
             )
             return cols
         retry_results = retry_queue.process(retry_processor, slowdown_multiplier=2.0)
@@ -1054,24 +961,6 @@ def run_cycle() -> dict:
     # 4.9. 경쟁사 이력 적재 + 랭킹 갱신 (2026-07-23, COMPETITOR_TRACK_ENABLED 일 때만).
     # 비공개 시트 탭 2개(경쟁사_이력 / 경쟁사_랭킹)만 건드린다 — 사장님 작업 탭은 손대지 않는다.
     # best-effort: 실패해도 순위 검사 결과와 cron 을 죽이지 않는다.
-    # 부분 실행(차단으로 중간 종료·일부 행 재검사)도 안전하다 — 적재 멱등 단위가
-    # (날짜 × 키워드) 라, 이번에 돈 키워드만 갈아끼우고 나머지 오늘 기록은 그대로 둔다.
-    competitor_summary: dict = {}
-    if competitor_collector is not None and len(competitor_collector) > 0:
-        try:
-            from src.competitor import run_competitor_update
-            competitor_summary = run_competitor_update(client, competitor_collector, competitor_date)
-            history_result = competitor_summary.get("history", {})
-            if history_result.get("error"):
-                print(f"[경쟁사] 기록 실패 = {history_result['error']} (cron 진행)")
-            else:
-                print(
-                    f"[경쟁사] {history_result.get('rows_written', 0)} 행 적재 "
-                    f"(탭 1개) · 잡힌 주체 {competitor_summary.get('actors', 0)}곳"
-                )
-        except Exception as e:  # noqa: BLE001
-            print(f"[경쟁사] 기록 실패 = {e} (cron 진행)")
-
     # 5. K 분포 + 처리 시간 집계 (사장님 알림용 풍부 summary)
     # D-030 (2026-05-18): K 분포 = base 만 (= 시점 제거 = anomaly 감지 정합 + 일관성)
     k_distribution: Counter = Counter()
@@ -1099,10 +988,6 @@ def run_cycle() -> dict:
     summary["d024_skipped_rows"] = d024_skipped_rows  # D-024 (2026-05-14): 예외 시 시트 보존 skip 카운트
     # T-M90 (D-027 보강 2026-05-17) architect Opus C1 fix: 사장님 가시성 = secrets 미설정 시 issue #1 댓글 명시 의무.
     summary["all_known_links_count"] = len(all_known_links)
-    summary["competitor_rows_collected"] = len(competitor_collector) if competitor_collector is not None else 0
-    summary["competitor_actors"] = competitor_summary.get("actors", 0)
-    summary["competitor_rows_written"] = competitor_summary.get("history", {}).get("rows_written", 0)
-    summary["competitor_top"] = competitor_summary.get("top", [])
     summary["cafe_whitelist_size"] = len(CAFE_WHITELIST)
     summary["prewrite_invariant_violations"] = len(prewrite_invariant_issues)
     summary["post_write_audit_violations"] = len(post_write_blocking_issues)

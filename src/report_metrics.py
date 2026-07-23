@@ -15,6 +15,7 @@ import re
 from collections import Counter
 from datetime import date, timedelta
 
+from src.metric_guards import audit_daily, audit_monthly, audit_weekly
 from src.snapshot_diff import (  # noqa: F401 — _H_WORKDATE 는 헤더 drift 방지 위해 의도적 재사용
     EXPOSED_VALUES,
     _H_WORKDATE,
@@ -204,23 +205,18 @@ def _cohort_lag(workdate: str, snap: date):
     return (pub, lag)
 
 
-def _avg_dwell_cohort(backups_by_date: dict) -> tuple:
-    """평균체류일 W = 발행 배치 코호트 생존곡선의 합  W = Σ_{L≥1} S(L).
+def _dwell_cohort_curve(backups_by_date: dict) -> tuple:
+    """코호트 생존곡선 원자료 (lag_tot, lag_exp, n_cohorts). _avg_dwell_cohort + audit 재사용.
 
-    각 발행일 D 배치(작업일==D & 링크有)를 기준으로, D+L 일 스냅샷에서 같은 배치가 여전히
-    상위노출인 비율 S(L)을 lag 별로 풀링해 합산(관측 가능한 lag 만, L≤_MAX_DWELL_LAG).
-    ⚠️ 2026-07-16 실측: 재발행(작업일 재스탬프)·좌측절단으로 S(L)가 비단조 반등해 이 방식이
-    오히려 W 를 과대추정함(9.1). _MAX_DWELL_LAG 를 창 이내로 상한해 완화. 구식 _avg_dwell(spell
-    평균 ~2.5)이 단조 구간과 더 일치하므로 참고값으로 보존.
-
-    발행 코호트(작업일) 표본 < _MIN_DWELL_COHORTS 면 기본값 3.0. 반환 (W: float, source, n_cohorts).
+    각 발행일 D 배치(작업일==D & 링크有)를 D+L 일 스냅샷에서 여전히 상위노출인지로 lag 별 집계.
+    반환한 lag_tot/lag_exp 로 S(L)=exp/tot 를 만들면 metric_guards.guard_survival 이 반등을 감시.
     """
     dates = sorted(backups_by_date)
-    if len(dates) < 2:
-        return (_DEFAULT_DWELL, "default", 0)
     lag_tot: Counter = Counter()
     lag_exp: Counter = Counter()
     cohorts: set = set()
+    if len(dates) < 2:
+        return (lag_tot, lag_exp, 0)
     for snap_iso in dates:
         snap = _iso_to_date(snap_iso)
         for r in _cafe_rows(backups_by_date[snap_iso]):
@@ -234,10 +230,30 @@ def _avg_dwell_cohort(backups_by_date: dict) -> tuple:
             if k_base_of(r) in EXPOSED_VALUES:
                 lag_exp[lag] += 1
             cohorts.add(pub)
-    if len(cohorts) < _MIN_DWELL_COHORTS or not lag_tot:
-        return (_DEFAULT_DWELL, "default", len(cohorts))
+    return (lag_tot, lag_exp, len(cohorts))
+
+
+def _dwell_summary(lag_tot: Counter, lag_exp: Counter, n_cohorts: int) -> tuple:
+    """생존곡선 → (W, source, n). 표본 부족 시 기본값 3.0(추측 아닌 명시 fallback)."""
+    if n_cohorts < _MIN_DWELL_COHORTS or not lag_tot:
+        return (_DEFAULT_DWELL, "default", n_cohorts)
     W = sum(lag_exp[L] / lag_tot[L] for L in lag_tot)
-    return (round(W, 1), "cohort", len(cohorts))
+    return (round(W, 1), "cohort", n_cohorts)
+
+
+def _avg_dwell_cohort(backups_by_date: dict) -> tuple:
+    """평균체류일 W = 발행 배치 코호트 생존곡선의 합  W = Σ_{L≥1} S(L).
+
+    각 발행일 D 배치(작업일==D & 링크有)를 기준으로, D+L 일 스냅샷에서 같은 배치가 여전히
+    상위노출인 비율 S(L)을 lag 별로 풀링해 합산(관측 가능한 lag 만, L≤_MAX_DWELL_LAG).
+    ⚠️ 2026-07-16 실측: 재발행(작업일 재스탬프)·좌측절단으로 S(L)가 비단조 반등해 이 방식이
+    오히려 W 를 과대추정함(9.1). _MAX_DWELL_LAG 를 창 이내로 상한해 완화 + metric_guards 로
+    생존곡선 반등을 직접 감시(리포트에 ⚠️). 구식 _avg_dwell(spell 평균 ~2.5)은 참고·괴리검출용.
+
+    발행 코호트(작업일) 표본 < _MIN_DWELL_COHORTS 면 기본값 3.0. 반환 (W: float, source, n_cohorts).
+    """
+    lag_tot, lag_exp, n = _dwell_cohort_curve(backups_by_date)
+    return _dwell_summary(lag_tot, lag_exp, n)
 
 
 def _exposure_reconcile(prev: dict, curr: dict) -> dict:
@@ -331,6 +347,13 @@ def _trend(backups_by_date: dict, last_n: int) -> list:
     return [{"date": _md(d), "exposed": _exposed(_cafe_rows(backups_by_date[d]))} for d in dates]
 
 
+def _window_days(dates: list) -> int:
+    """관측창 = 백업 첫날~마지막날 일수(+1). 체류일 과대추정·필요발행 밴드 판정 기준."""
+    if not dates:
+        return 0
+    return (_iso_to_date(dates[-1]) - _iso_to_date(dates[0])).days + 1
+
+
 # ── 일간 ─────────────────────────────────────────────────────────────────────
 def daily_context(backups_by_date: dict) -> dict:
     """일간 대시보드 context. 최신일=오늘, 직전일=어제(비교). 최근 6~7일로 추세/퍼널."""
@@ -363,7 +386,9 @@ def daily_context(backups_by_date: dict) -> dict:
     curr_rows = _cafe_rows(curr)
     published_today, published_today_exposed = _funnel_for_date(curr_rows, today_md)
 
-    W, w_src, w_n = _avg_dwell_cohort(backups_by_date)  # 코호트 생존곡선(구 _avg_dwell 은 비교용 보존)
+    lag_tot, lag_exp, w_n = _dwell_cohort_curve(backups_by_date)  # 생존곡선(audit 재사용)
+    W, w_src, w_n = _dwell_summary(lag_tot, lag_exp, w_n)
+    spell_W = _avg_dwell(backups_by_date)[0]  # 구식 spell 방식(괴리 검출용 비교값)
     need_publish = round(total * (GOAL_PCT / 100) / W) if (total and W) else 0
 
     funnel = []
@@ -384,7 +409,7 @@ def daily_context(backups_by_date: dict) -> dict:
     type_changes = sum(r.type_changes for r in reports)
     jisikin = sum(r.jisikin_now for r in reports)
 
-    return {
+    ctx = {
         "scope": "daily",
         "date_label": today_md,
         "date_full": today,
@@ -399,6 +424,8 @@ def daily_context(backups_by_date: dict) -> dict:
         "avg_dwell": W,
         "avg_dwell_source": w_src,
         "avg_dwell_n": w_n,
+        "avg_dwell_spell": spell_W,
+        "window_days": _window_days(dates),
         "need_publish": need_publish,
         "published_today": published_today,
         "published_today_exposed": published_today_exposed,
@@ -413,6 +440,8 @@ def daily_context(backups_by_date: dict) -> dict:
         "type_changes": type_changes,
         "jisikin": jisikin,
     }
+    ctx["warnings"] = audit_daily(ctx, (lag_tot, lag_exp))
+    return ctx
 
 
 # ── 주간 ─────────────────────────────────────────────────────────────────────
@@ -455,9 +484,11 @@ def weekly_context(backups_by_date: dict) -> dict:
                               "kind": d.kind, "curr_rank": d.curr_rank})
     churn = churn[:10]
 
-    W, w_src, w_n = _avg_dwell_cohort(backups_by_date)  # 코호트 생존곡선(구 _avg_dwell 은 비교용 보존)
+    lag_tot, lag_exp, w_n = _dwell_cohort_curve(backups_by_date)  # 생존곡선(audit 재사용)
+    W, w_src, w_n = _dwell_summary(lag_tot, lag_exp, w_n)
+    spell_W = _avg_dwell(backups_by_date)[0]
 
-    return {
+    ctx = {
         "scope": "weekly",
         "date_range": f"{_md(start)}~{_md(today)}",
         "date_full": today,
@@ -475,6 +506,8 @@ def weekly_context(backups_by_date: dict) -> dict:
         "avg_dwell": W,
         "avg_dwell_source": w_src,
         "avg_dwell_n": w_n,
+        "avg_dwell_spell": spell_W,
+        "window_days": _window_days(dates),
         "trend": _trend(backups_by_date, span),
         "funnel_by_date": daily_funnel,
         "funnel_total": {"published": week_pub, "exposed": week_exp,
@@ -482,6 +515,8 @@ def weekly_context(backups_by_date: dict) -> dict:
         "churn_top": churn,
         "categories": _category_rates(curr_rows),
     }
+    ctx["warnings"] = audit_weekly(ctx, (lag_tot, lag_exp))
+    return ctx
 
 
 # ── 월간 ─────────────────────────────────────────────────────────────────────
@@ -516,14 +551,16 @@ def monthly_context(backups_by_date: dict) -> dict:
 
     best, worst = _keyword_stability(backups_by_date)
     events = _mass_drops(backups_by_date)
-    W, w_src, w_n = _avg_dwell_cohort(backups_by_date)  # 코호트 생존곡선(구 _avg_dwell 은 비교용 보존)
+    lag_tot, lag_exp, w_n = _dwell_cohort_curve(backups_by_date)  # 생존곡선(audit 재사용)
+    W, w_src, w_n = _dwell_summary(lag_tot, lag_exp, w_n)
+    spell_W = _avg_dwell(backups_by_date)[0]
     need_daily = round(total * (GOAL_PCT / 100) / W) if (total and W) else 0
     need_month = need_daily * 30
 
     achieve_pct = round(exposed / total * 100) if total else 0
     diag = _monthly_diagnosis(achieve_pct, exposed, weeks, events, W, w_src)
 
-    return {
+    ctx = {
         "scope": "monthly",
         "date_range": f"{_md(dates[0])}~{_md(today)}",
         "date_full": today,
@@ -535,6 +572,8 @@ def monthly_context(backups_by_date: dict) -> dict:
         "avg_dwell": W,
         "avg_dwell_source": w_src,
         "avg_dwell_n": w_n,
+        "avg_dwell_spell": spell_W,
+        "window_days": _window_days(dates),
         "weeks": weeks,
         "categories": _category_rates(curr_rows),
         "best_keywords": best,
@@ -545,6 +584,8 @@ def monthly_context(backups_by_date: dict) -> dict:
         "ga4_placeholder": "신규 유입·매출 동행 = GA4/매출 연결 필요(다음 과제). 현재 데이터로는 노출까지만 측정.",
         "diagnosis": diag,
     }
+    ctx["warnings"] = audit_monthly(ctx, (lag_tot, lag_exp))
+    return ctx
 
 
 def _monthly_diagnosis(achieve_pct, exposed, weeks, events, W, w_src) -> list:
