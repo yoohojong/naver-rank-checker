@@ -57,6 +57,7 @@ NOT_A_BRAND = {
     "샴푸", "탈모샴푸", "비듬샴푸", "지루성샴푸", "지루성두피염샴푸", "두피샴푸",
     "바디워시", "바디로션", "트리트먼트", "린스", "크림", "앰플", "토닉",
     "약국", "병원", "피부과", "대학병원", "올리브영", "공홈", "본사",
+    "스테로이드", "항생제", "소염제", "영양제", "유산균", "케토코나졸", "미녹시딜",
 }
 
 
@@ -172,7 +173,11 @@ def judge_candidates(mentions: list, *, verdict_path: str = brand_verdicts.DEFAU
 
 
 def confirmed_rows(mentions: list, verdicts: dict) -> list:
-    """판정된 제품만 남겨 집계. 미판정·제품아님은 조용히 뺀다."""
+    """판정된 제품만 남겨 집계. 미판정·제품아님은 조용히 뺀다.
+
+    묶음은 **판정된 브랜드명** 으로 다시 한다 — '맥단' 과 '맥단탈모샴푸' 는 한 줄(맥단비)이다.
+    우리 제품을 빼는 것도 이 이름으로 봐야 새는 곳이 없다.
+    """
     kept = []
     for m in mentions or []:
         key = m["키"]
@@ -181,8 +186,12 @@ def confirmed_rows(mentions: list, verdicts: dict) -> list:
         name = brand_verdicts.display_name(verdicts, key, m["표시"])
         if not is_real_brand(name):        # 마지막 그물 — 종류 이름·장소가 판정을 뚫어도 여기서 막는다
             continue
-        kept.append({**m, "표시": name})
-    return tally(kept, exclude_keys=OUR_PRODUCT_HINTS)
+        kept.append({**m, "표시": name, "키": normalize_name(name)})
+    rows = tally(kept, exclude_keys=OUR_PRODUCT_HINTS)
+    for r in rows:                          # 몇 개 키워드에서 나왔나 (같은 브랜드끼리 합쳐서 센다)
+        r["키워드수"] = len({m.get("키워드") for m in kept
+                          if m["키"] == r["키"] and m.get("키워드")})
+    return rows
 
 
 def scan_keyword(crawler: CommentFetcher, kw: str, *, our_links: set, our_slugs: set,
@@ -282,8 +291,8 @@ def run_from_sheet(args) -> int:
     out_rows: list[list] = []
     for product, mentions in by_product.items():
         for r in confirmed_rows(mentions, verdicts):
-            kws = {m["키워드"] for m in mentions if m["키"] == r["키"]}
-            out_rows.append([product, r["제품"], r["횟수"], len(kws), today, r["댓글 예시"][:120]])
+            out_rows.append([product, r["제품"], r["횟수"], r["키워드수"], today,
+                             r["댓글 예시"][:120]])
         print(f"[{product}] 경쟁 제품 {len([x for x in out_rows if x[0] == product])}종")
 
     print(f"\n댓글 연 글 {fetcher.stat['열림']}개 · 못 연 글 {fetcher.stat['막힘']}개")

@@ -65,9 +65,16 @@ _SYSTEM = (
     "     '닥터그루트샴푸' → '닥터그루트'   ·   '일리윤 바디워시' → '일리윤'\n"
     "5. 확실하지 않으면 제품=false. 지어내지 마라.\n"
     "6. 받은 번호 전부에 대해 답한다. 빠뜨리지 않는다.\n"
-    '출력은 JSON 만: {"판정": [{"n":1,"제품":true,"이름":"맥단비"}, {"n":2,"제품":false}]}\n'
+    "7. '후보' 칸에는 받은 후보를 **그대로 옮겨 적는다**(번호가 밀리지 않았는지 대조한다).\n"
+    '출력은 JSON 만: {"판정": [{"n":1,"후보":"맥단ㅂI","제품":true,"이름":"맥단비"},'
+    ' {"n":2,"후보":"약국에서","제품":false}]}\n'
     "다른 말은 절대 하지 않는다."
 )
+
+
+def _key(text) -> str:
+    """대조용 글자만 남긴다 — 띄어쓰기·기호 차이로 어긋나지 않게."""
+    return "".join(ch for ch in str(text or "") if ch.isalnum()).lower()
 
 
 def _api_key() -> str:
@@ -180,6 +187,10 @@ def judge_batch(items: list, *, timeout: int = 30, sleep=time.sleep) -> dict | N
     if not isinstance(verdicts, list):
         return None
 
+    # 번호가 한 칸 밀리면 '스테로이드' 가 옆 후보의 이름을 달고 제품이 된다(2026-07-23 실측).
+    # 그래서 되돌려받은 '후보' 글자로 대조하고, 어긋나면 그 이름으로 다시 찾는다.
+    by_echo = {_key(it.get("표시") or it["키"]): it for it in items}
+
     out: dict = {}
     for v in verdicts:
         if not isinstance(v, dict):
@@ -191,6 +202,11 @@ def judge_batch(items: list, *, timeout: int = 30, sleep=time.sleep) -> dict | N
         if not 1 <= n <= len(items):
             continue
         it = items[n - 1]
+        echo = _key(v.get("후보"))
+        if echo and echo != _key(it.get("표시") or it["키"]):
+            it = by_echo.get(echo)
+            if it is None:                 # 누구 얘긴지 모르겠으면 판정하지 않는다
+                continue
         is_product = bool(v.get("제품"))
         name = str(v.get("이름") or "").strip() or it.get("표시") or it["키"]
         out[it["키"]] = {"제품": is_product, "이름": name if is_product else ""}

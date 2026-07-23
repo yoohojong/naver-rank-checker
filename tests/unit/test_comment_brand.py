@@ -92,6 +92,24 @@ def test_판정된_제품만_표에_들어간다():
     assert [r["제품"] for r in rows] == ["닥터이노브"]
 
 
+def test_같은_브랜드는_한_줄로_모인다():
+    # '맥단' 과 '맥단탈모샴푸' 는 판정에서 둘 다 '맥단비' 다 — 표에 두 줄로 남으면 안 된다.
+    mentions = [{"표시": "맥단ㅂi", "키": "맥단", "종류": "샴푸", "댓글": "맥단ㅂi 써요", "키워드": "탈모샴푸"},
+                {"표시": "맥단탈모샴푸", "키": "맥단탈모샴푸", "종류": "샴푸", "댓글": "맥단 탈모샴푸요",
+                 "키워드": "비듬샴푸"}]
+    verdicts = {"맥단": {"제품": True, "이름": "맥단비"},
+                "맥단탈모샴푸": {"제품": True, "이름": "맥단비"}}
+    rows = confirmed_rows(mentions, verdicts)
+    assert len(rows) == 1
+    assert rows[0]["제품"] == "맥단비" and rows[0]["횟수"] == 2 and rows[0]["키워드수"] == 2
+
+
+def test_우리_제품은_판정된_이름으로도_빠진다():
+    # 판정이 엉뚱한 후보에 우리 이름을 달아도('스테로이드'→'뽀얀') 경쟁 표에 들어가면 안 된다.
+    mentions = [{"표시": "스테로이드", "키": "스테로이드", "종류": "제품", "댓글": "스테로이드 연고도 써봤는데"}]
+    assert confirmed_rows(mentions, {"스테로이드": {"제품": True, "이름": "뽀얀"}}) == []
+
+
 def test_판정이_뚫려도_종류_이름은_막힌다():
     mentions = [{"표시": "샴푸", "키": "샴푸", "종류": "제품", "댓글": "샴푸 써요"}]
     assert confirmed_rows(mentions, {"샴푸": {"제품": True, "이름": "샴푸"}}) == []
@@ -140,6 +158,30 @@ def test_판정_결과_읽기(monkeypatch):
     assert got["맥단"] == {"제품": True, "이름": "맥단비"}
     assert got["약국에서"]["제품"] is False
     assert stat["미판정"] == 0
+
+
+def test_번호가_밀리면_후보_글자로_바로잡는다(monkeypatch):
+    # 실측(2026-07-23): 번호가 밀려 '스테로이드' 가 옆 후보의 이름('뽀얀')을 달고 제품이 됐다.
+    monkeypatch.setenv("GROQ_API_KEY", "test-key")
+    reply = {"choices": [{"message": {"content": json.dumps(
+        {"판정": [{"n": 1, "후보": "일리윤", "제품": True, "이름": "일리윤"},
+                 {"n": 2, "후보": "스테로이드", "제품": False}]}, ensure_ascii=False)}}]}
+    monkeypatch.setattr(comment_brand_llm, "_post", lambda *a, **k: reply)
+    items = [{"키": "스테로이드", "표시": "스테로이드", "예시": "스테로이드 연고"},
+             {"키": "일리윤", "표시": "일리윤", "예시": "일리윤 바디워시"}]
+    got, _ = comment_brand_llm.judge(items)
+    assert got["일리윤"]["제품"] is True
+    assert got["스테로이드"]["제품"] is False       # 번호가 아니라 이름으로 맞춰졌다
+
+
+def test_모르는_후보_판정은_버린다(monkeypatch):
+    monkeypatch.setenv("GROQ_API_KEY", "test-key")
+    reply = {"choices": [{"message": {"content": json.dumps(
+        {"판정": [{"n": 1, "후보": "듣도보도못한것", "제품": True, "이름": "가짜"}]},
+        ensure_ascii=False)}}]}
+    monkeypatch.setattr(comment_brand_llm, "_post", lambda *a, **k: reply)
+    got, stat = comment_brand_llm.judge([{"키": "일리윤", "표시": "일리윤", "예시": ""}])
+    assert got == {} and stat["미판정"] == 1
 
 
 def test_한도초과면_기다렸다_다시_묻는다(monkeypatch):
