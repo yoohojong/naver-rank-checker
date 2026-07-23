@@ -747,11 +747,27 @@ def run_cycle() -> dict:
             print("[경쟁사] 수집 skip — CAFE_WHITELIST_SLUGS 미설정 (우리 글 구분 불가)")
         else:
             from src.competitor import CompetitorCollector
+            # 사장님 규칙(2026-07-23 "두드러기는 섞지마"): 숨김 탭 = 작업 안 하는 제품 →
+            # 경쟁사 기록·집계에서 제외. 순위 검사 자체는 종전대로 돈다(여긴 기록만 뺀다).
+            hidden_tabs: set = set()
+            try:
+                meta = client.spreadsheet.fetch_sheet_metadata()
+                hidden_tabs = {
+                    s["properties"]["title"]
+                    for s in meta.get("sheets", [])
+                    if s.get("properties", {}).get("hidden")
+                }
+            except Exception as e:  # noqa: BLE001 — 못 읽으면 제외 없이 진행(조용한 누락보다 낫다)
+                print(f"[경쟁사] 숨김 탭 확인 실패 = {e} (전 탭 기록)")
             competitor_collector = CompetitorCollector(
                 our_links=set(all_known_links),
                 our_cafe_slugs=set(CAFE_WHITELIST),
+                skip_tabs=hidden_tabs,
             )
-            print("[경쟁사] 수집 ON — 전 키워드 상위 구좌에서 우리 글 제외한 주체 기록")
+            print(
+                "[경쟁사] 수집 ON — 전 키워드 상위 구좌에서 우리 글 제외한 주체 기록"
+                + (f" (숨김 탭 제외: {sorted(hidden_tabs)})" if hidden_tabs else "")
+            )
 
     # 2. 각 탭 + 행 처리
     # url_alive_cache: T-M10.5 폐기로 미사용. 호환성 유지용 빈 dict.

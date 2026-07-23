@@ -323,6 +323,23 @@ def test_rows_to_sheet_values_matches_header_order():
 
 # ----- CompetitorCollector -----
 
+def test_collector_skips_hidden_tabs():
+    """숨김 탭(작업 안 하는 제품)은 기록 자체를 안 한다 — 사장님 "두드러기는 섞지마"."""
+    collector = CompetitorCollector(skip_tabs={"두드러기 카외"})
+    added = collector.add(
+        date_str="2026-07-23", tab="두드러기 카외", keyword="두드러기연고",
+        our_state="누락", items=_items(),
+    )
+    assert added == 0
+    assert len(collector) == 0
+
+    # 표시 탭은 그대로 기록된다
+    assert collector.add(
+        date_str="2026-07-23", tab="샴푸 카외", keyword="비듬샴푸",
+        our_state="누락", items=_items(),
+    ) > 0
+
+
 def test_collector_last_write_wins_per_keyword():
     collector = CompetitorCollector(our_cafe_slugs={"ourcafe"})
     collector.add(date_str="2026-07-23", tab="샴푸 카외", keyword="비듬샴푸", our_state="누락", items=_items())

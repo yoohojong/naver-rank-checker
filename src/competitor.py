@@ -222,15 +222,21 @@ class CompetitorCollector:
         our_links: set | None = None,
         our_cafe_slugs: set | None = None,
         top_n: int = DEFAULT_TOP_N,
+        skip_tabs: set | None = None,
     ) -> None:
         self.our_links = our_links or set()
         self.our_cafe_slugs = our_cafe_slugs or set()
         self.top_n = top_n
+        # 기록에서 통째로 뺄 탭(숨김 탭 = 작업 안 하는 제품).
+        # 사장님 2026-07-23 "두드러기는 섞지마" — 보고·집계에서 숨김 탭 제외 규칙과 같은 잣대.
+        self.skip_tabs = {_clean(t) for t in (skip_tabs or set())}
         self._by_keyword: dict[tuple[str, str], list[dict]] = {}
 
     def add(  # noqa: PLR0913 — 호출부 가독성 위해 키워드 인자 유지
         self, *, date_str: str, tab: str, keyword: str, our_state: str, items: list[SlotItem]
     ) -> int:
+        if _clean(tab) in self.skip_tabs:
+            return 0  # 숨김 탭 = 기록하지 않는다(시트에도 대시보드에도 안 섞임)
         rows = build_competitor_rows(
             date_str=date_str,
             tab=tab,
