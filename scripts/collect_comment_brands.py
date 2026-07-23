@@ -274,6 +274,10 @@ def confirmed_rows(mentions: list, verdicts: dict, unified: dict | None = None) 
     rows = tally(kept, exclude_keys=OUR_PRODUCT_HINTS)
     for r in rows:                          # 몇 개 키워드에서 나왔나 (같은 브랜드끼리 합쳐서 센다)
         mine = [m for m in kept if m["키"] == r["키"]]
+        # ★'횟수'는 날짜 열·추세의 재료다 → **댓글 언급만** 센다.
+        # 제목 언급까지 섞으면 시트에 쌓인 어제까지의 값(댓글만 세던 정의)과 잣대가 달라져,
+        # 아무 일도 없었는데 "▲ 늘었다" 로 보인다. 정의를 바꿔놓고 현실이 변한 걸로 읽는 사고.
+        r["횟수"] = len([m for m in mine if m.get("원천") != "상위노출"])
         kw_count: dict = {}
         for m in mine:
             kw = m.get("키워드")
@@ -315,12 +319,12 @@ def scan_keyword(crawler: CommentFetcher, kw: str, *, our_links: set, our_slugs:
             continue
         seen_url.add(it.url)
         같이 = {"키워드": kw, "글": it.url, "카페": it.source_name or "", "우리놓침": 우리놓침}
-        # ① 그 글이 제목에서 밀고 있는 제품 = 상위 구좌를 차지한 경쟁사
-        for m in candidates_from_title(it.title):
-            mentions.append({**m, **같이, "원천": "상위노출"})
-        # ② 그 글 댓글에서 오가는 제품
+        # ① 그 글 댓글에서 오가는 제품. 예시 칸에 댓글이 먼저 잡히도록 이쪽을 먼저 넣는다.
         for m in candidates_from_comments(fetcher.comments(it.url)):
             mentions.append({**m, **같이, "원천": "댓글"})
+        # ② 그 글이 제목에서 밀고 있는 제품 = 상위 구좌를 차지한 경쟁사
+        for m in candidates_from_title(it.title):
+            mentions.append({**m, **같이, "원천": "상위노출"})
         time.sleep(1.0)       # 네이버 부담 줄이기
     return mentions
 
@@ -385,8 +389,11 @@ def build_table(prev_values: list, today_rows: list, today: str,
     for (product, brand), per in merged.items():
         counts = [per.get(d, 0) for d in dates]
         total = sum(counts)
-        if not total:
-            continue                         # 7일 안에 한 번도 안 나온 경쟁사는 표에서 내린다
+        r = extra.get((product, brand), {})
+        # 7일 안에 댓글에 한 번도 안 나온 경쟁사는 내린다 —
+        # 단, 상위 구좌를 차지하고 있으면 남긴다(그게 사장님이 보자고 한 바로 그 경쟁사다).
+        if not total and not int(r.get("상위노출") or 0):
+            continue
         before = next((c for c in counts[1:] if c), 0)
         now = counts[0]
         if not before:
@@ -397,7 +404,6 @@ def build_table(prev_values: list, today_rows: list, today: str,
             trend = f"▼ -{before - now}"
         else:
             trend = "– 그대로"
-        r = extra.get((product, brand), {})
         kws = list(r.get("키워드들") or [])
         kw_text = ", ".join(kws[:MAX_KEYWORDS_SHOWN])
         if len(kws) > MAX_KEYWORDS_SHOWN:
@@ -538,12 +544,12 @@ def run_from_sheet(args) -> int:
               f"키워드 {row['키워드수']}개")
 
     # 판정이 많이 빈 run 은 표를 덮지 않는다 — 반쪽 표가 오늘의 전부로 읽히면 안 된다.
-    print(f"댓글 언급 {jstat['언급']}건 중 판정 못 받은 것 {jstat['미판정언급']}건 "
+    print(f"제품 언급 {jstat['언급']}건(댓글+상위 글 제목) 중 판정 못 받은 것 {jstat['미판정언급']}건 "
           f"· 확정 경쟁 제품 {jstat['확정제품']}종")
 
     if should_skip_write(jstat):
         print(f"\n❌ 판정 못 받은 언급이 {jstat['미판정언급']}/{jstat['언급']}건입니다 "
-              f"(Groq 하루 한도·오류 의심). 시트는 손대지 않았습니다 — 어제 값 그대로입니다.")
+              f"(판정기 한도·오류 의심 — 아래 '탈' 을 보세요). 시트는 손대지 않았습니다 — 어제 값 그대로입니다.")
         return 3
 
     if args.write_sheet and out_rows:

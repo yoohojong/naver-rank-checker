@@ -401,18 +401,30 @@ def test_유료_열쇠가_있으면_유료로_판정한다(monkeypatch):
     assert stat["미판정"] == 0 and 부른횟수["n"] == 1
 
 
-def test_유료가_못하면_무료로_넘어간다(monkeypatch):
-    # 유료가 한도·오류로 못 해도 무료가 살아 있으면 그 날 표는 채워진다.
+def test_무료가_못하면_유료로_넘어간다(monkeypatch):
+    # 무료가 하루 한도에 걸려도 유료가 받쳐주면 그 날 표는 채워진다.
     monkeypatch.setenv("ANTHROPIC_API_KEY", "test-paid")
     monkeypatch.setenv("GROQ_API_KEY", "test-free")
-    monkeypatch.setattr(comment_brand_llm, "_anthropic_call",
-                        lambda *a, **k: (None, False))
+    monkeypatch.setattr(comment_brand_llm, "_post", lambda *a, **k: None)   # 무료 실패
+    _유료판정기_대신(monkeypatch, 답=json.dumps(
+        {"판정": [{"n": 1, "후보": "일리윤", "제품": True, "이름": "일리윤"}]},
+        ensure_ascii=False))
+    got, stat = comment_brand_llm.judge([{"키": "일리윤", "표시": "일리윤", "예시": ""}])
+    assert got["일리윤"]["제품"] is True and stat["미판정"] == 0
+
+
+def test_무료로_되는_날은_유료를_부르지_않는다(monkeypatch):
+    # ★순서가 곧 돈이다 — 무료가 답하면 유료 호출은 0이어야 한다.
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-paid")
+    monkeypatch.setenv("GROQ_API_KEY", "test-free")
+    부른횟수 = _유료판정기_대신(monkeypatch, 답="{}")
     reply = {"choices": [{"message": {"content": json.dumps(
         {"판정": [{"n": 1, "후보": "일리윤", "제품": True, "이름": "일리윤"}]},
         ensure_ascii=False)}}]}
     monkeypatch.setattr(comment_brand_llm, "_post", lambda *a, **k: reply)
-    got, stat = comment_brand_llm.judge([{"키": "일리윤", "표시": "일리윤", "예시": ""}])
-    assert got["일리윤"]["제품"] is True and stat["미판정"] == 0
+    got, _ = comment_brand_llm.judge([{"키": "일리윤", "표시": "일리윤", "예시": ""}])
+    assert got["일리윤"]["제품"] is True
+    assert 부른횟수["n"] == 0                      # 돈 쓰지 않았다
 
 
 def test_유료_답이_잘려도_읽히는_줄은_건진다(monkeypatch):
@@ -459,7 +471,7 @@ def test_상위노출_차지_횟수와_우리가_놓친_키워드를_센다():
     ]
     rows = confirmed_rows(mentions, {"맥단비": {"제품": True, "이름": "맥단비"}})
     assert len(rows) == 1
-    assert rows[0]["횟수"] == 3        # 몇 번 나왔나는 원천을 가리지 않는다
+    assert rows[0]["횟수"] == 1        # 날짜 열의 재료 = 댓글 언급만
     assert rows[0]["상위노출"] == 2    # 상위 구좌를 차지한 키워드 수
     assert rows[0]["놓친"] == 1        # 그중 우리 글이 아예 없던 키워드
 
@@ -469,3 +481,26 @@ def test_상위노출_열이_표에_들어간다():
     head, row = table[0], table[1]
     assert row[head.index("상위노출 차지")] == 4
     assert row[head.index("우리가 놓친")] == 3
+
+
+def test_제목_언급은_횟수에_섞이지_않는다():
+    # 날짜 열·추세의 재료인 '횟수' 에 제목까지 섞으면, 아무 일도 없었는데 "▲ 늘었다" 가 된다.
+    mentions = [
+        {"표시": "맥단비", "키": "맥단비", "종류": "제품", "댓글": "맥단비 써요",
+         "키워드": "비듬샴푸", "원천": "댓글", "우리놓침": False},
+        {"표시": "맥단비", "키": "맥단비", "종류": "제품", "댓글": "맥단비 탈모샴푸 후기",
+         "키워드": "두피각질", "원천": "상위노출", "우리놓침": True},
+    ]
+    rows = confirmed_rows(mentions, {"맥단비": {"제품": True, "이름": "맥단비"}})
+    assert rows[0]["횟수"] == 1          # 댓글만
+    assert rows[0]["상위노출"] == 1      # 제목은 이쪽 열로만
+
+
+def test_댓글에_없어도_상위_구좌를_차지하면_표에_남는다():
+    # 사장님이 보자고 한 게 바로 이 경쟁사다 — 댓글 합계 0이라고 내리면 안 된다.
+    row = {"제품군": "샴푸", "경쟁사": "맥단비", "횟수": 0, "상위노출": 3, "놓친": 2,
+           "키워드수": 3, "키워드들": ["비듬샴푸"], "글들": [], "댓글 예시": ""}
+    table = build_table([], [row], "2026-07-24")
+    assert len(table) == 2
+    head, out = table[0], table[1]
+    assert out[head.index("상위노출 차지")] == 3 and out[head.index("우리가 놓친")] == 2

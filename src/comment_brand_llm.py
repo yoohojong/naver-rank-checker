@@ -6,8 +6,10 @@
 전에는 무료 Groq 하나뿐이었다. 무료 한도(요청 1,000회·토큰 100,000)가 하루를 못 버텨
 7-23 실행 4번 중 2번이 "판정이 60/72종 비었습니다"로 시트를 못 덮었다. 채워지는 날과
 어제 값이 굳는 날이 섞이니, 보는 사람 눈에는 "추출이 안 된다".
-지금은 ANTHROPIC_API_KEY 가 있으면 그쪽으로 판정하고, 없을 때만 Groq 으로 간다.
-Anthropic 이 한도·오류로 못 하면 그 자리에서 Groq 으로 한 번 더 시도한다.
+지금은 **무료(Groq)로 먼저 물어보고, 무료가 못 한 것만 유료(Anthropic)로 한 번 더** 묻는다.
+순서가 곧 돈이다 — 유료를 앞에 두면 잘 돌던 날까지 매번 돈이 든다. 판정 결과는
+data/brand_verdicts.json 에 쌓여 다음 날엔 새로 나온 이름만 물어보므로 평소엔 무료로 충분하고,
+유료는 무료가 막힌 날에만 나서면 된다. 유료 열쇠가 없으면 전과 똑같이 무료 한 곳으로 돈다.
 
 
 왜 규칙만으로 안 되나 (2026-07-23 실측)
@@ -45,8 +47,11 @@ import urllib.request
 _BASE_URL = os.environ.get(
     "GROQ_BASE_URL", "https://api.groq.com/openai/v1/chat/completions")
 _MODEL = os.environ.get("GROQ_MODEL", "llama-3.3-70b-versatile")
-# 유료 판정기. 하루 몇백 건이라 비용은 작고, 무료 한도에 안 막힌다.
+# 유료 판정기 — 무료가 막힌 날에만 나서는 보험.
 _ANTHROPIC_MODEL = os.environ.get("ANTHROPIC_MODEL", "claude-opus-4-8")
+# 무료(30초)와 같은 시한을 쓰면 답이 다 나오기도 전에 끊긴다 — 한국어 묶음 판정은 더 걸린다.
+_ANTHROPIC_TIMEOUT = float(os.environ.get("ANTHROPIC_TIMEOUT_SEC", "180"))
+_ANTHROPIC_CLIENTS: dict = {}
 _USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
@@ -147,8 +152,8 @@ def _anthropic_key() -> str:
 
 
 def _api_key() -> str:
-    """판정에 쓸 열쇠 — 유료(Anthropic)가 있으면 그것, 없으면 무료(Groq)."""
-    return _anthropic_key() or _groq_key()
+    """판정에 쓸 열쇠가 하나라도 있나 — 무료(Groq) 우선, 없으면 유료(Anthropic)."""
+    return _groq_key() or _anthropic_key()
 
 
 def available() -> bool:
@@ -242,11 +247,27 @@ def _post(payload: dict, *, timeout: int, tries: int = 3, sleep=time.sleep,
     return None
 
 
-def _anthropic_call(system: str, user: str, *, max_tokens: int, timeout: int,
+def _anthropic_client(key: str):
+    """손님(client) 하나를 만들어 두고 다시 쓴다.
+
+    호출마다 새로 만들면 연결을 매번 새로 트느라 느리고, 닫히지 않은 채 쌓인다.
+    검사에서 가짜로 바꿔치기해도 알아채도록 만든 손님의 종류까지 같이 기억한다.
+    """
+    import anthropic
+    cls = anthropic.Anthropic
+    cached = _ANTHROPIC_CLIENTS.get("it")
+    if cached and cached[0] is cls and cached[1] == key:
+        return cached[2]
+    client = cls(api_key=key, timeout=_ANTHROPIC_TIMEOUT, max_retries=0)
+    _ANTHROPIC_CLIENTS["it"] = (cls, key, client)
+    return client
+
+
+def _anthropic_call(system: str, user: str, *, max_tokens: int,
                     tries: int = 3, sleep=time.sleep, errors: list | None = None):
     """유료 판정기에 물어본다 → (답 글자, 잘렸는지). 못 하면 (None, False).
 
-    열쇠가 없거나 꾸러미가 안 깔려 있으면 조용히 물러난다 — 호출부가 무료로 넘어간다.
+    열쇠가 없거나 꾸러미가 안 깔려 있으면 조용히 물러난다 — 호출부가 알아서 처리한다.
     """
     def note(reason: str):
         if errors is not None:
@@ -261,7 +282,7 @@ def _anthropic_call(system: str, user: str, *, max_tokens: int, timeout: int,
         note("꾸러미 없음")
         return None, False
 
-    client = anthropic.Anthropic(api_key=key, timeout=float(timeout), max_retries=0)
+    client = _anthropic_client(key)
     for attempt in range(tries):
         try:
             resp = client.messages.create(
@@ -287,11 +308,22 @@ def _anthropic_call(system: str, user: str, *, max_tokens: int, timeout: int,
                 sleep(2.0 * (attempt + 1))
                 continue
             return None, False
+        except anthropic.APITimeoutError:
+            # 연결 실패와 반드시 갈라 적는다 — 시한이 짧아 매번 되돌아가던 걸
+            # "연결 실패" 로만 적어두면 다음에 또 깜깜이가 된다.
+            note("시한 초과")
+            if attempt < tries - 1:
+                sleep(2.0 * (attempt + 1))
+                continue
+            return None, False
         except anthropic.APIConnectionError:
             note("연결 실패")
             if attempt < tries - 1:
                 sleep(2.0 * (attempt + 1))
                 continue
+            return None, False
+        except anthropic.APIError as e:      # 위 셋에 안 걸리는 나머지 — 실행을 죽이지 않는다
+            note(f"기타 오류({type(e).__name__})")
             return None, False
 
         stop = str(getattr(resp, "stop_reason", "") or "")
@@ -309,18 +341,9 @@ def _anthropic_call(system: str, user: str, *, max_tokens: int, timeout: int,
     return None, False
 
 
-def _call(system: str, user: str, *, max_tokens: int, timeout: int,
-          sleep=time.sleep, errors: list | None = None):
-    """판정기 호출 → (답 글자, 잘렸는지). 유료 먼저, 안 되면 무료로 한 번 더.
-
-    한쪽이 하루 한도에 걸려도 다른 쪽이 살아 있으면 그 날 표는 채워진다 —
-    무료 한 곳만 쓰다 4번 중 2번을 통째로 못 채운 게 이 구조를 만든 이유다(2026-07-23).
-    """
-    content, truncated = _anthropic_call(
-        system, user, max_tokens=max_tokens, timeout=timeout, sleep=sleep, errors=errors)
-    if content:
-        return content, truncated
-
+def _groq_call(system: str, user: str, *, max_tokens: int, timeout: int,
+               sleep=time.sleep, errors: list | None = None):
+    """무료 판정기에 물어본다 → (답 글자, 잘렸는지). 못 하면 (None, False)."""
     if not _groq_key():
         return None, False
     payload = {
@@ -341,8 +364,27 @@ def _call(system: str, user: str, *, max_tokens: int, timeout: int,
         if errors is not None:
             errors.append("답 모양이 다름")
         return None, False
+    if not content:
+        return None, False
     truncated = str((data.get("choices") or [{}])[0].get("finish_reason") or "") == "length"
     return content, truncated
+
+
+def _call(system: str, user: str, *, max_tokens: int, timeout: int,
+          sleep=time.sleep, errors: list | None = None):
+    """판정기 호출 → (답 글자, 잘렸는지). **무료 먼저, 무료가 못 하면 유료로 한 번 더.**
+
+    ★순서가 곧 돈이다(2026-07-24 뒤집음). 유료를 앞에 두면 잘 돌던 날까지 매번 돈이 든다.
+    판정 결과는 data/brand_verdicts.json 에 쌓여 다음 날엔 **새로 나온 이름만** 물어보므로,
+    평소엔 무료 한도로 충분하다. 유료는 무료가 막힌 날에만 나서는 보험이면 된다.
+    무료 한 곳만 쓰다 4번 중 2번을 통째로 못 채운 게(2026-07-23) 보험을 둔 이유다.
+    """
+    content, truncated = _groq_call(
+        system, user, max_tokens=max_tokens, timeout=timeout, sleep=sleep, errors=errors)
+    if content:
+        return content, truncated
+    return _anthropic_call(
+        system, user, max_tokens=max_tokens, sleep=sleep, errors=errors)
 
 
 def judge_batch(items: list, *, timeout: int = 30, sleep=time.sleep,
