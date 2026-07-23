@@ -40,7 +40,8 @@ def 링크모으기(limit: int) -> list[str]:
     sc = SheetsClient(sid, sa)
     out: list[str] = []
     for ws in sc.spreadsheet.worksheets():
-        if "카외" not in ws.title:
+        제외 = ("백업", "삭제전", "복사본", "이력", "스테이징")
+        if "카외" not in ws.title or any(x in ws.title for x in 제외):
             continue
         try:
             rows = ws.get_all_values()
@@ -49,8 +50,10 @@ def 링크모으기(limit: int) -> list[str]:
             continue
         for row in rows:
             for cell in row:
-                if isinstance(cell, str) and CAFE_LINK.search(cell):
-                    link = cell.strip()
+                if not isinstance(cell, str):
+                    continue
+                link = cell.strip()
+                if link.startswith("http") and CAFE_LINK.search(link):
                     if link not in out:
                         out.append(link)
                     if len(out) >= limit:
@@ -71,6 +74,8 @@ def 찔러보기(url: str) -> dict:
             resp = requests.get(addr, headers={"User-Agent": UA, **kw.pop("headers", {})},
                                 timeout=25, **kw)
             r[이름] = {"status": resp.status_code, "len": len(resp.text)}
+            if resp.status_code != 200 or len(resp.text) < 300:
+                r[이름]["맛보기"] = " ".join(resp.text[:180].split())
             return resp
         except Exception as e:
             r[이름] = {"error": type(e).__name__}
@@ -83,16 +88,20 @@ def 찔러보기(url: str) -> dict:
             re.search(r"(se-main-container|article_viewer|ArticleContentBox|postViewArea)", resp.text))
         r["①페이지"]["로그인유도"] = "nid.naver.com" in resp.text[:20000]
 
-    # slug 만 있으면 cafeId 를 먼저 얻는다
+    # slug 만 있으면 cafeId 를 얻는다.
+    # 1차 실증: CafeGate.json 이 87자짜리 빈 응답을 줘 cafeId 를 못 얻었고
+    # 그래서 정작 중요한 글·댓글 API 를 한 번도 못 찔러봤다 → 글 페이지 HTML 에서 뽑는다.
     global_id = cafe_id
-    if not global_id and slug:
-        resp = 부르기("②카페정보", f"https://apis.naver.com/cafe-web/cafe2/CafeGate.json?cluburl={slug}")
-        if resp is not None and resp.status_code == 200:
-            try:
-                global_id = str(resp.json().get("message", {}).get("result", {}).get("cafeInfoView", {}).get("cafeId") or "")
-                r["②카페정보"]["cafeId"] = global_id
-            except Exception:
-                pass
+    if not global_id and resp is not None and getattr(resp, "text", ""):
+        for pat in (r'"cafeId"\s*:\s*"?(\d{4,})', r'g_sClubId\s*=\s*"(\d+)"',
+                    r'clubid=(\d+)', r'cafes/(\d+)/'):
+            mm = re.search(pat, resp.text)
+            if mm:
+                global_id = mm.group(1)
+                r["②카페번호"] = {"찾음": global_id, "출처": pat}
+                break
+        else:
+            r["②카페번호"] = {"찾음": None}
 
     if global_id:
         resp = 부르기("③글API",
