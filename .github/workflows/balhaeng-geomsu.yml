@@ -67,15 +67,21 @@ jobs:
           GEOMSU_LIMIT: ${{ github.event.inputs.limit || '150' }}
           GEOMSU_WRITE: ${{ github.event.inputs.write || '1' }}
           GEOMSU_NOTIFY: ${{ github.event.inputs.notify || '1' }}
+          # 제한시간(120분)에 걸려 '취소'로 끝나면 알림이 한 통도 안 나간다.
+          # 그 전에 스크립트가 스스로 끊고 남은 건수를 보고에 적는다.
+          GEOMSU_DEADLINE_MIN: '90'
           PYTHONIOENCODING: 'utf-8'
         run: |
           set -o pipefail
           ./.venv/bin/python -u -m scripts.balhaeng_geomsu 2>&1 | tee geomsu.log
 
-      # 파이썬이 못 뜬 경우(설치 실패·타임아웃·강제중단)만 여기서 알린다.
-      # ★"로그를 확인해 주세요" 만 보내지 않는다 — 마지막 오류 줄을 같이 보낸다.
+      # 스크립트가 스스로 알리지 못한 경우(설치 실패·제한시간 초과로 취소·강제중단)
+      # 만 여기서 알린다. ★`failure()` 는 '취소'에서 돌지 않는다 — 제한시간을 넘겨
+      # 취소로 끝나는 날이 바로 알아야 하는 날이라 `!cancelled()` 로 넓힌다
+      # (이 레포 rank-check.yml 이 같은 이유로 쓰는 방식).
+      # ★"로그를 확인해 주세요" 만 보내지 않는다 — 마지막 기록을 같이 보낸다.
       - name: Notify on failure
-        if: failure()
+        if: ${{ !cancelled() && steps.audit.outcome != 'success' }}
         continue-on-error: true
         shell: bash
         env:

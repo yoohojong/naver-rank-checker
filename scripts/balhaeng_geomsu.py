@@ -98,24 +98,18 @@ def 단계뽑기(분류: str) -> int | None:
     return int(m.group(1)) if m else None
 
 
-def _숨김탭(ws) -> bool:
-    """구글시트에서 숨겨 둔 탭. 사장님 규칙 — 카외 보고·집계에서 숨김 탭은 뺀다.
-
-    ★2026-07-23: '두드러기 카외'(숨김)를 검수 대상에 넣는 바람에 매번 57건이
-      '단계 없어 건너뜀'으로 잡혔다. 그 탭엔 '키워드 분류' 열 자체가 없다 —
-      고칠 수 있는 문제가 아니라 애초에 안 봐야 할 탭이었다.
-    """
-    try:
-        return bool(ws._properties.get("hidden"))
-    except Exception:
-        return False
-
-
 def 대상읽기(sc: SheetsClient, limit: int) -> tuple[list[dict], list]:
+    """검수할 글 목록과, 단계를 못 읽어 건너뛴 목록을 함께 돌려준다.
+
+    ★숨김 탭 제외(2026-07-23) — 사장님 규칙: 카외 보고·집계는 숨김 탭을 뺀다.
+      '두드러기 카외'(숨김)가 대상에 들어가 매번 57건이 '단계 없어 건너뜀'으로
+      잡혔다. 그 탭엔 '키워드 분류' 열 자체가 없다 — 고칠 수 있는 문제가 아니라
+      애초에 안 봐야 할 탭이었다. gspread 공식 인자를 쓴다(내부 속성 접근 금지 —
+      라이브러리가 바뀌면 조용히 '안 숨김'으로 떨어져 문제가 되살아난다).
+    """
     본, 키, 건너뜀 = [], set(), []
-    탭들 = [ws for ws in sc.spreadsheet.worksheets()
-            if "카외" in ws.title and not any(x in ws.title for x in 제외탭)
-            and not _숨김탭(ws)]
+    탭들 = [ws for ws in sc.spreadsheet.worksheets(exclude_hidden=True)
+            if "카외" in ws.title and not any(x in ws.title for x in 제외탭)]
     print(f"  검수 탭 {len(탭들)}개: {', '.join(ws.title for ws in 탭들)}")
     # 탭 크기에 비례해 몫을 준다(균등이면 큰 탭이 며칠씩 밀린다 — 실측 27행 미갱신).
     크기 = [max(1, ws.row_count) for ws in 탭들]
@@ -316,15 +310,24 @@ def 시트반영(ws, 결과들: list[tuple[dict, dict]], 실패들: list[dict]):
     print(f"  시트 반영 — 갱신 {len(바꿀것)}행 · 추가 {len(새행)}행")
 
 
-def 검수하기(sc: SheetsClient, limit: int, 쓰기: bool) -> dict:
+def 검수하기(sc: SheetsClient, limit: int, 쓰기: bool, 마감분: int) -> dict:
     """검수를 끝까지 돌리고 결과를 돌려준다. 여기서 나는 예외는 '고장'이다."""
     대상, 건너뜀 = 대상읽기(sc, limit)
     print(f"  검수 대상 {len(대상)}건", flush=True)
     if not 대상:
-        raise RuntimeError("검수할 글이 한 건도 안 잡혔다 — 시트 링크 열이나 탭 이름이 바뀌었을 수 있다")
+        raise RuntimeError("검수할 글이 한 건도 안 잡혔습니다 — 시트 링크 열·탭 이름이 "
+                           "바뀌었거나, 봐야 할 탭이 숨김으로 되어 있을 수 있습니다")
 
-    결과들, 실패들 = [], []
+    # ★시간 예산(2026-07-23) — 네이버가 응답을 늦추면 150건이 워크플로 제한시간을
+    #   넘길 수 있다. 넘기면 실행이 '취소'로 끝나 알림이 한 통도 안 나간다.
+    #   가장 알아야 하는 날 가장 조용해지는 구조라 여기서 스스로 끊는다.
+    마감 = time.monotonic() + 마감분 * 60
+    결과들, 실패들, 시간초과 = [], [], []
     for i, t in enumerate(대상, 1):
+        if time.monotonic() > 마감:
+            시간초과 = 대상[i - 1:]
+            print(f"  ⏱ {마감분}분 넘겨 남은 {len(시간초과)}건은 다음 판으로 넘깁니다")
+            break
         print(f"  [{i}/{len(대상)}] {t['keyword'] or '?'}", flush=True)
         try:
             post = 한건수집(t)
@@ -339,12 +342,20 @@ def 검수하기(sc: SheetsClient, limit: int, 쓰기: bool) -> dict:
     print(f"\n=== 결과 — 합격 {n['합격']} · 보류 {n['보류']} · 불합격 {n['불합격']} "
           f"· 수집실패 {len(실패들)}")
 
+    # ★시트 쓰기가 실패해도 채점 결과를 버리지 않는다. 40분 걸려 다 재놓고
+    #   보고까지 못 받는 것이 제일 나쁘다 — 보고는 보내고 실패는 따로 알린다.
+    시트오류 = ""
     if 쓰기:
-        시트반영(탭준비(sc), 결과들, 실패들)
+        try:
+            시트반영(탭준비(sc), 결과들, 실패들)
+        except Exception as e:
+            시트오류 = 사람말로(e)
+            print(f"  ✗ 시트에 쓰지 못했습니다 — {시트오류}")
     else:
         print("  (GEOMSU_WRITE=0 — 시트에 쓰지 않음)")
 
-    return {"결과들": 결과들, "실패들": 실패들, "건너뜀": 건너뜀, "수": n}
+    return {"결과들": 결과들, "실패들": 실패들, "건너뜀": 건너뜀, "수": n,
+            "시간초과": 시간초과, "시트오류": 시트오류}
 
 
 def 보고문(요약: dict, 시트url: str) -> str:
@@ -354,36 +365,50 @@ def 보고문(요약: dict, 시트url: str) -> str:
     이제 = datetime.now(KST)
     오늘 = f"{이제.month}/{이제.day}"
     줄 = [f"📋 발행 검수 {오늘}",
-          f"검사 {len(결과들)}건 — 합격 {n['합격']} · 보류 {n['보류']} · "
-          f"고쳐야 함 {n['불합격']}"]
+          f"검사 {len(결과들)}건 — 합격 {n['합격']} · 고쳐야 함 {n['불합격']} · "
+          f"한번 봐야 함 {n['보류']}"]
     if 실패들:
         줄.append(f"글을 못 읽은 것 {len(실패들)}건")
 
-    고칠것 = [(p, r) for p, r in 결과들 if r["판정"] != "합격"]
-    if 고칠것:
+    def 지적줄(묶음, 제목):
+        if not 묶음:
+            return
         줄.append("")
-        줄.append("고쳐야 할 글")
-        for p, r in 고칠것[:12]:
+        줄.append(제목)
+        for p, r in 묶음[:12]:
             지적 = [d["내용"] for d in r["지적"] if d["등급"] == "치명"] or \
                    [d["내용"] for d in r["지적"] if d["등급"] == "주의"]
-            작업자 = f"({p.get('작업자')}) " if p.get("작업자") else ""
-            줄.append(f"· {p.get('keyword') or '?'} {작업자}— {' / '.join(지적[:2])}")
-        if len(고칠것) > 12:
-            줄.append(f"· … 외 {len(고칠것) - 12}건")
-    else:
+            앞 = " ".join(x for x in (p.get("keyword") or "?",
+                                      f"({p.get('작업자')})" if p.get("작업자") else "") if x)
+            줄.append(f"· {앞} — {' / '.join(지적[:2])}")
+        if len(묶음) > 12:
+            줄.append(f"· … 외 {len(묶음) - 12}건")
+
+    불합격 = [(p, r) for p, r in 결과들 if r["판정"] == "불합격"]
+    보류 = [(p, r) for p, r in 결과들 if r["판정"] == "보류"]
+    지적줄(불합격, "고쳐야 할 글")
+    지적줄(보류, "사람이 한번 봐야 할 글")
+    if 결과들 and not 불합격 and not 보류:
         줄.append("")
         줄.append("고칠 글 없음 — 전부 통과")
 
+    if 요약.get("시간초과"):
+        줄.append("")
+        줄.append(f"시간이 모자라 못 본 글 {len(요약['시간초과'])}건 — 다음 검사 때 봅니다")
     if 건너뜀:
         줄.append("")
         줄.append(f"검사 못 한 글 {len(건너뜀)}건 — 시트 '키워드 분류' 칸이 비어 있어 "
                   f"상위노출 기준(글자수·키워드 횟수)을 잴 수 없습니다")
+    if 요약.get("시트오류"):
+        줄.append("")
+        줄.append(f"⚠️ 결과를 시트에 쓰지 못했습니다 — {요약['시트오류']}")
     # 전건이 같은 이유로 걸리면 기준 쪽을 의심해야 한다. 경보가 아니라 보고 안 한 줄로 알린다.
-    if 결과들 and n["합격"] == 0 and len(결과들) >= 5:
+    if 결과들 and n["합격"] == 0 and n["보류"] == 0 and len(결과들) >= 5:
         사유 = {d["내용"].split("(")[0].split(":")[0].strip()
                 for _, r in 결과들 for d in r["지적"] if d["등급"] == "치명"}
-        if len(사유) <= 1:
-            줄.append(f"⚠️ 검사한 글 전부가 같은 이유로 걸렸습니다({', '.join(사유) or '?'}) "
+        if len(사유) == 1:
+            줄.append("")
+            줄.append(f"⚠️ 검사한 글 전부가 같은 이유로 걸렸습니다({', '.join(사유)}) "
                       f"— 글이 아니라 검수 기준이 어긋난 것일 수 있습니다")
     if 시트url:
         줄.append("")
@@ -391,17 +416,54 @@ def 보고문(요약: dict, 시트url: str) -> str:
     return "\n".join(줄)
 
 
-def 알림보내기(본문: str) -> None:
-    """토큰이 없거나 발송이 막혀도 검수 자체는 성공으로 끝난다(알림이 본업이 아니다)."""
+def 알림보내기(본문: str) -> bool:
+    """실제로 보냈는지를 돌려준다.
+
+    ★send_report 는 성공·실패를 삼키고 늘 0을 준다(다른 스크립트가 종료코드로 쓰는
+      함수라 손대지 않는다). 토큰이 만료되면 매일 초록불인 채로 사장님만 아무것도
+      못 받는 상태가 되므로, 여기서는 한 통이라도 실제로 갔는지 직접 확인한다.
+    """
     try:
-        from src.notify import send_report
-        send_report(본문)
+        from src.notify import send_telegram, split_message, PER_CHAT_INTERVAL_SEC
+        조각 = split_message(본문)
+        보냄 = 0
+        for i, 한조각 in enumerate(조각):
+            if send_telegram(한조각):
+                보냄 += 1
+            if i < len(조각) - 1:
+                time.sleep(PER_CHAT_INTERVAL_SEC)
+        return 보냄 > 0
     except Exception as e:
-        print(f"  [알림] 발송 실패({type(e).__name__}) — 결과는 시트에 남아 있습니다")
+        print(f"  [알림] 발송 실패({type(e).__name__})")
+        return False
+
+
+def 사람말로(e: Exception) -> str:
+    """흔한 고장은 사장님이 읽고 바로 행동할 수 있는 한 줄로 바꾼다."""
+    이름, 글 = type(e).__name__, str(e)
+    if 이름 == "KeyError":
+        return f"실행에 필요한 값이 등록돼 있지 않습니다({글}) — GitHub Secrets 확인"
+    if "PERMISSION" in 글.upper() or "403" in 글:
+        return "구글시트에 접근하지 못했습니다 — 서비스 계정이 시트에서 빠졌는지 확인"
+    if "404" in 글 and "spreadsheet" in 글.lower():
+        return "구글시트를 찾지 못했습니다 — 시트가 지워졌거나 주소가 바뀌었습니다"
+    if 이름 in ("Timeout", "ConnectionError", "ConnectTimeout", "ReadTimeout"):
+        return "네트워크가 끊겨 검수를 마치지 못했습니다 — 내일 다시 돕니다"
+    return 글[:200] or 이름
+
+
+def _숫자(이름: str, 기본: int) -> int:
+    값 = (os.environ.get(이름) or "").strip()
+    try:
+        return max(1, int(값)) if 값 else 기본
+    except ValueError:
+        print(f"  [{이름}] '{값}' 은 숫자가 아니라 {기본} 으로 봅니다")
+        return 기본
 
 
 def main() -> int:
-    limit = int((os.environ.get("GEOMSU_LIMIT") or "60").strip() or "60")
+    limit = _숫자("GEOMSU_LIMIT", 60)
+    마감분 = _숫자("GEOMSU_DEADLINE_MIN", 90)     # 워크플로 제한(120분)보다 넉넉히 앞
     쓰기 = (os.environ.get("GEOMSU_WRITE") or "1").strip() != "0"
     알림 = (os.environ.get("GEOMSU_NOTIFY") or "1").strip() != "0"
     print(f"=== 발행 검수 {datetime.now(KST):%Y-%m-%d %H:%M} (최대 {limit}건) ===", flush=True)
@@ -414,31 +476,36 @@ def main() -> int:
     #   → 결과는 **매일 보고**로 보낸다. 실패로 끝내는 건 **진짜 고장일 때만**이다.
     try:
         sc = SheetsClient(os.environ["SPREADSHEET_ID"], os.environ["SERVICE_ACCOUNT_JSON"])
-        요약 = 검수하기(sc, limit, 쓰기)
+        요약 = 검수하기(sc, limit, 쓰기, 마감분)
     except Exception as e:
-        이유 = f"{type(e).__name__}: {e}".strip()[:400]
-        print(f"  ✗ 고장 — {이유}")
-        if 알림:
-            알림보내기(f"🚨 발행 검수가 돌지 못했습니다 "
-                       f"({datetime.now(KST):%m/%d})\n이유: {이유}\n{_런링크()}")
-        _알림표시남기기()
+        이유 = 사람말로(e)
+        print(f"  ✗ 고장 — {type(e).__name__}: {e}")
+        if 알림 and 알림보내기(f"🚨 발행 검수가 돌지 못했습니다 "
+                              f"({datetime.now(KST):%m/%d})\n{이유}\n{_런링크()}"):
+            _알림표시남기기()     # ★보낸 게 확인됐을 때만. 아니면 워크플로가 대신 알린다.
         return 1
 
     # 전멸은 자연스러운 결과가 아니다 — 링크가 낡았거나 네이버가 막고 있다.
     전체 = len(요약["결과들"]) + len(요약["실패들"])
     전멸 = bool(전체) and len(요약["실패들"]) / 전체 > 0.5
     시트url = getattr(sc.spreadsheet, "url", "") or ""
+    보냈나 = False
 
     if 알림:
         본문 = 보고문(요약, 시트url)
         if 전멸:
             본문 = (f"🚨 글을 못 읽은 것이 절반을 넘습니다 — 링크가 낡았거나 "
                     f"네이버가 막고 있을 수 있습니다\n\n{본문}")
-        알림보내기(본문)
-        print("  텔레그램 보고 보냄")
+        보냈나 = 알림보내기(본문)
+        print("  텔레그램 보고 보냄" if 보냈나 else "  ✗ 텔레그램 보고를 보내지 못했습니다")
 
-    if 전멸:
-        _알림표시남기기()
+    # ★보고가 유일한 통로다. 그 통로가 막히면 조용히 초록불로 끝내지 않는다 —
+    #   실패로 끝내면 GitHub 이 실패 메일을 보내 두 번째 통로가 된다.
+    if 알림 and not 보냈나:
+        return 1
+    if 전멸 or 요약["시트오류"]:
+        if 보냈나:
+            _알림표시남기기()
         return 1
     return 0
 
