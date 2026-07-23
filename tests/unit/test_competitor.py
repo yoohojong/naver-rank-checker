@@ -14,16 +14,13 @@ import gspread
 
 from src.competitor import (
     HISTORY_HEADER,
-    RANKING_HEADER,
     aggregate_ranking,
     append_daily_competitors,
     build_actor_aliases,
     build_competitor_rows,
     identify_actor,
-    ranking_to_sheet_values,
     rows_to_sheet_values,
     run_competitor_update,
-    write_ranking,
     CompetitorCollector,
 )
 from src.parser import SlotItem, collect_slot_items
@@ -505,14 +502,12 @@ def test_aggregate_by_product_separates_products():
     assert all(r["점유율(%)"] == 100.0 for r in rows)  # 각 제품에서 유일한 키워드
 
 
-def test_ranking_to_sheet_values_matches_header_order():
-    ranking = aggregate_ranking([_hist("2026-07-22", "비듬샴푸", "bigcafe", 1)])
-    values = ranking_to_sheet_values(ranking)
-    assert len(values[0]) == len(RANKING_HEADER)
-    assert values[0][RANKING_HEADER.index("주체")] == "bigcafe"
+def _values(date, keywords, actor="bigcafe"):
+    return [
+        [date, "샴푸 카외", kw, "누락", "인기글", "블록", "1", actor, "빅카페", "카페", "", "u"]
+        for kw in keywords
+    ]
 
-
-# ----- 시트 I/O 대역 -----
 
 class FakeWorksheet:
     def __init__(self, values=None):
@@ -675,55 +670,6 @@ def test_append_returns_history_for_aggregation_without_second_read():
     assert {row["날짜"] for row in history} == {"2026-07-22", "2026-07-23"}
 
 
-def test_run_competitor_update_writes_both_tabs():
-    sheet = FakeSpreadsheet()
-    client = FakeClient(sheet)
-    collector = CompetitorCollector(our_cafe_slugs={"ourcafe"})
-    collector.add(
-        date_str="2026-07-23", tab="샴푸 카외", keyword="비듬샴푸", our_state="누락", items=_items()
-    )
-    result = run_competitor_update(client, collector, "2026-07-23")
-
-    assert result["history"]["rows_written"] > 0
-    assert result["actors"] > 0
-    assert sheet.worksheet("경쟁사_랭킹").values[0] == RANKING_HEADER
-    assert len(sheet.worksheet("경쟁사_랭킹").values) > 1
-
-
-def test_run_competitor_update_preserves_ranking_when_history_fails():
-    """이력 적재/읽기 실패 시 집계 탭을 백지로 덮어쓰면 안 된다(지난 집계 보존)."""
-    class HalfBrokenClient:
-        def __init__(self, spreadsheet):
-            self.spreadsheet = spreadsheet
-            self._calls = 0
-
-    sheet = FakeSpreadsheet()
-    client = FakeClient(sheet)
-    write_ranking(client, [["빅카페", "bigcafe", "카페", 5, 3, 1.5, 2, 3, "2026-07-22", "u"]])
-
-    class BrokenSpreadsheet:
-        def worksheet(self, title):
-            raise RuntimeError("read quota exceeded")
-
-        def add_worksheet(self, title, rows, cols):
-            raise RuntimeError("read quota exceeded")
-
-    broken = FakeClient(BrokenSpreadsheet())
-    collector = CompetitorCollector()
-    collector.add(
-        date_str="2026-07-23", tab="샴푸 카외", keyword="비듬샴푸", our_state="누락", items=_items()
-    )
-    result = run_competitor_update(broken, collector, "2026-07-23")
-
-    assert "error" in result["history"]
-    assert result["ranking"]["rows_written"] == 0
-    assert "skipped" in result["ranking"]
-    # 기존 집계 탭은 그대로 남아 있다.
-    ranking_ws = sheet.worksheet("경쟁사_랭킹")
-    filled = [row for row in ranking_ws.values if any(str(c).strip() for c in row)]
-    assert len(filled) == 2
-
-
 def test_scattered_deletions_collapse_into_one_call_and_lose_nothing():
     """이번에 0건 나온 키워드가 사이사이 끼면 지울 구간이 흩어진다 → 호출 폭증(429) 위험.
 
@@ -862,21 +808,6 @@ def test_header_mismatch_tolerates_trailing_blank_columns():
     assert result["rows_written"] == 1
 
 
-def test_ranking_tab_drops_previous_rows_when_ranking_shrinks():
-    """경쟁사가 줄어든 날, 어제 줄이 아래에 남아 오늘 것처럼 보이면 안 된다."""
-    sheet = FakeSpreadsheet()
-    client = FakeClient(sheet)
-    many = [[f"이름{i}", f"actor{i}", "카페", 1, 1, 1.0, 0, 1, "2026-07-22", "u"] for i in range(30)]
-    write_ranking(client, many)
-    few = [[f"새{i}", f"new{i}", "카페", 1, 1, 1.0, 0, 1, "2026-07-23", "u"] for i in range(3)]
-    write_ranking(client, few)
-
-    ws = sheet.worksheet("경쟁사_랭킹")
-    filled = [row for row in ws.values if any(str(c).strip() for c in row)]
-    assert len(filled) == 4  # 헤더 + 3줄, 어제 27줄은 사라짐
-    assert all(row[8] == "2026-07-23" for row in filled[1:])
-
-
 def test_header_mismatch_stops_instead_of_writing_shifted_data():
     """탭 헤더가 코드와 다르면 칸이 밀려 읽힌다 — 그 값으로 집계 탭을 덮어쓰면 안 된다."""
     old_header = [c for c in HISTORY_HEADER if c != "이름"]  # 이름 칸 없던 옛 스키마
@@ -892,30 +823,37 @@ def test_header_mismatch_stops_instead_of_writing_shifted_data():
     assert len(stale_ws.values) == 2  # 아무것도 안 건드림
 
 
-def test_ranking_tab_resized_to_fit_and_capped():
-    """격자(기본 2000행)보다 큰 내용을 쓰면 시트가 거부해 탭이 빈 채 남는다."""
-    from src.competitor import RANKING_MAX_ROWS
 
+
+def test_run_competitor_update_writes_only_one_tab():
+    """★ 사장님 2026-07-23 "3개까지 만들어 나눌거까지 없잖아" — 시트 탭은 이력 하나뿐."""
     sheet = FakeSpreadsheet()
     client = FakeClient(sheet)
-    many = [[f"이름{i}", f"actor{i}", "카페", 1, 1, 1.0, 0, 1, "2026-07-23", "u"] for i in range(500)]
-    result = write_ranking(client, many)
+    collector = CompetitorCollector(our_cafe_slugs={"ourcafe"})
+    collector.add(
+        date_str="2026-07-23", tab="샴푸 카외", keyword="비듬샴푸", our_state="누락", items=_items()
+    )
+    result = run_competitor_update(client, collector, "2026-07-23")
 
-    ws = sheet.worksheet("경쟁사_랭킹")
-    assert result["rows_written"] == RANKING_MAX_ROWS
-    assert result["dropped_rows"] == 500 - RANKING_MAX_ROWS  # 잘린 수를 숨기지 않는다
-    assert ws.grid_rows >= len(ws.values)
-    assert ws.values[0] == RANKING_HEADER
+    assert list(sheet._worksheets.keys()) == [HISTORY_HEADER and "경쟁사_이력"]
+    assert result["history"]["rows_written"] > 0
+    # 집계는 값으로만 돌려준다(요약·대시보드용)
+    assert result["actors"] > 0
+    assert isinstance(result["byProduct"], list)
 
 
-def test_write_ranking_rewrites_whole_tab():
-    sheet = FakeSpreadsheet()
-    client = FakeClient(sheet)
-    write_ranking(client, [["빅카페", "bigcafe", "카페", 5, 3, 1.5, 2, 3, "2026-07-23", "u"]])
-    write_ranking(client, [["라이벌", "rivalcafe", "카페", 1, 1, 2.0, 0, 1, "2026-07-23", "u"]])
+def test_run_competitor_update_no_tab_written_when_history_fails():
+    class BrokenSpreadsheet:
+        def worksheet(self, title):
+            raise RuntimeError("quota")
 
-    ws = sheet.worksheet("경쟁사_랭킹")
-    filled = [row for row in ws.values if any(str(c).strip() for c in row)]
-    assert filled[0] == RANKING_HEADER
-    assert len(filled) == 2          # 매 실행 전체 갱신 = 이전 행 잔류 X
-    assert filled[1][1] == "rivalcafe"
+        def add_worksheet(self, title, rows, cols):
+            raise RuntimeError("quota")
+
+    collector = CompetitorCollector()
+    collector.add(
+        date_str="2026-07-23", tab="샴푸 카외", keyword="비듬샴푸", our_state="누락", items=_items()
+    )
+    result = run_competitor_update(FakeClient(BrokenSpreadsheet()), collector, "2026-07-23")
+    assert "error" in result["history"]
+    assert result["actors"] == 0

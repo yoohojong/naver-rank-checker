@@ -26,19 +26,16 @@ HISTORY_HEADER = [
 ]
 HISTORY_TAB_NAME = "경쟁사_이력"
 
-# 집계 탭 스키마 (고정). 사장님이 보는 화면 = 이 탭.
+# 집계 결과 열 이름 (성과 대시보드·요약용. 시트에는 쓰지 않는다 — 탭은 이력 하나뿐).
 RANKING_HEADER = [
     "이름", "주체", "종류", "등장 횟수", "노출 키워드 수", "평균 순위", "1위 횟수",
     "우리가 놓친 키워드 수", "최근 등장일", "대표 URL",
 ]
-RANKING_TAB_NAME = "경쟁사_랭킹"
-
-# 제품(시트 탭)별 섹터 — 사장님 요청(2026-07-23) "제품별로 분류해서".
+# 제품별 집계 열 이름 (대시보드용).
 PRODUCT_HEADER = [
     "기준일", "제품", "이름", "주체", "종류", "노출 키워드 수", "점유율(%)",
     "평균 순위", "우리가 놓친 키워드 수", "경쟁 키워드 수",
 ]
-PRODUCT_TAB_NAME = "경쟁사_제품별"
 PRODUCT_TOP_N = 20  # 제품마다 상위 몇 곳까지 시트에 남길지
 
 # 시트 적재량 상한. 구좌(AB/스마트블록/인기글)가 3종이라 구좌별 상한만 두면 최대 3배가 된다
@@ -56,9 +53,6 @@ MAX_READD_ROWS = 3000
 # 그래도 남는 삭제 호출 수의 절대 상한. 넘으면 이번 실행은 정리를 건너뛴다
 # (수백 번 지우다 한도에 걸려 '지우다 만 상태' 가 되는 것보다 안 지우는 편이 안전).
 HARD_MAX_DELETE_CALLS = 20
-# 집계 탭에 남길 최대 줄 수. 사장님이 보는 건 위쪽 몇십 곳이고,
-# 전체를 쓰면 한 번에 보내는 양이 커져 실패 위험이 오른다. 잘린 수는 로그로 알린다.
-RANKING_MAX_ROWS = 300
 
 # "우리가 놓친" 으로 볼 상태값 (K 컬럼 base 기준).
 MISSED_STATES = {"누락", "미노출", "삭제"}
@@ -358,8 +352,6 @@ def aggregate_ranking(history_rows: list[dict]) -> list[dict]:
     return out
 
 
-def ranking_to_sheet_values(ranking: list[dict]) -> list[list]:
-    return [[row.get(col, "") for col in RANKING_HEADER] for row in ranking]
 
 
 def aggregate_by_product(history_rows: list[dict], *, top_n: int = PRODUCT_TOP_N) -> list[dict]:
@@ -438,8 +430,6 @@ def aggregate_by_product(history_rows: list[dict], *, top_n: int = PRODUCT_TOP_N
     return trimmed
 
 
-def product_ranking_to_sheet_values(rows: list[dict]) -> list[list]:
-    return [[row.get(col, "") for col in PRODUCT_HEADER] for row in rows]
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -701,45 +691,6 @@ def _cutoff_date(date_str: str, retention_days: int) -> str:
         return ""
 
 
-def write_ranking(
-    client,
-    ranking_values: list[list],
-    *,
-    tab_name: str = RANKING_TAB_NAME,
-    header: list | None = None,
-) -> dict:
-    """집계 탭 전체 재작성 (헤더 + 집계 행). 매 실행 갱신 = 항상 최신 상태.
-
-    Returns:
-        {"rows_written": n, "created_tab": bool} / 실패 시 "error" 키.
-    """
-    head = list(header or RANKING_HEADER)
-    try:
-        ws, created = _get_or_create_ws(client, tab_name, head)
-        shown = list(ranking_values)[:RANKING_MAX_ROWS]
-        dropped = max(0, len(ranking_values) - len(shown))
-        payload = [head] + shown
-        # 탭 격자를 payload 크기에 맞춘다. 격자보다 큰 내용을 쓰면 시트가 거부하고,
-        # clear() 로 비운 뒤였다면 탭이 빈 채로 남는다. resize 는 넘치는 옛 행도 함께 잘라준다.
-        from src.sheets import _sheets_api_retry
-
-        try:
-            _sheets_api_retry(
-                lambda: ws.resize(rows=len(payload) + 10, cols=max(len(head), 10)),
-                ctx="경쟁사 랭킹 resize",
-            )
-        except Exception:  # noqa: BLE001 — resize 미지원 대역/구버전이면 clear 로 대체
-            ws.clear()
-        # 경쟁사가 줄어든 날 예전 줄이 아래에 남아 오늘 것처럼 보이는 걸 막는다.
-        # 격자를 딱 맞게 줄이면 다음 실행에서 한 줄만 늘어도 넘쳐 실패하므로,
-        # 여유 10줄은 남기되 그 자리를 **빈 값으로 덮어써서** 옛 줄이 안 보이게 한다.
-        blank = [""] * len(head)
-        ws.update("A1", payload + [list(blank) for _ in range(10)], value_input_option="RAW")
-        return {"rows_written": len(shown), "created_tab": created, "dropped_rows": dropped}
-    except Exception as e:  # noqa: BLE001
-        return {"rows_written": 0, "created_tab": False, "error": str(e)}
-
-
 def run_competitor_update(
     client,
     collector: CompetitorCollector,
@@ -747,10 +698,12 @@ def run_competitor_update(
     *,
     retention_days: int = DEFAULT_RETENTION_DAYS,
 ) -> dict:
-    """이력 적재 → 이력 전체 재집계 → 집계 탭 갱신. 한 번에 처리하는 진입점.
+    """경쟁사 기록을 **시트 탭 하나**에 적재하고, 집계는 값만 돌려준다.
 
-    이력 적재가 실패했으면 집계 탭은 **건드리지 않는다** — 읽기 실패로 빈 집계를 써서
-    사장님이 보는 탭이 백지가 되는 사고를 막는다(실패 시 지난 집계가 그대로 남는 편이 낫다).
+    ★ 2026-07-23 사장님: "구글스프레드 뭐 3개까지 만들어 하나로 취합해 나눌거까지 없잖아"
+      → 시트에 쓰는 탭은 `경쟁사_이력` **하나뿐**. 랭킹·제품별 표는 시트에 만들지 않고
+        성과 대시보드에서 같은 기록으로 계산해 보여준다(사장님이 지표는 대시보드에서 본다고 확정).
+      집계 값은 그대로 돌려주므로 텔레그램 요약·로그에서는 계속 쓸 수 있다.
     """
     rows = collector.rows()
     append_result = append_daily_competitors(
@@ -760,23 +713,13 @@ def run_competitor_update(
     if history is None:
         return {
             "history": append_result,
-            "ranking": {"rows_written": 0, "skipped": "이력 적재 실패 — 집계 탭 보존"},
             "actors": 0,
             "top": [],
         }
     ranking = aggregate_ranking(history)
-    write_result = write_ranking(client, ranking_to_sheet_values(ranking))
-    by_product = aggregate_by_product(history)
-    product_result = write_ranking(
-        client,
-        product_ranking_to_sheet_values(by_product),
-        tab_name=PRODUCT_TAB_NAME,
-        header=PRODUCT_HEADER,
-    )
     return {
         "history": append_result,
-        "ranking": write_result,
-        "byProduct": product_result,
+        "byProduct": aggregate_by_product(history),
         "actors": len(ranking),
         "top": ranking[:10],
     }
