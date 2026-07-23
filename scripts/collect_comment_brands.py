@@ -39,8 +39,25 @@ UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
 _CAFE_URL = re.compile(r"cafe\.naver\.com/([^/?#]+)/(\d+)")
 _CLUB_ID = re.compile(r'g_sClubId\s*=\s*"(\d+)"')
 
-# 우리 제품 — 세지 않는다(경쟁이 아니다). 흐트러진 표기도 정리 후 비교한다.
-OUR_PRODUCT_HINTS = {"뽀얀", "얀샴푸"}
+# 우리 제품 — 세지 않는다(경쟁이 아니다). 흐트러뜨린 표기·되살린 표기 둘 다 막는다.
+# 샴푸만 넣어놨다가 바디워시 표기('ㅃ얀 바디워시')가 표에 남았다(2026-07-23 실측) → 브랜드로 막는다.
+OUR_PRODUCT_HINTS = {"뽀얀", "얀"}
+
+# 제품이 아니라 '무엇'을 가리키는 말 — 표에 들어가면 안 된다.
+# 실측에서 '지루성두피염샴푸' 가 제품처럼 올라왔다(2026-07-23).
+NOT_A_BRAND = {
+    "샴푸", "탈모샴푸", "비듬샴푸", "지루성샴푸", "지루성두피염샴푸", "두피샴푸",
+    "바디워시", "바디로션", "트리트먼트", "린스", "크림", "앰플", "토닉",
+    "약국", "병원", "피부과", "대학병원", "올리브영", "공홈", "본사",
+}
+
+
+def is_real_brand(name: str) -> bool:
+    """표에 넣을 만한 브랜드인가 — 일반 명칭·장소는 뺀다."""
+    key = normalize_name(name)
+    if len(key) < 2:
+        return False
+    return key not in {normalize_name(x) for x in NOT_A_BRAND}
 
 
 class CommentFetcher:
@@ -120,7 +137,7 @@ def mentions_from_comments(comments: list) -> list:
         return out
     joined = " / ".join(texts)[:200]
     return [{"표시": n, "키": normalize_name(n), "종류": "제품", "댓글": joined, "판정": "LLM"}
-            for n in names]
+            for n in names if is_real_brand(n)]
 
 
 def scan_keyword(crawler: CommentFetcher, kw: str, *, our_links: set, our_slugs: set,
