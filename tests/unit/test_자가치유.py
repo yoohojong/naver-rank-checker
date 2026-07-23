@@ -8,6 +8,7 @@
 """
 import importlib.util
 import os
+import pathlib
 import sys
 
 import pytest
@@ -200,3 +201,111 @@ class Test증거줄_다듬기:
         결과 = H._증거줄(원본, 원본.index("ConnectionResetError"))
         assert 결과.startswith("ConnectionResetError"), f"앞머리가 남았다: {결과!r}"
         assert "2026-07-23" not in 결과
+
+
+class Test라이브_실제상태:
+    """★독립검토 CRITICAL 회귀 — 라이브에서 실제로 오는 payload 로만 검사한다.
+
+    옛 테스트는 `conclusion: "failure"` 인 job 을 모킹했다. 그런데 자가치유는
+    **같은 job 의 마지막 step** 이라, 라이브에서 자기 job 은 언제나
+    status=in_progress · conclusion=None 이다. 그래서 진단이 100% '알 수 없음' 으로
+    나왔는데도 24건이 전부 통과했다 — 테스트가 작성자의 틀린 모델을 되풀이한 탓.
+    """
+
+    def _진단(self, H, monkeypatch, job, 로그):
+        def api(경로, 방법="GET", 본문=None, raw=False):
+            if "/jobs?" in 경로:
+                return {"jobs": [job]}
+            if "/logs" in 경로:
+                return 로그
+            return None
+        monkeypatch.setattr(H, "_api", api)
+        return H.실패로그_원인("r", "999")
+
+    def test_진행중인_자기_job_도_진단한다(self, H, monkeypatch):
+        원인, _, _ = self._진단(H, monkeypatch,
+            {"id": 7, "status": "in_progress", "conclusion": None,
+             "steps": [{"name": "핵심", "conclusion": "failure"},
+                       {"name": "자가치유 보고", "conclusion": None}]},
+            "ConnectionResetError: [Errno 104] Connection reset by peer")
+        assert 원인 != "알 수 없음", "라이브에서 항상 이 상태다 — 여기서 못 읽으면 2층이 죽는다"
+        assert "핵심" in 원인
+
+    def test_성공한_job_은_건드리지_않는다(self, H, monkeypatch):
+        원인, _, _ = self._진단(H, monkeypatch,
+            {"id": 7, "status": "completed", "conclusion": "success", "steps": []},
+            "ConnectionResetError")
+        assert 원인 == "알 수 없음"
+
+
+class Test오탐_방지:
+    """★독립검토 H-1 — 오진은 사장님께 틀린 조치를 시킨다(토큰 재발급 등)."""
+
+    def _진단(self, H, monkeypatch, 로그):
+        def api(경로, 방법="GET", 본문=None, raw=False):
+            if "/jobs?" in 경로:
+                return {"jobs": [{"id": 7, "conclusion": None,
+                                  "steps": [{"name": "핵심", "conclusion": "failure"}]}]}
+            if "/logs" in 경로:
+                return 로그
+            return None
+        monkeypatch.setattr(H, "_api", api)
+        return H.실패로그_원인("r", "999")[0]
+
+    def test_pip_의_401kB_를_토큰만료로_읽지_않는다(self, H, monkeypatch):
+        원인 = self._진단(H, monkeypatch,
+            "Downloading pandas-2.4.1.tar.gz (401 kB)\n"
+            "Traceback (most recent call last):\n"
+            "AttributeError: 'NoneType' object has no attribute 'get'\n")
+        assert "코드" in 원인, f"pip 출력에 낚였다: {원인}"
+
+    def test_수집_401건_도_토큰만료가_아니다(self, H, monkeypatch):
+        원인 = self._진단(H, monkeypatch,
+            "수집 401건 완료\nTraceback (most recent call last):\nTimeoutError: timed out\n")
+        assert "시간" in 원인, f"본문 숫자에 낚였다: {원인}"
+
+    def test_이미_복구된_재시도가_진짜_원인을_덮지_않는다(self, H, monkeypatch):
+        원인 = self._진단(H, monkeypatch,
+            "[retry 1/3] ConnectionResetError → [retry 2/3] 성공\n"
+            "Traceback (most recent call last):\n"
+            "AttributeError: 'NoneType' object\n")
+        assert "코드" in 원인, f"앞쪽 잡음이 이겼다: {원인}"
+
+    def test_진짜_401은_잡는다(self, H, monkeypatch):
+        원인 = self._진단(H, monkeypatch, "urllib.error.HTTPError: HTTP Error 401: Unauthorized")
+        assert "열쇠" in 원인
+
+
+class Test연속_카운트_보정:
+    def test_타임아웃도_실패로_센다(self, H, monkeypatch):
+        """★M-1: 5회 연속 타임아웃이 '연속 1회'로 보고되면 3층이 안 열린다."""
+        monkeypatch.setattr(H, "_api", lambda *a, **k: _runs("timed_out", "timed_out", "success"))
+        assert H.연속실패_횟수("r", "w", "999", "failure") == 3
+
+    def test_취소는_연속을_끊지_않는다(self, H, monkeypatch):
+        """★M-3: 취소가 잦은 워크플로에서 연속이 늘 1 이 되던 문제."""
+        monkeypatch.setattr(H, "_api", lambda *a, **k: _runs("cancelled", "failure", "cancelled", "failure"))
+        assert H.연속실패_횟수("r", "w", "999", "failure") == 3
+
+
+class Test알림_폭주_방지:
+    """★H-3: 5분 크론이 고장나면 하루 288통 — 사장님이 알림을 꺼버린다."""
+
+    def test_처음_세_번은_매번_알린다(self, H):
+        assert all(H.알릴차례인가(n) for n in (1, 2, 3))
+
+    def test_그_뒤로는_띄엄띄엄(self, H):
+        보냄 = [n for n in range(4, 40) if H.알릴차례인가(n)]
+        assert 보냄 == [12, 24, 36], f"너무 자주 보낸다: {보냄}"
+
+
+def test_두_저장소_사본이_안_갈라졌다():
+    """★L-4: 한쪽만 고치면 조용히 갈라진다 — 버전으로 대조."""
+    import re
+    한쪽 = pathlib.Path(HERE, "자가치유.py").read_text(encoding="utf-8")
+    m = re.search(r'버전 = "([^"]+)"', 한쪽)
+    assert m, "버전 표시가 사라졌다"
+    저쪽 = pathlib.Path(HERE, "..", "..", "team project", "cafe-external", "자가치유.py")
+    if 저쪽.exists():
+        assert m.group(1) in 저쪽.read_text(encoding="utf-8"), \
+            "두 저장소의 자가치유.py 버전이 다르다 — 한쪽만 고쳤다"

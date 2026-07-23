@@ -36,7 +36,12 @@ jobs:
   collect:
     runs-on: ubuntu-latest
     permissions:
+      # ★job 레벨 permissions 는 top-level 을 '병합' 이 아니라 **대체**한다.
+      #   여기 안 적힌 스코프는 none 이 되므로, 위에 적어둔 actions·issues 를
+      #   여기에도 다시 써야 자가치유가 로그를 읽고 이슈를 열 수 있다(독립검토 H-2).
       contents: write        # 판정 결과(data/brand_verdicts.json)를 되돌려 저장한다
+      actions: read          # 자가치유: 최근 run·실패 로그 조회
+      issues: write          # 자가치유: 3회 연속 실패 시 확인용 이슈
     # 전체 키워드(약 400개) × 글 4개 = 90분 안팎. 넉넉히 잡되 무한정 돌지는 않게.
     timeout-minutes: 180
     steps:
