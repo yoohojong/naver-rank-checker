@@ -56,7 +56,7 @@ jobs:
         env:
           SPREADSHEET_ID: ${{ secrets.SPREADSHEET_ID }}
           SERVICE_ACCOUNT_JSON: ${{ secrets.SERVICE_ACCOUNT_JSON }}
-          GEOMSU_LIMIT: ${{ github.event.inputs.limit || '60' }}
+          GEOMSU_LIMIT: ${{ github.event.inputs.limit || '150' }}
           GEOMSU_WRITE: ${{ github.event.inputs.write || '1' }}
           PYTHONIOENCODING: 'utf-8'
         run: |

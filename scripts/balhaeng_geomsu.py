@@ -88,7 +88,10 @@ def 대상읽기(sc: SheetsClient, limit: int) -> list[dict]:
     본, 키, 건너뜀 = [], set(), []
     탭들 = [ws for ws in sc.spreadsheet.worksheets()
             if "카외" in ws.title and not any(x in ws.title for x in 제외탭)]
-    탭몫 = max(1, limit // max(1, len(탭들)))    # 한 탭이 limit 을 독차지하지 않게
+    # 탭 크기에 비례해 몫을 준다(균등이면 큰 탭이 며칠씩 밀린다 — 실측 27행 미갱신).
+    크기 = [max(1, ws.row_count) for ws in 탭들]
+    총 = sum(크기) or 1
+    몫들 = [max(1, int(limit * c / 총)) for c in 크기]
     for 탭순, ws in enumerate(탭들):
         rows = ws.get_all_values()
         if not rows:
@@ -117,7 +120,7 @@ def 대상읽기(sc: SheetsClient, limit: int) -> list[dict]:
                 continue
             본.append({"url": 링크, "keyword": 칸("키워드"), "stage": stage,
                        "product": "바디" if "바디" in ws.title else "샴푸"})
-            if len(본) >= 탭몫 * (탭순 + 1) or len(본) >= limit:
+            if len(본) >= sum(몫들[:탭순 + 1]) or len(본) >= limit:
                 break
     if 건너뜀:
         print(f"  단계(키워드 분류) 없어 건너뜀 {len(건너뜀)}건 "
