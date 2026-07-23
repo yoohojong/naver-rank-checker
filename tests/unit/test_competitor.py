@@ -21,6 +21,8 @@ from src.competitor import (
     identify_actor,
     rows_to_sheet_values,
     run_competitor_update,
+    build_summary_rows,
+    SUMMARY_HEADER,
     CompetitorCollector,
 )
 from src.parser import SlotItem, collect_slot_items
@@ -825,8 +827,12 @@ def test_header_mismatch_stops_instead_of_writing_shifted_data():
 
 
 
-def test_run_competitor_update_writes_only_one_tab():
-    """★ 사장님 2026-07-23 "3개까지 만들어 나눌거까지 없잖아" — 시트 탭은 이력 하나뿐."""
+def test_run_competitor_update_writes_summary_and_keeps_history():
+    """사장님 눈에 보이는 표는 '경쟁사' 하나 — 원본 기록은 계산용으로 숨긴다.
+
+    (숨김 처리 자체는 실제 시트 API 라 대역에선 조용히 실패한다. 여기선 표가 제대로
+     만들어지는지와 원본이 남는지를 본다.)
+    """
     sheet = FakeSpreadsheet()
     client = FakeClient(sheet)
     collector = CompetitorCollector(our_cafe_slugs={"ourcafe"})
@@ -835,12 +841,13 @@ def test_run_competitor_update_writes_only_one_tab():
     )
     result = run_competitor_update(client, collector, "2026-07-23")
 
-    assert list(sheet._worksheets.keys()) == [HISTORY_HEADER and "경쟁사_이력"]
-    assert result["history"]["rows_written"] > 0
-    # 집계는 값으로만 돌려준다(요약·대시보드용)
-    assert result["actors"] > 0
-    assert isinstance(result["byProduct"], list)
-
+    assert set(sheet._worksheets.keys()) == {"경쟁사_이력", "경쟁사"}
+    assert result["summary"]["rows_written"] > 0
+    ws = sheet.worksheet("경쟁사")
+    assert ws.values[0] == SUMMARY_HEADER
+    filled = [r for r in ws.values[1:] if any(str(c).strip() for c in r)]
+    assert filled and filled[0][0] == "샴푸"      # 제품군
+    assert isinstance(filled[0][2], int)          # 횟수
 
 def test_run_competitor_update_no_tab_written_when_history_fails():
     class BrokenSpreadsheet:
@@ -885,3 +892,33 @@ def test_source_name_skips_noise_only_anchor_and_takes_real_one():
     """
     items = collect_slot_items(_html(box))
     assert items and items[0].source_name == "인천맘톡 (인천맘 소중한인연)"
+
+
+def test_summary_is_product_name_count():
+    """★ 사장님이 시트에서 보는 표 = 제품군 · 경쟁사 이름 · 횟수 (2026-07-23)."""
+    history = [
+        _hist("2026-07-23", "비듬샴푸", "bigcafe", 1, name="빅카페"),
+        _hist("2026-07-23", "지루성두피", "bigcafe", 2, name="빅카페"),
+        _hist("2026-07-23", "탈모샴푸", "rivalcafe", 1, name="라이벌카페", state="AB"),
+        {**_hist("2026-07-23", "등드름", "bodycafe", 1, name="바디카페"), "탭": "바디워시 카외"},
+    ]
+    rows = build_summary_rows(history)
+
+    assert SUMMARY_HEADER[:3] == ["제품군", "경쟁사 이름", "횟수"]
+    # 제품군은 '샴푸 카외' → '샴푸'
+    assert [r[0] for r in rows] == ["바디워시", "샴푸", "샴푸"]
+    top = [r for r in rows if r[0] == "샴푸"][0]
+    assert top[1] == "빅카페" and top[2] == 2      # 이름 · 횟수
+    assert top[3] == 2                             # 우리가 놓친
+    rival = [r for r in rows if r[1] == "라이벌카페"][0]
+    assert rival[3] == 0                           # 우리가 AB 노출 = 놓친 것 아님
+
+
+def test_summary_uses_actor_when_name_missing():
+    history = [_hist("2026-07-23", "비듬샴푸", "nonamecafe", 1, name="")]
+    rows = build_summary_rows(history)
+    assert rows[0][1] == "nonamecafe"
+
+
+def test_summary_empty_history():
+    assert build_summary_rows([]) == []

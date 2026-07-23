@@ -26,6 +26,12 @@ HISTORY_HEADER = [
 ]
 HISTORY_TAB_NAME = "경쟁사_이력"
 
+# ★ 사장님이 시트에서 실제로 보는 표 (2026-07-23 "그냥 제품군이랑 경쟁사 이름. 그리고 횟수").
+#   원본 기록(경쟁사_이력)은 계산용이라 숨김 처리하고, 눈에 보이는 건 이 표 하나다.
+SUMMARY_TAB_NAME = "경쟁사"
+SUMMARY_HEADER = ["제품군", "경쟁사 이름", "횟수", "우리가 놓친", "평균 순위", "확인일"]
+SUMMARY_TOP_N = 20  # 제품군마다 몇 곳까지 보여줄지
+
 # 집계 결과 열 이름 (성과 대시보드·요약용. 시트에는 쓰지 않는다 — 탭은 이력 하나뿐).
 RANKING_HEADER = [
     "이름", "주체", "종류", "등장 횟수", "노출 키워드 수", "평균 순위", "1위 횟수",
@@ -352,6 +358,66 @@ def aggregate_ranking(history_rows: list[dict]) -> list[dict]:
     return out
 
 
+
+
+def build_summary_rows(history_rows: list[dict], *, top_n: int = SUMMARY_TOP_N) -> list[list]:
+    """사장님이 시트에서 볼 표 — 제품군 · 경쟁사 이름 · 횟수 (+ 곁들이는 3칸).
+
+    ★ 2026-07-23 사장님: "그냥 제품군이랑 경쟁사 이름. 그리고 횟수 같은걸 알고싶은건데
+      왜 이렇게 되어있지?" — 그 전까지 시트에 날짜·키워드·순위·URL 까지 든 원본 기록을
+      그대로 뒀더니 열어봐도 뭘 봐야 할지 모르는 표가 됐다. 보는 표는 이 세 칸이 중심이다.
+
+    - 횟수 = 그 제품군에서 그 경쟁사가 **상위권에 뜬 키워드 수**(최신 확인일 기준).
+    - 제품군마다 top_n 곳까지, 횟수 많은 순.
+    """
+    rows_all = list(history_rows or [])
+    dates = {_clean(r.get("날짜")) for r in rows_all if _clean(r.get("날짜"))}
+    latest = max(dates) if dates else ""
+
+    acc: dict = {}
+    for row in [r for r in rows_all if _clean(r.get("날짜")) == latest]:
+        product = _clean(row.get("탭")).replace(" 카외", "").strip()
+        actor = _clean(row.get("주체"))
+        keyword = _clean(row.get("키워드"))
+        if not product or not actor or not keyword:
+            continue
+        entry = acc.setdefault((product, actor), {
+            "이름": _clean(row.get("이름")) or actor,
+            "keywords": set(), "missed": set(), "ranks": [],
+        })
+        if keyword in entry["keywords"]:
+            continue
+        entry["keywords"].add(keyword)
+        if not entry["이름"] or entry["이름"] == actor:
+            entry["이름"] = _clean(row.get("이름")) or actor
+        try:
+            rank = int(row.get("순위") or 0)
+        except (TypeError, ValueError):
+            rank = 0
+        if rank > 0:
+            entry["ranks"].append(rank)
+        if _clean(row.get("우리상태")) in MISSED_STATES:
+            entry["missed"].add(keyword)
+
+    ordered = sorted(
+        acc.items(), key=lambda kv: (kv[0][0], -len(kv[1]["keywords"]), kv[0][1])
+    )
+    out: list[list] = []
+    per_product: dict = {}
+    for (product, actor), entry in ordered:
+        if per_product.get(product, 0) >= top_n:
+            continue
+        per_product[product] = per_product.get(product, 0) + 1
+        ranks = entry["ranks"]
+        out.append([
+            product,
+            entry["이름"],
+            len(entry["keywords"]),
+            len(entry["missed"]),
+            round(sum(ranks) / len(ranks), 1) if ranks else "",
+            latest,
+        ])
+    return out
 
 
 def aggregate_by_product(history_rows: list[dict], *, top_n: int = PRODUCT_TOP_N) -> list[dict]:
@@ -691,6 +757,47 @@ def _cutoff_date(date_str: str, retention_days: int) -> str:
         return ""
 
 
+def write_summary(client, rows: list[list], *, tab_name: str = SUMMARY_TAB_NAME) -> dict:
+    """사장님이 보는 표를 매 실행 새로 쓴다(제품군 · 경쟁사 이름 · 횟수).
+
+    격자를 내용 크기에 맞춘 뒤 쓰고, 여유 줄은 빈 값으로 덮어 지난 줄이 남지 않게 한다.
+    """
+    try:
+        ws, created = _get_or_create_ws(client, tab_name, SUMMARY_HEADER)
+        payload = [SUMMARY_HEADER] + list(rows)
+        from src.sheets import _sheets_api_retry
+
+        try:
+            _sheets_api_retry(
+                lambda: ws.resize(rows=len(payload) + 10, cols=max(len(SUMMARY_HEADER), 8)),
+                ctx="경쟁사 표 resize",
+            )
+        except Exception:  # noqa: BLE001
+            ws.clear()
+        blank = [""] * len(SUMMARY_HEADER)
+        ws.update("A1", payload + [list(blank) for _ in range(10)], value_input_option="RAW")
+        return {"rows_written": len(rows), "created_tab": created}
+    except Exception as e:  # noqa: BLE001
+        return {"rows_written": 0, "created_tab": False, "error": str(e)}
+
+
+def hide_history_tab(client, *, tab_name: str = HISTORY_TAB_NAME) -> bool:
+    """원본 기록 탭은 계산용이라 숨긴다 — 사장님 눈에 보이는 표는 '경쟁사' 하나."""
+    try:
+        ws = client.spreadsheet.worksheet(tab_name)
+        if ws._properties.get("hidden"):
+            return True
+        client.spreadsheet.batch_update({"requests": [{
+            "updateSheetProperties": {
+                "properties": {"sheetId": ws.id, "hidden": True},
+                "fields": "hidden",
+            }
+        }]})
+        return True
+    except Exception:  # noqa: BLE001 — 숨기기 실패가 cron 을 죽이면 안 됨
+        return False
+
+
 def run_competitor_update(
     client,
     collector: CompetitorCollector,
@@ -717,8 +824,12 @@ def run_competitor_update(
             "top": [],
         }
     ranking = aggregate_ranking(history)
+    summary_rows = build_summary_rows(history)
+    summary_result = write_summary(client, summary_rows)
+    hide_history_tab(client)
     return {
         "history": append_result,
+        "summary": summary_result,
         "byProduct": aggregate_by_product(history),
         "actors": len(ranking),
         "top": ranking[:10],
