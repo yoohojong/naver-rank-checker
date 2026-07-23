@@ -7,11 +7,15 @@ name: 경쟁사-댓글-제품명
 # Groq 키가 여기 있다. 사장님 PC 에서는 둘 다 안 된다.
 
 on:
+  # 매일 1회 (KST 05:00). 순위 검사(KST 00·06·12·18시)와 겹치지 않는 시간대.
+  # 댓글은 순위만큼 자주 바뀌지 않아 하루 1번이면 충분하다.
+  schedule:
+    - cron: '0 20 * * *'
   workflow_dispatch:
     inputs:
       limit:
-        description: 제품군마다 볼 키워드 수
-        default: '20'
+        description: 제품군마다 볼 키워드 수 (0 = 전체)
+        default: '0'
       top_posts:
         description: 키워드마다 볼 남의 글 수
         default: '4'
@@ -26,7 +30,8 @@ concurrency:
 jobs:
   collect:
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    # 전체 키워드(약 400개) × 글 4개 = 90분 안팎. 넉넉히 잡되 무한정 돌지는 않게.
+    timeout-minutes: 180
     steps:
       - uses: actions/checkout@v6.0.2
       - uses: actions/setup-python@v5
@@ -47,8 +52,23 @@ jobs:
           NAVER_SLOWDOWN_BASE_SEC: '4.0'
           PYTHONIOENCODING: 'utf-8'
         run: |
+          # 예약 실행(schedule)은 inputs 가 비어 있다 → 전체 키워드·시트 기록이 기본.
           ./.venv/bin/python -u -m scripts.collect_comment_brands \
             --from-sheet \
-            --limit "${{ inputs.limit }}" \
-            --top-posts "${{ inputs.top_posts }}" \
-            ${{ inputs.write_sheet == 'true' && '--write-sheet' || '' }}
+            --limit "${{ inputs.limit || '0' }}" \
+            --top-posts "${{ inputs.top_posts || '4' }}" \
+            ${{ (inputs.write_sheet == 'false') && ' ' || '--write-sheet' }}
+
+      # 조용히 실패하면 사장님은 어제 표를 오늘 것으로 믿게 된다 → 실패는 반드시 알린다.
+      - name: 실패 알림
+        if: failure()
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          if [ -n "$TELEGRAM_BOT_TOKEN" ] && [ -n "$TELEGRAM_CHAT_ID" ]; then
+            curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+              -d chat_id="${TELEGRAM_CHAT_ID}" \
+              --data-urlencode "text=❌ 경쟁사 댓글 수집 실패 — 시트 '경쟁사' 는 어제 값 그대로입니다. 다음 예약(내일 05시)에 다시 시도합니다." \
+              > /dev/null || true
+          fi

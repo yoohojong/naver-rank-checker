@@ -205,7 +205,8 @@ def run_from_sheet(args) -> int:
 
         rows = [r for r in values[1:] if len(r) > ik and r[ik].strip()]
         rows.sort(key=vol, reverse=True)    # 검색량 큰 키워드부터 — 경쟁이 실제로 붙는 자리
-        keywords = [r[ik].strip() for r in rows[:args.limit]]
+        # limit 0 = 그 제품군 키워드 전부 (사장님 2026-07-23 "전체로")
+        keywords = [r[ik].strip() for r in (rows if args.limit <= 0 else rows[:args.limit])]
         print(f"[{product}] 키워드 {len(keywords)}개")
 
         mentions: list[dict] = []
