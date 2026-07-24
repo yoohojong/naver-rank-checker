@@ -39,6 +39,7 @@ from src.comment_brand import (extract_candidates, is_asking, normalize_name,  #
                                strip_generic_tail, tally)
 from src import brand_verdicts  # noqa: E402
 from src import comment_brand_llm  # noqa: E402
+from src import shop_probe  # noqa: E402
 from src.crawler import Crawler  # noqa: E402
 from src.parser import cafe_slug_of, is_known_url  # noqa: E402
 from src.parser import collect_slot_items  # noqa: E402
@@ -233,8 +234,29 @@ def judge_candidates(mentions: list, *, verdict_path: str = brand_verdicts.DEFAU
         seen.add(key)
         unknown.append({"키": key, "표시": m["표시"], "예시": m["댓글"]})
 
+    물어볼것 = len(unknown)
+    # ★언어모델에게 묻기 전에 쇼핑 화면에 먼저 물어본다 — 공짜이고 하루 한도가 없다.
+    #   "이 이름으로 물건을 살 수 있나" 가 원래 판정 기준이니, 쇼핑이 더 곧은 답이다.
+    #   확실히 아닌 것만 여기서 떼고(신호 5 이하), 나머지는 그대로 언어모델에게 넘긴다.
+    #   ★한 번만 나온 이름에만 물어본다. 여러 번 오르내린 이름은 진짜 경쟁사일 확률이
+    #   높은데, 검색량이 적은 작은 브랜드는 신호가 낮게 나와 억울하게 걸린다
+    #   (실측에서 '뽀얀'·'아크시톨' 이 그렇게 걸렸다).
+    말나온횟수: dict = {}
+    for m in mentions or []:
+        말나온횟수[m["키"]] = 말나온횟수.get(m["키"], 0) + 1
+    물어볼이름 = [u["키"] for u in unknown if 말나온횟수.get(u["키"], 0) <= 1]
+    쇼핑통계: dict = {}
+    아닌것 = shop_probe.not_products(물어볼이름, stat=쇼핑통계)
+    unknown = [u for u in unknown if u["키"] not in 아닌것]
+
     fresh, stat = comment_brand_llm.judge(unknown)
-    stat["캐시적중"] = len({m["키"] for m in (mentions or [])}) - len(unknown)
+    for k in 아닌것:                      # 쇼핑이 낸 답 — 언어모델 답을 덮지 않는다
+        fresh.setdefault(k, {"제품": False, "이름": ""})
+    stat.update(쇼핑통계)
+    stat["후보"] = 물어볼것               # 쇼핑에서 뗀 몫까지 합쳐 세야 통계가 맞다
+    stat["판정"] = len(fresh)
+    stat["미판정"] = max(0, 물어볼것 - len(fresh))
+    stat["캐시적중"] = len({m["키"] for m in (mentions or [])}) - 물어볼것
     verdicts = brand_verdicts.merge(cached, fresh, today=today)
     if fresh:
         brand_verdicts.save(verdicts, verdict_path)
