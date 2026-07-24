@@ -548,8 +548,20 @@ def run_from_sheet(args) -> int:
           f"· 확정 경쟁 제품 {jstat['확정제품']}종")
 
     if should_skip_write(jstat):
-        print(f"\n❌ 판정 못 받은 언급이 {jstat['미판정언급']}/{jstat['언급']}건입니다 "
-              f"(판정기 한도·오류 의심 — 아래 '탈' 을 보세요). 시트는 손대지 않았습니다 — 어제 값 그대로입니다.")
+        사유 = (f"판정 못 받은 언급 {jstat['미판정언급']}/{jstat['언급']}건 "
+              f"· 확정 제품 {jstat['확정제품']}종 · 탈: "
+              + (', '.join(jstat.get('탈') or []) or '없음'))
+        print(f"\n❌ {사유}. 시트는 손대지 않았습니다 — 어제 값 그대로입니다.")
+        # ★왜 멈췄는지를 파일로 남긴다.
+        # 알림 담당(자가치유)은 **자기 job 이 아직 도는 중**이라 GitHub 에서 자기 로그를
+        # 못 받는다(2026-07-24 라이브: HTTPError → "원인: 알 수 없음"). 프로그램이 이미
+        # 아는 이유를 로그에서 되읽으려다 매번 깜깜이가 됐다.
+        try:
+            os.makedirs('.harness', exist_ok=True)
+            with open('.harness/last_skip_reason.txt', 'w', encoding='utf-8') as f:
+                f.write(사유)
+        except OSError as e:
+            print(f'  (사유 파일 못 남김: {e})')
         return 3
 
     if args.write_sheet and out_rows:
