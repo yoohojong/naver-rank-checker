@@ -59,7 +59,7 @@ _USER_AGENT = (
 
 # 한 번에 물어볼 후보 수. 답이 길어지면 잘려서 묶음 통째로 미판정이 되므로 크게 잡지 않는다
 # (25개로 돌렸더니 113종 중 67종이 답을 못 받았다 — 2026-07-23 실측).
-BATCH = 12
+BATCH = 20
 
 _SYSTEM = (
     "너는 네이버 카페 댓글에서 나온 말이 **실제로 팔리는 제품의 브랜드명인지** 판정한다.\n"
@@ -406,7 +406,8 @@ def judge_batch(items: list, *, timeout: int = 30, sleep=time.sleep,
 
     lines = []
     for n, it in enumerate(items, 1):
-        example = str(it.get("예시") or "").replace("\n", " ")[:80]
+        # 판정에 필요한 건 "무슨 말 속에 나왔나" 뿐이다 — 길게 보낼수록 한도만 축난다.
+        example = str(it.get("예시") or "").replace("\n", " ")[:45]
         lines.append(f"{n}. {it.get('표시') or it['키']} | {example}")
 
     content, truncated = _call(

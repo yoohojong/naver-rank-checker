@@ -1051,12 +1051,20 @@ def _clean_source_name(text: str) -> str:
 
 
 def _title_for_url(box, url: str) -> str:
-    """박스 안에서 해당 URL 을 가진 a 태그의 표시 텍스트 (없으면 "")."""
+    """박스 안에서 해당 URL 을 가진 a 태그의 표시 텍스트 (없으면 "").
+
+    제목 뒤에 붙는 접근성 안내 문구("새 창 열림")를 떼어낸다 — 붙은 채로 두면
+    제목에서 제품명을 뽑을 때 '난리났어요새' '어땠나요새' 같은 게 후보로 올라간다
+    (2026-07-24 실측: 제목에서만 나온 후보 20종이 전부 이 꼴이었다).
+    """
     if not url:
         return ""
     for a in box.find_all("a", href=True):
         if a["href"] == url:
             text = a.get_text(strip=True)
+            for noise in _NAME_NOISE:
+                text = text.replace(noise, " ")
+            text = re.sub(r"\s+", " ", text).strip()
             if text:
                 return text[:120]
     return ""

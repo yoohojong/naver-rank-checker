@@ -213,6 +213,26 @@ def is_category_word(word: str) -> bool:
     return False
 
 
+# 브랜드 이름은 말끝이 문장처럼 끝나지 않는다. 판정에 보내기 전에 여기서 턴다.
+# 2026-07-24 실측: 후보 241종 중 진짜 제품은 10종 남짓이고 나머지는 '저도' '그거'
+# '괜찮네' '지인이' 같은 말조각이었다. 그걸 판정하느라 하루치 한도를 태우고 있었다.
+_SENTENCE_TAIL = re.compile(
+    r"(요|죠|네|나요|세요|어요|아요|예요|에요|더라|드라|는데|은데|았|었|겠|하|"
+    r"거|것|같|또|잘|좀|더|만|뿐)$")
+# 조사가 붙은 말. 두 글자 브랜드가 다치지 않게 세 글자부터 본다.
+_JOSA_TAIL = re.compile(r"(이|가|은|는|을|를|도|의|에|서|께|랑|와|과|부터|까지|보다)$")
+
+
+def ends_like_sentence(key: str) -> bool:
+    """말끝이 문장·조사로 끝나나 — 브랜드 이름이라면 그럴 일이 거의 없다."""
+    key = normalize_name(key)
+    if not key:
+        return False
+    if _SENTENCE_TAIL.search(key):
+        return True
+    return len(key) >= 3 and bool(_JOSA_TAIL.search(key))
+
+
 def looks_like_candidate(key: str) -> bool:
     """판정에 보낼 만한 후보인가 — 뻔한 문장 조각·종류 이름·흔한 낱말은 여기서 버린다.
 
@@ -226,6 +246,8 @@ def looks_like_candidate(key: str) -> bool:
     if is_inflected(key):
         return False
     if is_category_word(key):
+        return False
+    if ends_like_sentence(key):
         return False
     return True
 
