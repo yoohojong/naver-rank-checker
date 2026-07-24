@@ -491,22 +491,24 @@ MAX_UNJUDGED_RATIO = 0.2
 
 
 def should_skip_write(stat: dict) -> bool:
-    """판정이 많이 비었나 — 비었으면 시트를 덮지 않는다 · 순수함수.
+    """반쪽·무검증 표인가 — 그러면 시트를 덮지 않는다 · 순수함수.
 
-    재는 잣대는 **댓글에서 몇 번 언급됐나** 다(이름 종류 수가 아니라).
-    판정 못 받은 이름은 대개 한 번만 나온 찌꺼기라, 종류로 세면 멀쩡한 표도 막힌다.
-    많이 오르내린 이름을 못 읽었을 때만 막는 게 맞다.
+    ★새 구조(2026-07-24)의 두 실패 지점을 본다(독립검토 MAJOR):
+      ① AI 가 댓글 묶음을 못 읽음(429·오류) → 뽑힌 이름 자체가 반쪽
+      ② 네이버가 검색을 대량 차단 → verified 가 무검증으로 다 통과
+    옛 '미판정언급 비율' 은 새 구조에선 늘 0이라(뽑힌 건 전부 verdicts 에 들어감)
+    아무 것도 못 막았다. 그래서 '못 읽은 묶음'·'검색 막힘' 비율로 바꾼다.
     """
     stat = stat or {}
-    said = int(stat.get("언급") or 0)
-    if said:
-        if not int(stat.get("확정제품") or 0):
-            return True                     # 제품이 하나도 안 남았으면 뭔가 잘못된 것
-        return (int(stat.get("미판정언급") or 0) / said) > MAX_UNJUDGED_RATIO
-    asked = int(stat.get("후보") or 0)
-    if not asked:
-        return False                        # 물어볼 게 없던 run 은 정상
-    return (int(stat.get("미판정") or 0) / asked) > MAX_UNJUDGED_RATIO
+    묶음 = int(stat.get("묶음") or 0)
+    if 묶음 and (int(stat.get("못읽은묶음") or 0) / 묶음) > MAX_UNJUDGED_RATIO:
+        return True                         # 댓글을 반 이상 못 읽었으면 덮지 않는다
+    확인 = int(stat.get("검색확인") or 0)
+    if 확인 and (int(stat.get("검색막힘") or 0) / 확인) > MAX_UNJUDGED_RATIO:
+        return True                         # 검색이 반 이상 막혔으면 무검증이라 덮지 않는다
+    if int(stat.get("언급") or 0) and not int(stat.get("확정제품") or 0):
+        return True                         # 언급은 있었는데 확정 0이면 뭔가 잘못된 것
+    return False
 
 
 def run_from_sheet(args) -> int:
@@ -575,9 +577,21 @@ def run_from_sheet(args) -> int:
         except OSError as e:
             print(f"모아둔 댓글 저장 실패(계속 진행): {type(e).__name__}")
 
-    # 후보를 한데 모아 한 번에 판정한다 — 제품군이 달라도 같은 이름은 한 번만 묻는다.
-    all_mentions = [m for ms in by_product.values() for m in ms]
-    all_mentions, verdicts, jstat = extract_brands(all_mentions, today=today)
+    # ★제품군별로 판정한다 — extract_brands 가 브랜드를 붙인 mention 을 돌려주므로
+    #   그 결과를 confirmed_rows 에 넘겨야 한다. 원문 mention(키 없음)을 넘기면 죽는다
+    #   (2026-07-24 독립검토 BLOCKING). 판정 캐시는 파일 공유라 같은 이름은 한 번만 검색한다.
+    verdicts: dict = {}
+    jstat = {"댓글": 0, "묶음": 0, "못읽은묶음": 0, "뽑은이름": 0,
+             "검색확인": 0, "검색통과": 0, "검색막힘": 0, "탈": []}
+    branded: dict = {}
+    for product, mentions in by_product.items():
+        ms2, v, stat = extract_brands(mentions, today=today)
+        branded[product] = ms2
+        verdicts.update(v)
+        for k in ("댓글", "묶음", "못읽은묶음", "뽑은이름", "검색확인", "검색통과", "검색막힘"):
+            jstat[k] = jstat.get(k, 0) + int(stat.get(k, 0) or 0)
+        jstat["탈"] = sorted(set(jstat["탈"]) | set(stat.get("탈", [])))
+    all_mentions = [m for ms in branded.values() for m in ms]
 
     # 같은 브랜드가 여러 표기로 흩어져 있으면 정식 이름 하나로 묶는다(호출 1회).
     unified = comment_brand_llm.unify(brand_names(all_mentions, verdicts))
@@ -587,7 +601,7 @@ def run_from_sheet(args) -> int:
               + (f" (예: {', '.join(list(merged)[:3])})" if merged else ""))
 
     out_rows: list[dict] = []
-    for product, mentions in by_product.items():
+    for product, mentions in branded.items():
         for r in confirmed_rows(mentions, verdicts, unified):
             out_rows.append({"제품군": product, "경쟁사": r["제품"], "횟수": r["횟수"],
                              "상위노출": r.get("상위노출", 0), "놓친": r.get("놓친", 0),
@@ -596,9 +610,7 @@ def run_from_sheet(args) -> int:
         print(f"[{product}] 경쟁 제품 "
               f"{len([x for x in out_rows if x['제품군'] == product])}종")
 
-    # 못 읽은 몫을 '언급 횟수' 로 잰다 — 표가 실제로 얼마나 비뚤어졌는지의 잣대.
     jstat["언급"] = len(all_mentions)
-    jstat["미판정언급"] = sum(1 for m in all_mentions if m["키"] not in verdicts)
     jstat["확정제품"] = len(out_rows)
 
     print(f"\n댓글 연 글 {fetcher.stat['열림']}개 · 못 연 글 {fetcher.stat['막힘']}개 "
@@ -611,13 +623,15 @@ def run_from_sheet(args) -> int:
         print(f"  {row['제품군']:<8}{row['경쟁사'][:22]:<24}{row['횟수']:>3}회  "
               f"키워드 {row['키워드수']}개")
 
-    # 판정이 많이 빈 run 은 표를 덮지 않는다 — 반쪽 표가 오늘의 전부로 읽히면 안 된다.
-    print(f"제품 언급 {jstat['언급']}건(댓글) 중 확인 못 받은 것 {jstat['미판정언급']}건 "
-          f"· 확정 경쟁 제품 {jstat['확정제품']}종")
+    # 반쪽 표는 시트를 덮지 않는다 — 오늘의 전부로 읽히면 안 된다.
+    print(f"댓글 {jstat.get('댓글', 0)}건 · 못 읽은 묶음 {jstat.get('못읽은묶음', 0)}/{jstat.get('묶음', 0)}"
+          f" · 검색 막힘 {jstat.get('검색막힘', 0)}/{jstat.get('검색확인', 0)}"
+          f" · 확정 경쟁 제품 {jstat.get('확정제품', 0)}종")
 
     if should_skip_write(jstat):
-        사유 = (f"판정 못 받은 언급 {jstat['미판정언급']}/{jstat['언급']}건 "
-              f"· 확정 제품 {jstat['확정제품']}종 · 탈: "
+        사유 = (f"못 읽은 묶음 {jstat.get('못읽은묶음', 0)}/{jstat.get('묶음', 0)} "
+              f"· 검색 막힘 {jstat.get('검색막힘', 0)}/{jstat.get('검색확인', 0)} "
+              f"· 확정 제품 {jstat.get('확정제품', 0)}종 · 탈: "
               + (', '.join(jstat.get('탈') or []) or '없음'))
         print(f"\n❌ {사유}. 시트는 손대지 않았습니다 — 어제 값 그대로입니다.")
         # ★왜 멈췄는지를 파일로 남긴다.
@@ -728,7 +742,7 @@ def main() -> int:
                           comment_brand_llm.unify(brand_names(all_mentions, verdicts)))
     print(f"\n댓글 연 글 {fetcher.stat['열림']}개 · 못 연 글 {fetcher.stat['막힘']}개")
     print(f"AI 가 뽑은 이름 {jstat.get('뽑은이름', 0)}종 · 검색 통과 {jstat.get('검색통과', 0)}종"
-          f"{' (판정 없이는 표에 넣지 않습니다)' if jstat['미판정'] else ''}")
+          f"{' (못 읽은 묶음 있음)' if jstat.get('못읽은묶음') else ''}")
     print(f"{'제품':<22}{'종류':<8}{'횟수':>4}")
     for r in rows[:25]:
         print(f"{r['제품'][:20]:<22}{r['종류']:<8}{r['횟수']:>4}")

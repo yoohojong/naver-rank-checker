@@ -47,6 +47,11 @@ def grounded(name: str, text: str, *, min_ratio: float = 0.6) -> bool:
     if len(n) < 2:
         return False                    # 한 글자 이름은 우연히 맞을 위험이 커 버린다
     t = _hangul(text)
+    # 짧은 이름(2~3글자)은 흔한 음절이 흩어져 우연히 걸린다('바이오'가 '바쁜데…오래' 에
+    # subsequence 로 매칭). 그래서 **연속된 2글자 조각**이 원문에 그대로 있을 때만 인정한다
+    # ('맥단비'→'맥단' 있음 통과, '바이오'→무관 댓글엔 '바이'·'이오' 없음 탈락. 독립검토 MINOR).
+    if len(n) <= 3:
+        return any(n[i:i + 2] in t for i in range(len(n) - 1))
     맞음, i = 0, 0
     for ch in n:
         j = t.find(ch, i)

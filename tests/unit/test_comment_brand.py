@@ -166,22 +166,26 @@ def test_판정이_뚫려도_종류_이름은_막힌다():
     assert confirmed_rows(mentions, {"샴푸": {"제품": True, "이름": "샴푸"}}) == []
 
 
-def test_판정_많이_비면_시트를_덮지_않는다():
-    assert should_skip_write({"후보": 100, "미판정": 80}) is True
-    assert should_skip_write({"후보": 100, "미판정": 5}) is False
-    assert should_skip_write({"후보": 0, "미판정": 0}) is False
+def test_댓글_반이상_못읽으면_시트를_덮지_않는다():
+    # ★새 구조(2026-07-24): 막는 잣대 = 못 읽은 묶음 / 검색 막힘 비율.
+    assert should_skip_write({"묶음": 10, "못읽은묶음": 8, "확정제품": 5}) is True
+    assert should_skip_write({"묶음": 10, "못읽은묶음": 1, "확정제품": 5}) is False
 
 
-def test_막는_잣대는_이름_수가_아니라_언급_횟수():
-    # 이름 60/72종이 미판정이어도, 그게 한 번씩만 나온 찌꺼기면 표는 멀쩡하다.
-    많이비어보임 = {"후보": 72, "미판정": 60, "언급": 300, "미판정언급": 60, "확정제품": 18}
-    assert should_skip_write(많이비어보임) is False
-    # 반대로 자주 오르내린 이름을 못 읽었으면 막는다.
-    진짜비었음 = {"후보": 72, "미판정": 60, "언급": 300, "미판정언급": 200, "확정제품": 18}
-    assert should_skip_write(진짜비었음) is True
-    # 제품이 하나도 안 남았으면 뭔가 잘못된 것 — 덮지 않는다.
-    텅빔 = {"후보": 72, "미판정": 0, "언급": 300, "미판정언급": 0, "확정제품": 0}
-    assert should_skip_write(텅빔) is True
+def test_검색_반이상_막히면_무검증이라_덮지_않는다():
+    # 네이버가 대량 차단 → verified 가 무검증으로 다 통과 → 그런 표는 안 덮는다.
+    assert should_skip_write({"검색확인": 20, "검색막힘": 18, "확정제품": 5}) is True
+    assert should_skip_write({"검색확인": 20, "검색막힘": 2, "확정제품": 5}) is False
+
+
+def test_확정이_하나도_없으면_덮지_않는다():
+    assert should_skip_write({"언급": 300, "확정제품": 0}) is True
+    assert should_skip_write({"언급": 300, "확정제품": 12}) is False
+
+
+def test_돌릴게_없던_run_은_정상():
+    assert should_skip_write({}) is False
+    assert should_skip_write({"묶음": 0, "언급": 0}) is False
 
 
 # ── 한 탭에 다 담기 (사장님 2026-07-24: "여러개로 나누지 말고 아예 한 시트에") ──────
