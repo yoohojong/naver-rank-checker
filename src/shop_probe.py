@@ -52,6 +52,40 @@ def signal(name: str, *, timeout: int = 20, session=None) -> int:
     return sum(html.count(m) for m in _MARKS)
 
 
+# 이 값 이상이면 '실제로 파는 물건' 으로 인정한다.
+# ★2026-07-24 사장님: "너가 그런 애매한것들 검색해보고 실제로 검색량 높으면 오 이거다 하면 되잖아"
+#   그 말이 맞았다. 버리는 잣대로만 쓰다가 **채택 잣대**로 뒤집으니 잘린 이름이 걸러진다.
+#   실측: 터그루트 2 · 오프온 6  ←→  안티트로 42 · 맥단비 52 · 닥터그루트 50 · 일리윤 45
+#   AI 가 댓글에서 뽑은 30종에 걸었더니 26종 통과, 잘린 이름 2종만 탈락.
+VERIFIED_AT_OR_ABOVE = 20
+
+
+def verified(names: list, *, sleep=time.sleep, pause: float = 0.7,
+             stat: dict | None = None) -> tuple:
+    """이름 목록 → (통과한 이름, {이름: 신호}).
+
+    **검색이 되는 이름만 통과**시킨다. 잘린 이름('터그루트')은 검색이 안 되므로 여기서 걸린다.
+    못 물어본 이름(-1)은 통과시킨다 — 우리가 못 물어봤다고 남의 브랜드를 지울 수는 없다.
+    """
+    통과, 점수 = [], {}
+    막힘 = 0
+    for i, n in enumerate(names or []):
+        s = signal(n)
+        점수[n] = s
+        if s < 0:
+            막힘 += 1
+            통과.append(n)                 # 모르면 살린다(적게 세는 오류 > 지어내는 오류)
+        elif s >= VERIFIED_AT_OR_ABOVE:
+            통과.append(n)
+        if pause and i < len(names) - 1:
+            sleep(pause)
+    if stat is not None:
+        stat.update({"검색확인": len(names or []), "검색통과": len(통과),
+                     "검색막힘": 막힘,
+                     "검색탈락": [n for n, s in 점수.items() if 0 <= s < VERIFIED_AT_OR_ABOVE]})
+    return 통과, 점수
+
+
 def not_products(names: list, *, sleep=time.sleep, pause: float = 0.7,
                  stat: dict | None = None) -> set:
     """이름 목록 → **'파는 물건이 아니다' 가 확실한 이름들**.

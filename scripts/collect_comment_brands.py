@@ -38,6 +38,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from src.comment_brand import (extract_candidates, is_asking, normalize_name,  # noqa: E402
                                strip_generic_tail, tally)
 from src import brand_verdicts  # noqa: E402
+from src import brand_from_comments  # noqa: E402
 from src import comment_brand_llm  # noqa: E402
 from src import shop_probe  # noqa: E402
 from src.crawler import Crawler  # noqa: E402
@@ -219,6 +220,50 @@ def candidates_from_title(title: str) -> list:
             for shown, key, suffix in extract_candidates(t)]
 
 
+def extract_brands(mentions: list, *, verdict_path: str = brand_verdicts.DEFAULT_PATH,
+                   today: str = "") -> tuple:
+    """★새 구조(2026-07-24) — 댓글 원문을 AI 가 읽어 이름을 뽑고, 검색으로 확인한다.
+
+    (브랜드가 붙은 mentions, 판정표, 통계) 를 돌려준다.
+
+    전 구조는 글자 규칙이 후보를 뽑고 AI 는 O/X 만 해서, '안티트로' 가 지워지고
+    '터그루트' 같은 잘린 이름이 표에 올랐다. 지금은 두 관문이 서로를 메운다.
+    """
+    # 같은 댓글이 여러 번 들어와 있으므로 원문 기준으로 한 번만 읽는다.
+    자리, 원문들 = {}, []
+    for m in mentions or []:
+        t = str(m.get("댓글") or "").strip()
+        if t and t not in 자리:
+            자리[t] = len(원문들)
+            원문들.append(t)
+
+    뽑힘, stat = brand_from_comments.read_all(원문들)
+    이름들 = sorted({n for names in 뽑힘.values() for n in names})
+
+    # 한 번 확인한 이름은 다시 검색하지 않는다(파일에 쌓인다).
+    cached = brand_verdicts.load(verdict_path)
+    새이름 = [n for n in 이름들 if n not in cached]
+    통과, _ = shop_probe.verified(새이름, stat=stat)
+
+    fresh = {n: {"제품": n in set(통과), "이름": n if n in set(통과) else ""}
+             for n in 새이름}
+    verdicts = brand_verdicts.merge(cached, fresh, today=today)
+    if fresh:
+        brand_verdicts.save(verdicts, verdict_path)
+
+    # 뽑힌 이름을 원래 언급 자리에 붙인다 — 키워드·글 링크가 살아 있어야 집계가 된다.
+    out: list = []
+    for m in mentions or []:
+        t = str(m.get("댓글") or "").strip()
+        i = 자리.get(t)
+        for name in (뽑힘.get(i) or []) if i is not None else []:
+            out.append({**m, "표시": name, "키": name, "종류": "제품"})
+    stat["언급"] = len(out)
+    stat["확정이름"] = len({m["키"] for m in out
+                        if brand_verdicts.is_product(verdicts, m["키"])})
+    return out, verdicts, stat
+
+
 def judge_candidates(mentions: list, *, verdict_path: str = brand_verdicts.DEFAULT_PATH,
                      today: str = "") -> tuple:
     """후보 → 판정. (판정표, 통계) · 이미 판정한 이름은 다시 묻지 않는다.
@@ -341,12 +386,13 @@ def scan_keyword(crawler: CommentFetcher, kw: str, *, our_links: set, our_slugs:
             continue
         seen_url.add(it.url)
         같이 = {"키워드": kw, "글": it.url, "카페": it.source_name or "", "우리놓침": 우리놓침}
-        # ① 그 글 댓글에서 오가는 제품. 예시 칸에 댓글이 먼저 잡히도록 이쪽을 먼저 넣는다.
-        for m in candidates_from_comments(fetcher.comments(it.url)):
-            mentions.append({**m, **같이, "원천": "댓글"})
-        # ② 그 글이 제목에서 밀고 있는 제품 = 상위 구좌를 차지한 경쟁사
-        for m in candidates_from_title(it.title):
-            mentions.append({**m, **같이, "원천": "상위노출"})
+        # ★댓글만 본다. 사장님 2026-07-24: "다른거 다 무시하고 댓글만 보라고 했잖아".
+        #   그리고 여기서는 이름을 뽑지 않는다 — 댓글 원문을 그대로 담아 두고,
+        #   판정 단계에서 AI 가 원문을 읽어 이름을 뽑는다(잘림·놓침을 없애려고).
+        for c in fetcher.comments(it.url):
+            t = str((c or {}).get("content") or "").strip()
+            if t:
+                mentions.append({"댓글": t[:300], **같이, "원천": "댓글"})
         time.sleep(1.0)       # 네이버 부담 줄이기
     return mentions
 
@@ -531,7 +577,7 @@ def run_from_sheet(args) -> int:
 
     # 후보를 한데 모아 한 번에 판정한다 — 제품군이 달라도 같은 이름은 한 번만 묻는다.
     all_mentions = [m for ms in by_product.values() for m in ms]
-    verdicts, jstat = judge_candidates(all_mentions, today=today)
+    all_mentions, verdicts, jstat = extract_brands(all_mentions, today=today)
 
     # 같은 브랜드가 여러 표기로 흩어져 있으면 정식 이름 하나로 묶는다(호출 1회).
     unified = comment_brand_llm.unify(brand_names(all_mentions, verdicts))
@@ -557,16 +603,16 @@ def run_from_sheet(args) -> int:
 
     print(f"\n댓글 연 글 {fetcher.stat['열림']}개 · 못 연 글 {fetcher.stat['막힘']}개 "
           f"· 댓글 {fetcher.stat.get('댓글', 0)}건(뒷장 {fetcher.stat.get('뒷장', 0)}장 포함)")
-    print(f"후보 {jstat['후보'] + jstat.get('캐시적중', 0)}종 "
-          f"(전에 판정해둔 것 {jstat.get('캐시적중', 0)}종 · 새로 물어본 것 {jstat['판정']}종 "
-          f"· 판정 못 받음 {jstat['미판정']}종) · 호출 {jstat.get('호출', 0)}회"
+    print(f"댓글 {jstat.get('댓글', 0)}건을 {jstat.get('묶음', 0)}묶음으로 읽음 "
+          f"(못 읽은 묶음 {jstat.get('못읽은묶음', 0)}) · AI 가 뽑은 이름 {jstat.get('뽑은이름', 0)}종 "
+          f"· 검색 확인 {jstat.get('검색확인', 0)}종 중 통과 {jstat.get('검색통과', 0)}종"
           + (f" · 탈: {', '.join(jstat['탈'])}" if jstat.get("탈") else ""))
     for row in out_rows[:30]:
         print(f"  {row['제품군']:<8}{row['경쟁사'][:22]:<24}{row['횟수']:>3}회  "
               f"키워드 {row['키워드수']}개")
 
     # 판정이 많이 빈 run 은 표를 덮지 않는다 — 반쪽 표가 오늘의 전부로 읽히면 안 된다.
-    print(f"제품 언급 {jstat['언급']}건(댓글+상위 글 제목) 중 판정 못 받은 것 {jstat['미판정언급']}건 "
+    print(f"제품 언급 {jstat['언급']}건(댓글) 중 확인 못 받은 것 {jstat['미판정언급']}건 "
           f"· 확정 경쟁 제품 {jstat['확정제품']}종")
 
     if should_skip_write(jstat):
@@ -677,11 +723,11 @@ def main() -> int:
 
     from datetime import datetime, timedelta, timezone
     today = datetime.now(timezone(timedelta(hours=9))).strftime("%Y-%m-%d")
-    verdicts, jstat = judge_candidates(all_mentions, today=today)
+    all_mentions, verdicts, jstat = extract_brands(all_mentions, today=today)
     rows = confirmed_rows(all_mentions, verdicts,
                           comment_brand_llm.unify(brand_names(all_mentions, verdicts)))
     print(f"\n댓글 연 글 {fetcher.stat['열림']}개 · 못 연 글 {fetcher.stat['막힘']}개")
-    print(f"후보 {jstat['후보'] + jstat.get('캐시적중', 0)}종 · 판정 못 받음 {jstat['미판정']}종"
+    print(f"AI 가 뽑은 이름 {jstat.get('뽑은이름', 0)}종 · 검색 통과 {jstat.get('검색통과', 0)}종"
           f"{' (판정 없이는 표에 넣지 않습니다)' if jstat['미판정'] else ''}")
     print(f"{'제품':<22}{'종류':<8}{'횟수':>4}")
     for r in rows[:25]:
