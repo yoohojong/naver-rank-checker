@@ -21,9 +21,39 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import time
 import urllib.error
 import urllib.request
+
+_HANGUL = re.compile(r"[^가-힣]")
+
+
+def _hangul(s) -> str:
+    return _HANGUL.sub("", str(s or ""))
+
+
+def grounded(name: str, text: str, *, min_ratio: float = 0.6) -> bool:
+    """AI 가 뽑은 이름이 **실제로 그 댓글 글자에 있나** — 환각 거르기.
+
+    ★2026-07-24 실측에서 드러난 구멍: 검색 확인만으론 못 잡는다.
+    AI 가 '안ㅌ티트로' 를 읽다가 아는 브랜드 '아로마티카' 를 연상해 뽑으면,
+    아로마티카는 실제 팔리는 제품이라 검색을 통과한다. 그런데 그 댓글엔 없었다
+    ('려'←맥단비 · '고루트'←브랜드없음 · '진생화'←브랜드없음 도 같은 환각).
+    → 이름의 한글 글자가 원문에 순서대로(흐트러뜨림 허용) min_ratio 이상 나올 때만 인정.
+    '맥단비' 는 '맥단ㅂI' 에서 '맥''단' 이 잡혀 통과, '아로마티카' 는 원문에 없어 탈락.
+    """
+    n = _hangul(name)
+    if len(n) < 2:
+        return False                    # 한 글자 이름은 우연히 맞을 위험이 커 버린다
+    t = _hangul(text)
+    맞음, i = 0, 0
+    for ch in n:
+        j = t.find(ch, i)
+        if j >= 0:
+            맞음 += 1
+            i = j + 1
+    return 맞음 / len(n) >= min_ratio
 
 # 판정기는 OpenAI 규격이면 무엇이든 꽂힌다(Groq·OpenAI 둘 다 이 규격).
 _BASE_URL = os.environ.get(
@@ -166,7 +196,9 @@ def read_batch(texts: list, *, timeout: int = 60, sleep=time.sleep,
             continue
         if not 1 <= n <= len(texts):
             continue
-        names = [str(x).strip() for x in (r.get("제품") or []) if str(x).strip()]
+        # ★뽑은 이름이 실제로 그 댓글 글자에 있는 것만 남긴다 — AI 환각 거르기.
+        names = [str(x).strip() for x in (r.get("제품") or []) if str(x).strip()
+                 and grounded(str(x).strip(), texts[n - 1])]
         if names:
             out[n - 1] = names
     return out
