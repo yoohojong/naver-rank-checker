@@ -19,7 +19,7 @@ from dataclasses import dataclass, field
 from datetime import date
 from typing import Optional
 
-from src.transitions import EXPOSED_VALUES, parse_K_with_stamp
+from src.transitions import EXPOSED_VALUES, parse_K_with_stamp, is_real_exposure
 
 # 시트 헤더명 = 백업 행 dict 키 (sheets.py 와 동일, 정확 매칭 필수)
 _H_KEYWORD = "키워드"
@@ -89,6 +89,10 @@ class TabReport:
     new_exposed: int = 0       # 어제 없던 새 키워드가 오늘 상위노출(신규노출 kind엔 안 잡히던 것)
     vanished_exposed: int = 0  # 어제 노출됐는데 오늘 행 자체가 사라짐(줄 삭제 = 누락과 다름)
     other_exit: int = 0        # 노출→비노출인데 누락/삭제 아님(미노출/실패/재검사 등, 기존엔 '변화'로 묻힘)
+    # 사장님 2026-07-28: 구좌 4위 이하 제외한 '진짜 상위노출' 카운트(행 단위, 구좌순위 반영).
+    # build_trace 가 행에서 직접 채움. None 이면 분포 기반 폴백(합성 TabReport·구버전 호환).
+    exposed_now_count: Optional[int] = None
+    exposed_prev_count: Optional[int] = None
 
     @property
     def total(self) -> int:
@@ -96,10 +100,14 @@ class TabReport:
 
     @property
     def exposed_now(self) -> int:
+        if self.exposed_now_count is not None:
+            return self.exposed_now_count
         return sum(c for k, c in self.distribution.items() if k in EXPOSED_VALUES)
 
     @property
     def exposed_prev(self) -> int:
+        if self.exposed_prev_count is not None:
+            return self.exposed_prev_count
         return sum(c for k, c in self.prev_distribution.items() if k in EXPOSED_VALUES)
 
 
@@ -114,6 +122,14 @@ def k_base_of(row: dict) -> str:
     """행의 노출영역(K)에서 시점 제거한 base. 빈값 → '미노출'. (raw 우선)"""
     base, _ = parse_K_with_stamp(field_value(row, _H_AREA))
     return base or "미노출"
+
+
+def is_exposed_row(row: dict) -> bool:
+    """행이 '진짜 상위노출'인가 = 노출 블록 AND 카페 구좌 1~3위 (사장님 2026-07-28).
+
+    리포트·정합 전 구간의 단일 노출 판정. 구좌 4위 이하는 노출 블록이라도 제외.
+    """
+    return is_real_exposure(k_base_of(row), field_value(row, _H_M))
 
 
 def rank_of(row: dict, header: str = _H_L) -> Optional[int]:
@@ -166,10 +182,21 @@ def compute_distribution(backup: dict) -> dict:
     return out
 
 
-def classify(prev_k: str, curr_k: str, prev_rank: Optional[int], curr_rank: Optional[int]) -> str:
-    """어제→오늘 K/순위 → 변화 종류. 누락(회복 가능) ≠ 삭제(사라짐) 구분."""
-    exposed_prev = prev_k in EXPOSED_VALUES
-    exposed_curr = curr_k in EXPOSED_VALUES
+def classify(
+    prev_k: str,
+    curr_k: str,
+    prev_rank: Optional[int],
+    curr_rank: Optional[int],
+    prev_exposed: Optional[bool] = None,
+    curr_exposed: Optional[bool] = None,
+) -> str:
+    """어제→오늘 K/순위 → 변화 종류. 누락(회복 가능) ≠ 삭제(사라짐) 구분.
+
+    prev_exposed/curr_exposed 를 주면 그 '진짜 상위노출' 판정을 쓴다(구좌 4위 이하 제외
+    포함). 안 주면 K값만으로 판정(구버전 호환). 사장님 2026-07-28.
+    """
+    exposed_prev = prev_exposed if prev_exposed is not None else (prev_k in EXPOSED_VALUES)
+    exposed_curr = curr_exposed if curr_exposed is not None else (curr_k in EXPOSED_VALUES)
     if curr_k == _DROP_DELETED and prev_k != _DROP_DELETED:
         return "삭제"
     if exposed_prev and curr_k == _DROP_MISSING:
@@ -205,7 +232,7 @@ def _work_stats(rows: list, work_date: Optional[str]) -> tuple:
             unworked += 1
         if work_date and wd == work_date:
             worked += 1
-            if k_base_of(r) in EXPOSED_VALUES:
+            if is_exposed_row(r):
                 worked_exposed += 1
     return worked, worked_exposed, unworked
 
@@ -238,6 +265,7 @@ def diff_backups(prev: Optional[dict], curr: dict, work_date: Optional[str] = No
     reports: list[TabReport] = []
     for tab in curr_dist:
         curr_rows = (curr.get("tabs") or {}).get(tab, [])
+        prev_rows_tab = (prev.get("tabs") or {}).get(tab, []) if prev else []
         worked, worked_exposed, unworked = _work_stats(curr_rows, work_date)
         tr = TabReport(
             tab=tab,
@@ -250,7 +278,10 @@ def diff_backups(prev: Optional[dict], curr: dict, work_date: Optional[str] = No
             worked_exposed=worked_exposed,
             unworked=unworked,
             type_dist=_type_dist(curr_rows),
-            type_dist_prev=_type_dist((prev.get("tabs") or {}).get(tab, [])) if prev else Counter(),
+            type_dist_prev=_type_dist(prev_rows_tab),
+            # 사장님 2026-07-28: 구좌 4위 이하 제외한 진짜 상위노출(행 단위, 구좌순위 반영).
+            exposed_now_count=sum(1 for r in curr_rows if is_exposed_row(r)),
+            exposed_prev_count=sum(1 for r in prev_rows_tab if is_exposed_row(r)),
         )
         if prev is not None:
             curr_ids = set()
@@ -261,7 +292,7 @@ def diff_backups(prev: Optional[dict], curr: dict, work_date: Optional[str] = No
                 if prev_row is None:
                     # 어제 없던 행 = 변화 목록엔 안 넣음('전부 신규' 오보 방지). 단 정합용으로
                     # 새 키워드가 오늘 노출이면 new_exposed 로 센다(노출 개수 증가분 설명).
-                    if k_base_of(row) in EXPOSED_VALUES:
+                    if is_exposed_row(row):
                         tr.new_exposed += 1
                     continue
                 # 유형(C) 변경 (노출 변화와 별개 — K 동일해도 유형 바뀔 수 있음)
@@ -273,11 +304,14 @@ def diff_backups(prev: Optional[dict], curr: dict, work_date: Optional[str] = No
                 # 노출/순위 변경
                 pk, ck = k_base_of(prev_row), k_base_of(row)
                 pr, cr = rank_of(prev_row), rank_of(row)
-                if pk == ck and pr == cr:
+                # 구좌 4위 이하 제외한 진짜 노출 판정(K값만 보면 slot 변화를 놓침 — 사장님 2026-07-28)
+                p_exposed, c_exposed = is_exposed_row(prev_row), is_exposed_row(row)
+                if pk == ck and pr == cr and p_exposed == c_exposed:
                     continue  # 변화 없음
-                kind = classify(pk, ck, pr, cr)
-                # 정합용: 노출→비노출인데 누락/삭제로 안 잡힌 이탈(미노출/실패/재검사) = other_exit
-                if pk in EXPOSED_VALUES and ck not in EXPOSED_VALUES and kind not in ("누락", "삭제"):
+                kind = classify(pk, ck, pr, cr, p_exposed, c_exposed)
+                # 정합용: 진짜노출→비노출인데 누락/삭제로 안 잡힌 이탈 = other_exit
+                # (구좌 4위 이하로 떨어져 노출에서 빠진 것 포함)
+                if p_exposed and not c_exposed and kind not in ("누락", "삭제"):
                     tr.other_exit += 1
                 tr.diffs.append(
                     RowDiff(
@@ -291,9 +325,9 @@ def diff_backups(prev: Optional[dict], curr: dict, work_date: Optional[str] = No
                         work_date=work_date_of(row),
                     )
                 )
-            # 어제 있다 오늘 사라진 행(줄 삭제) 중 어제 노출이던 것 = vanished_exposed(정합용)
-            for prow in (prev.get("tabs") or {}).get(tab, []):
-                if row_identity(prow) not in curr_ids and k_base_of(prow) in EXPOSED_VALUES:
+            # 어제 있다 오늘 사라진 행(줄 삭제) 중 어제 진짜노출이던 것 = vanished_exposed(정합용)
+            for prow in prev_rows_tab:
+                if row_identity(prow) not in curr_ids and is_exposed_row(prow):
                     tr.vanished_exposed += 1
         reports.append(tr)
     return reports
@@ -320,7 +354,7 @@ def exposure_lag_distribution(curr: dict, today: date) -> Counter:
     out: Counter = Counter()
     for rows in (curr.get("tabs") or {}).values():
         for r in rows:
-            if k_base_of(r) not in EXPOSED_VALUES:
+            if not is_exposed_row(r):
                 continue
             dw = _md_to_date(str(r.get(_H_WORKDATE, "") or "").strip(), today.year)
             de = _md_to_date(work_date_of(r), today.year)

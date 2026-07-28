@@ -37,6 +37,31 @@ EXPOSED_VALUES = {
     "중복노출(AB)", "중복노출(스마트블록)", "중복노출(인기글)",  # D-029 (2026-05-18)
 }
 
+# 사장님 2026-07-28: 카페 구좌 1~3위만 '진짜 상위노출'. 4위 이하는 노출 블록에 있어도
+# 재작업 대상(시트 빨강 + 리포트 상위노출 카운트 제외). 색칠(sheets)·집계(리포트) 공용 기준.
+CAFE_SLOT_EXPOSED_MAX = 3
+
+
+def cafe_slot_rank_value(raw: object) -> Optional[int]:
+    """M열(카페구좌순위) 값에서 정수 순위 추출. 없거나 숫자 아니면 None."""
+    m = re.search(r"\d+", str(raw or ""))
+    return int(m.group()) if m else None
+
+
+def cafe_slot_qualifies(raw: object) -> bool:
+    """카페 구좌 순위가 '진짜 상위노출' 자격(1~3위)인가.
+
+    빈칸/미상(None) = True(배제하지 않음) — 구좌를 못 읽었다고 노출에서 빼면
+    조용한 과소집계가 됨. 실측(2026-07-28) 노출행의 구좌순위 빈칸은 0건.
+    """
+    n = cafe_slot_rank_value(raw)
+    return n is None or n <= CAFE_SLOT_EXPOSED_MAX
+
+
+def is_real_exposure(k_base: str, cafe_slot_raw: object = None) -> bool:
+    """진짜 상위노출 = 노출 블록(EXPOSED_VALUES) AND 카페 구좌 1~3위 (사장님 2026-07-28)."""
+    return k_base in EXPOSED_VALUES and cafe_slot_qualifies(cafe_slot_raw)
+
 # 우리 시스템이 K 컬럼에 쓰는 값 (D-029 사장님 컨벤션). 이 외 값은 사장님 수동 편집으로 간주 → 보존.
 # 빈 문자열 "" 도 포함 (= 첫 cron 또는 사장님 시트 신규 행).
 SYSTEM_K_VALUES = {

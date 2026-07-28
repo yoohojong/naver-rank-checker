@@ -18,12 +18,22 @@ from __future__ import annotations
 import gspread
 
 from src.sheets import HEADER_KEYWORD
+from src.snapshot_diff import field_value as _default_field_value
 from src.snapshot_diff import k_base_of as _default_k_base_of
 from src.snapshot_diff import rank_of as _default_rank_of
+from src.transitions import cafe_slot_rank_value
 
-# 아카이브 탭 스키마 (고정). 날짜/탭/키워드/노출영역/통합순위.
-ARCHIVE_HEADER = ["날짜", "탭", "키워드", "노출영역", "통합순위"]
+# 아카이브 탭 스키마 (고정). 날짜/탭/키워드/노출영역/통합순위/카페구좌순위.
+# 카페구좌순위 = 사장님 2026-07-28: 구좌 4위 이하 제외한 '진짜 상위노출' 판정용(트렌드·코호트 정합).
+ARCHIVE_HEADER = ["날짜", "탭", "키워드", "노출영역", "통합순위", "카페구좌순위"]
 ARCHIVE_TAB_NAME = "상위노출_이력"
+
+_H_CAFE_SLOT = "노출여부(카페구좌순위)"
+
+
+def _default_cafe_slot_of(row):
+    """행 → 카페구좌순위 int/None (raw 우선)."""
+    return cafe_slot_rank_value(_default_field_value(row, _H_CAFE_SLOT))
 
 
 def build_archive_rows(
@@ -32,21 +42,24 @@ def build_archive_rows(
     *,
     k_base_of=_default_k_base_of,
     rank_of=_default_rank_of,
+    cafe_slot_of=_default_cafe_slot_of,
 ) -> list[list]:
     """탭별 행 dict → 시트 append 용 2D 리스트(헤더 제외) · 순수함수.
 
-    각 탭·각 행마다 [date_str, tab_name, 키워드, 노출영역(k_base), 통합순위] 생성.
+    각 탭·각 행마다 [date_str, tab_name, 키워드, 노출영역(k_base), 통합순위, 카페구좌순위] 생성.
 
     Args:
         tabs: {탭이름: [row_dict, ...]}. row_dict = 헤더명 키(백업/시트 read 형식 동일).
         date_str: 아카이브 날짜 문자열(예 "2026-07-02"). 모든 행 1열.
         k_base_of: 행 → 노출영역 base 추출 함수(기본 snapshot_diff, 테스트서 교체 가능).
         rank_of: 행 → 통합순위 int/None 추출 함수(기본 snapshot_diff).
+        cafe_slot_of: 행 → 카페구좌순위 int/None 추출 함수(사장님 2026-07-28: 구좌 4위
+            이하 제외 판정용. 트렌드·코호트가 헤드라인과 같은 정의를 쓰게 함).
 
     Returns:
-        2D 리스트. 각 행 = [date_str, tab_name, keyword, area, rank_str].
+        2D 리스트. 각 행 = [date_str, tab_name, keyword, area, rank_str, slot_str].
         - 키워드 공백/빈칸 행은 스킵(작업자 미기입 행 = 아카이브 의미 없음).
-        - rank None → 빈 문자열 "".
+        - rank/slot None → 빈 문자열 "".
     """
     out: list[list] = []
     for tab_name, rows in (tabs or {}).items():
@@ -57,7 +70,9 @@ def build_archive_rows(
             area = k_base_of(row)
             rank = rank_of(row)
             rank_str = "" if rank is None else str(rank)
-            out.append([date_str, tab_name, keyword, area, rank_str])
+            slot = cafe_slot_of(row)
+            slot_str = "" if slot is None else str(slot)
+            out.append([date_str, tab_name, keyword, area, rank_str, slot_str])
     return out
 
 
@@ -73,6 +88,10 @@ def _get_or_create_archive_ws(client, tab_name: str):
         # 탭은 있는데 헤더가 비었으면 헤더부터 기록(방어적).
         existing = ws.row_values(1)
         if not existing:
+            ws.update("A1", [ARCHIVE_HEADER], value_input_option="RAW")
+        elif existing != ARCHIVE_HEADER:
+            # 스키마 확장(2026-07-28 카페구좌순위 추가) 시 헤더행만 갱신. 데이터행은 보존 —
+            # 옛 행의 새 열은 빈칸(= 구좌 미상 → 노출 판정 자격 있음으로 처리, 과거 집계 유지).
             ws.update("A1", [ARCHIVE_HEADER], value_input_option="RAW")
         return ws, False
     except gspread.exceptions.WorksheetNotFound:

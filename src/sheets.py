@@ -9,7 +9,7 @@ from typing import Optional
 
 import gspread
 
-from src.transitions import parse_K_with_stamp
+from src.transitions import parse_K_with_stamp, cafe_slot_qualifies
 
 
 # 2026-05-12 T-M11: Google Sheets API 503 retry (document-specialist 외부 사실).
@@ -200,11 +200,15 @@ EXPOSURE_RESULT_ALIGNMENT_HEADERS = (HEADER_L, HEADER_M)
 EXPOSURE_RESULT_ALIGNMENT_FORMAT = {"horizontalAlignment": "CENTER", "verticalAlignment": "MIDDLE"}
 
 
-def _background_color_for_k(k_value: str) -> dict:
+def _background_color_for_k(k_value: str, cafe_slot_rank: object = None) -> dict:
     if not k_value:
         return COLOR_NONE
     s = str(k_value or "").strip()
     if s.startswith(EXPOSED_COLOR_PREFIXES):
+        # 사장님 2026-07-28: 카페 구좌 4위 이하는 노출 블록(인기글/AB)에 있어도
+        # '재작업' 대상 = 빨강. 1~3위만 진짜 상위노출 = 초록.
+        if not cafe_slot_qualifies(cafe_slot_rank):
+            return COLOR_NEGATIVE
         return COLOR_EXPOSED
     if s.startswith(NEGATIVE_COLOR_PREFIXES):
         return COLOR_NEGATIVE
@@ -736,7 +740,9 @@ class SheetsClient:
             if HEADER_AREA in mapping:
                 color_formats.append({
                     "range": gspread.utils.rowcol_to_a1(target_row, mapping[HEADER_AREA] + 1),
-                    "format": {"backgroundColor": _background_color_for_k(payload.get(HEADER_RAW_AREA, ""))},
+                    # 사장님 2026-07-28: 구좌 4위 이하는 노출 블록이라도 빨강 — raw_카페순위 반영.
+                    "format": {"backgroundColor": _background_color_for_k(
+                        payload.get(HEADER_RAW_AREA, ""), payload.get(HEADER_RAW_M, ""))},
                 })
             # 카페 구좌 1등 실패 연속 카운터(하루당) 갱신 + 키워드 셀 색 강도 (2026-07-16).
             # re-read(sheet_rows)에서 이전 카운터·마지막카운트일·작업일을 읽어 계산.
@@ -971,7 +977,7 @@ class SheetsClient:
                     continue
                 k_value = upd.columns[HEADER_AREA]
                 cell_range = gspread.utils.rowcol_to_a1(upd.row, k_col)
-                bg = _background_color_for_k(k_value)
+                bg = _background_color_for_k(k_value, upd.columns.get(HEADER_M))
                 format_payload.append({"range": cell_range, "format": {"backgroundColor": bg}})
         format_payload.extend(_exposure_result_alignment_formats(mapping, alignment_rows))
         if format_payload:

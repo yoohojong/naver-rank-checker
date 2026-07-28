@@ -11,13 +11,16 @@ from __future__ import annotations
 
 from collections import OrderedDict, defaultdict
 
-from src.transitions import EXPOSED_VALUES
+from src.transitions import is_real_exposure
 
 ARCHIVE_TAB = "상위노출_이력"
 
 
 def read_archive_rows(client) -> list:
-    """상위노출_이력 → [(날짜ISO, 탭, 키워드, 노출영역), ...]. 탭 없음/실패 시 []. (비차단)"""
+    """상위노출_이력 → [(날짜ISO, 탭, 키워드, 노출영역, 카페구좌순위), ...]. 탭 없음/실패 시 []. (비차단)
+
+    카페구좌순위 열은 2026-07-28 추가 — 옛 아카이브(열 없음)는 "" 로 채워 뒤 호환.
+    """
     try:
         ws = client.spreadsheet.worksheet(ARCHIVE_TAB)
         vals = ws.get_all_values()
@@ -30,6 +33,7 @@ def read_archive_rows(client) -> list:
         di, ti, ki, ai = h.index("날짜"), h.index("탭"), h.index("키워드"), h.index("노출영역")
     except ValueError:
         return []
+    si = h.index("카페구좌순위") if "카페구좌순위" in h else -1
     out = []
     for r in vals[1:]:
         if di < len(r) and str(r[di]).strip():
@@ -38,6 +42,7 @@ def read_archive_rows(client) -> list:
                 r[ti] if ti < len(r) else "",
                 r[ki] if ki < len(r) else "",
                 r[ai] if ai < len(r) else "",
+                r[si] if 0 <= si < len(r) else "",
             ))
     return out
 
@@ -45,8 +50,10 @@ def read_archive_rows(client) -> list:
 def daily_trend(rows: list, days: int = 6) -> "OrderedDict":
     """행 → 최근 days개 날짜별 {탭: 상위노출수} + 합계. 날짜 오름차순(왼쪽 과거 → 오른쪽 오늘)."""
     by: dict = defaultdict(lambda: defaultdict(int))
-    for d, t, kw, a in rows:
-        if a in EXPOSED_VALUES:
+    for row in rows:
+        d, t, a = row[0], row[1], row[3]
+        slot = row[4] if len(row) > 4 else ""  # 옛 4-tuple 아카이브 호환(구좌 미상)
+        if is_real_exposure(a, slot):  # 구좌 4위 이하 제외 (사장님 2026-07-28)
             by[d][t] += 1
     dates = sorted(by)[-days:]
     out: "OrderedDict" = OrderedDict()
@@ -73,9 +80,11 @@ def cohort_evolution(rows: list, curr_backup: dict, n_cohorts: int = 3, max_step
     """
     exp_by_date: dict = defaultdict(set)
     all_dates: set = set()
-    for d, t, kw, a in rows:
+    for row in rows:
+        d, kw, a = row[0], row[2], row[3]
+        slot = row[4] if len(row) > 4 else ""  # 옛 4-tuple 아카이브 호환(구좌 미상)
         all_dates.add(d)
-        if a in EXPOSED_VALUES and kw:
+        if is_real_exposure(a, slot) and kw:  # 구좌 4위 이하 제외 (사장님 2026-07-28)
             exp_by_date[d].add(kw)
     if not all_dates:
         return []

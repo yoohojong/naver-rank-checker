@@ -20,6 +20,7 @@ from src.snapshot_diff import (  # noqa: F401 — _H_WORKDATE 는 의도적 재�
     EXPOSED_VALUES,
     TabReport,
     _H_WORKDATE,
+    is_exposed_row,
     k_base_of,
 )
 
@@ -59,7 +60,7 @@ def funnel_last_n_days(curr: dict, work_dates: set) -> tuple:
             wd = str(r.get(_H_WORKDATE, "") or "").strip()
             if wd in work_dates:
                 worked += 1
-                if k_base_of(r) in EXPOSED_VALUES:
+                if is_exposed_row(r):
                     exposed += 1
     return worked, exposed
 
@@ -121,7 +122,7 @@ def daily_product_breakdown(curr: dict, today: date, n: int = 7) -> list:
             if wd in acc:
                 cell = acc[wd][tab]
                 cell[0] += 1
-                if k_base_of(r) in EXPOSED_VALUES:
+                if is_exposed_row(r):
                     cell[1] += 1
     out = []
     for ds in day_strs:  # range(0..)=오늘부터 → 최신일 먼저

@@ -6,18 +6,13 @@ raw_* 우선 읽기(snapshot_diff.field_value)로 공식 모드에서도 진짜 
 """
 from __future__ import annotations
 
-from src.snapshot_diff import field_value, k_base_of, rank_of
-from src.transitions import EXPOSED_VALUES
+from src.snapshot_diff import field_value, is_exposed_row, k_base_of, rank_of
 
 _CAP = 12  # 카테고리별 키워드 예시 상한(토큰·노출·TPM 한도 여유)
 
 
 def _kw(row: dict) -> str:
     return str(row.get("키워드", "") or "").strip()
-
-
-def _is_exposed(kbase: str) -> bool:
-    return kbase in EXPOSED_VALUES or kbase.startswith("중복노출")
 
 
 def build_context(reports, curr_backup, *, cap: int = _CAP) -> dict:
@@ -29,7 +24,7 @@ def build_context(reports, curr_backup, *, cap: int = _CAP) -> dict:
         exposed = []
         for r in rows:
             kb = k_base_of(r)
-            if _is_exposed(kb):
+            if is_exposed_row(r):
                 exposed.append({
                     "키워드": _kw(r),
                     "노출영역": kb,

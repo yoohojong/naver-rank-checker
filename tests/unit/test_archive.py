@@ -18,11 +18,12 @@ from src.archive import (
 )
 
 
-def _row(kw, area, l=""):
+def _row(kw, area, l="", m=""):
     return {
         "키워드": kw,
         "노출영역": area,
         "노출여부(통합탭 순위)": l,
+        "노출여부(카페구좌순위)": m,
     }
 
 
@@ -31,7 +32,7 @@ def _row(kw, area, l=""):
 def test_build_archive_rows_multiple_tabs_and_states():
     tabs = {
         "샴푸 카외": [
-            _row("비듬샴푸", "AB (6/19 13:00~)", "5"),
+            _row("비듬샴푸", "AB (6/19 13:00~)", "5", "2"),   # 구좌 2위 → slot "2" 기록
             _row("탈모샴푸", "누락 (6/18 03:00~)", ""),
         ],
         "토닉 카외": [
@@ -42,10 +43,10 @@ def test_build_archive_rows_multiple_tabs_and_states():
     rows = build_archive_rows(tabs, "2026-07-02")
 
     assert rows == [
-        ["2026-07-02", "샴푸 카외", "비듬샴푸", "AB", "5"],
-        ["2026-07-02", "샴푸 카외", "탈모샴푸", "누락", ""],
-        ["2026-07-02", "토닉 카외", "두피토닉", "삭제", ""],
-        ["2026-07-02", "토닉 카외", "모발토닉", "미노출", ""],
+        ["2026-07-02", "샴푸 카외", "비듬샴푸", "AB", "5", "2"],
+        ["2026-07-02", "샴푸 카외", "탈모샴푸", "누락", "", ""],
+        ["2026-07-02", "토닉 카외", "두피토닉", "삭제", "", ""],
+        ["2026-07-02", "토닉 카외", "모발토닉", "미노출", "", ""],
     ]
 
 
@@ -83,8 +84,9 @@ def test_build_archive_rows_injectable_helpers():
         "2026-07-02",
         k_base_of=lambda r: "CUSTOM",
         rank_of=lambda r: 7,
+        cafe_slot_of=lambda r: 4,
     )
-    assert rows[0] == ["2026-07-02", "t", "kw", "CUSTOM", "7"]
+    assert rows[0] == ["2026-07-02", "t", "kw", "CUSTOM", "7", "4"]
 
 
 def test_build_archive_rows_empty_tabs():

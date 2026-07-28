@@ -20,6 +20,7 @@ from src.snapshot_diff import (  # noqa: F401 — _H_WORKDATE 는 헤더 drift �
     EXPOSED_VALUES,
     _H_WORKDATE,
     diff_backups,
+    is_exposed_row,
     k_base_of,
     rank_of,
     row_identity,
@@ -61,7 +62,7 @@ def _cafe_rows(backup: dict) -> list:
 
 
 def _exposed(rows: list) -> int:
-    return sum(1 for r in rows if k_base_of(r) in EXPOSED_VALUES)
+    return sum(1 for r in rows if is_exposed_row(r))
 
 
 def _iso_to_date(s: str) -> date:
@@ -103,7 +104,7 @@ def _funnel_for_date(rows: list, md: str) -> tuple:
         link = str(r.get(_H_LINK, "") or "").strip()
         if wd == md and link:
             pub += 1
-            if k_base_of(r) in EXPOSED_VALUES:
+            if is_exposed_row(r):
                 exp += 1
     return pub, exp
 
@@ -112,7 +113,7 @@ def _days_to_expose(rows: list, ref: date) -> dict:
     """현재 상위노출 행들을 (오늘 − 작업일) 기준 버킷 분류."""
     b = {k: 0 for k in _D2E_BUCKETS}
     for r in rows:
-        if k_base_of(r) not in EXPOSED_VALUES:
+        if not is_exposed_row(r):
             continue
         dt = _md_to_date(str(r.get(_H_WORKDATE, "") or "").strip(), ref)
         if dt is None:
@@ -136,7 +137,7 @@ def _category_rates(rows: list) -> list:
     for r in rows:
         c = str(r.get(_H_KWCLASS, "") or "").strip() or "미분류"
         tot[c] += 1
-        if k_base_of(r) in EXPOSED_VALUES:
+        if is_exposed_row(r):
             exp[c] += 1
     out = []
     for c in sorted(tot, key=lambda k: (-tot[k], k)):
@@ -160,7 +161,7 @@ def _avg_dwell(backups_by_date: dict) -> tuple:
     series: dict = {}
     for d in dates:
         for r in _cafe_rows(backups_by_date[d]):
-            series.setdefault(row_identity(r), {})[d] = k_base_of(r) in EXPOSED_VALUES
+            series.setdefault(row_identity(r), {})[d] = is_exposed_row(r)
     lengths: list = []
     for dmap in series.values():
         seq = [dmap.get(d) for d in dates]  # True/False/None(그날 행 없음)
@@ -227,7 +228,7 @@ def _dwell_cohort_curve(backups_by_date: dict) -> tuple:
                 continue
             pub, lag = res
             lag_tot[lag] += 1
-            if k_base_of(r) in EXPOSED_VALUES:
+            if is_exposed_row(r):
                 lag_exp[lag] += 1
             cohorts.add(pub)
     return (lag_tot, lag_exp, len(cohorts))
@@ -266,7 +267,7 @@ def _exposure_reconcile(prev: dict, curr: dict) -> dict:
     def _idx(bk):
         m = {}
         for r in _cafe_rows(bk):
-            m[row_identity(r)] = k_base_of(r) in EXPOSED_VALUES
+            m[row_identity(r)] = is_exposed_row(r)
         return m
 
     pmap, cmap = _idx(prev), _idx(curr)
@@ -300,7 +301,7 @@ def _keyword_stability(backups_by_date: dict) -> tuple:
     for d in dates:
         for r in _cafe_rows(backups_by_date[d]):
             ident = row_identity(r)
-            series.setdefault(ident, []).append(k_base_of(r) in EXPOSED_VALUES)
+            series.setdefault(ident, []).append(is_exposed_row(r))
             kw = str(r.get(_H_KEYWORD, "") or "").strip()
             if kw:
                 meta[ident] = kw

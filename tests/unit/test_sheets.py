@@ -731,6 +731,49 @@ class TestStaleFormulaMode:
         assert aligned_ranges == {"L2", "M2"}
         assert {HEADER_RAW_AREA, HEADER_RAW_L, HEADER_RAW_M, HEADER_RAW_JISIKIN, HEADER_LAST_CHECKED_INPUT_KEY, HEADER_LAST_CHECKED_AT}
 
+    def _stale_headers(self):
+        return [
+            "작업일", "작업자", "유형", "키워드", "MB", "PC", "총합", "작업아이디",
+            "카페/게시글", "링크", "노출영역",
+            "노출여부(통합탭 순위)", "노출여부(카페구좌순위)", "블로그", "지식인탭",
+            "현재입력키", "마지막검사입력키", "raw_노출영역", "raw_통합순위",
+            "raw_카페순위", "raw_지식인탭", "마지막검사시각",
+        ]
+
+    def test_write_stale_formula_results_slot_4plus_exposed_is_red(self):
+        """사장님 2026-07-28: 노출 블록(인기글)이라도 구좌 4위 이하면 stale 경로도 K열 빨강."""
+        headers = self._stale_headers()
+        client, ws, _spreadsheet = self._make_client_with_ws(headers, col_count=len(headers))
+        row = {"_row": 2, "키워드": "지루성두피염원인",
+               "링크": "https://cafe.naver.com/workee/1325909"}
+        update = RowUpdate(row=2, columns={
+            "노출영역": "인기글 (5/21 20:00~)",
+            "노출여부(통합탭 순위)": "3",
+            "노출여부(카페구좌순위)": "5",   # 구좌 5위 → 빨강(재작업)
+            "지식인탭": "",
+        })
+        client.write_stale_formula_results(
+            "샴푸 카외", [update], row_context={2: row}, checked_at="2026-05-21 20:00 KST")
+        formats = ws.batch_format.call_args.args[0]
+        assert {"range": "K2", "format": {"backgroundColor": COLOR_NEGATIVE}} in formats
+
+    def test_write_stale_formula_results_slot_1to3_exposed_is_green(self):
+        """구좌 1~3위 노출은 stale 경로에서도 초록 유지."""
+        headers = self._stale_headers()
+        client, ws, _spreadsheet = self._make_client_with_ws(headers, col_count=len(headers))
+        row = {"_row": 2, "키워드": "지루성두피염원인",
+               "링크": "https://cafe.naver.com/workee/1325909"}
+        update = RowUpdate(row=2, columns={
+            "노출영역": "인기글 (5/21 20:00~)",
+            "노출여부(통합탭 순위)": "3",
+            "노출여부(카페구좌순위)": "2",   # 구좌 2위 → 초록(진짜 상위노출)
+            "지식인탭": "",
+        })
+        client.write_stale_formula_results(
+            "샴푸 카외", [update], row_context={2: row}, checked_at="2026-05-21 20:00 KST")
+        formats = ws.batch_format.call_args.args[0]
+        assert {"range": "K2", "format": {"backgroundColor": COLOR_EXPOSED}} in formats
+
     def test_write_stale_formula_results_skips_if_link_changed_after_load(self):
         from src.sheets import (
             HEADER_CURRENT_INPUT_KEY,
