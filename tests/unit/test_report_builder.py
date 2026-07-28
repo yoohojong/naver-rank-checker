@@ -15,6 +15,7 @@ def _shampoo() -> TabReport:
             RowDiff("샴푸 카외", "단백질샴푸", "AB", "AB", 8, 5, "오름", ""),
             RowDiff("샴푸 카외", "탈모샴푸 추천", "AB", "삭제", 2, None, "삭제", ""),
         ],
+        exposed_deleted=1,  # 위 삭제 diff(AB→삭제) = 어제 진짜 노출이던 글 삭제 → 나감 반영
         jisikin_now=2,
         jisikin_prev=1,
         worked=3,
@@ -115,7 +116,7 @@ def test_reconciliation_balances_and_line_correct():
     tr = reports[0]
     kc = Counter(d.kind for d in tr.diffs)
     gained = kc.get("신규노출", 0) + tr.new_exposed
-    left = kc.get("누락", 0) + kc.get("삭제", 0) + tr.other_exit + tr.vanished_exposed
+    left = kc.get("누락", 0) + tr.exposed_deleted + tr.other_exit + tr.vanished_exposed
     # ★정합식이 실제로 성립
     assert tr.exposed_now == tr.exposed_prev + gained - left
     assert tr.exposed_prev == 4 and tr.exposed_now == 3

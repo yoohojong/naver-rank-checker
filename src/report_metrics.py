@@ -17,7 +17,6 @@ from datetime import date, timedelta
 
 from src.metric_guards import audit_daily, audit_monthly, audit_weekly
 from src.snapshot_diff import (  # noqa: F401 — _H_WORKDATE 는 헤더 drift 방지 위해 의도적 재사용
-    EXPOSED_VALUES,
     _H_WORKDATE,
     diff_backups,
     is_exposed_row,

@@ -135,8 +135,11 @@ def _build_full_report(reports: list[TabReport], kst: str, status_line: str, tit
         new_exp = _sum(reports, "new_exposed")
         vanished = _sum(reports, "vanished_exposed")
         other_exit = _sum(reports, "other_exit")
+        exposed_deleted = _sum(reports, "exposed_deleted")
         gained = kc.get("신규노출", 0) + new_exp
-        left = kc.get("누락", 0) + kc.get("삭제", 0) + other_exit + vanished
+        # 나감의 '삭제' 항은 어제 진짜 상위노출이던 것만(exposed_deleted). 전체 삭제(kc['삭제'])를
+        # 넣으면 미노출·구좌4위 삭제까지 차감돼 정합이 음수로 깨진다(2026-07-28 독립검토 HIGH).
+        left = kc.get("누락", 0) + exposed_deleted + other_exit + vanished
         L.append("━━━ 어제 대비 변화 (하루 사이) ━━━")
         if kc.get("신규노출"):
             L.append(f"   새로 뜸(미노출→상위노출): {kc['신규노출']}개")
@@ -145,7 +148,11 @@ def _build_full_report(reports: list[TabReport], kst: str, status_line: str, tit
         if kc.get("누락"):
             L.append(f"   빠짐(상위노출→누락): {kc['누락']}개 (보통 다음 검사에 회복)")
         if kc.get("삭제"):
-            L.append(f"   삭제(글 사라짐): {kc['삭제']}개  ← 점검")
+            total_del = kc["삭제"]
+            if exposed_deleted and exposed_deleted != total_del:
+                L.append(f"   삭제(글 사라짐): {total_del}개 (그중 상위노출이던 {exposed_deleted}개만 '나감' 반영)  ← 점검")
+            else:
+                L.append(f"   삭제(글 사라짐): {total_del}개  ← 점검")
         if other_exit:
             L.append(f"   기타 이탈(미노출/재검사 등): {other_exit}개")
         if vanished:

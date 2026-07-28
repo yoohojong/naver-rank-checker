@@ -85,10 +85,13 @@ class TabReport:
     type_changes: int = 0  # 유형(C) 바뀐 키워드 수
     type_change_dirs: Counter = field(default_factory=Counter)  # {'AB→인기글': n}
     # 정합용(2026-07-07): '지금 노출 개수' 변화를 완전히 설명하는 버킷.
-    #   exposed_now = exposed_prev + (신규노출 + new_exposed) − (누락 + 삭제 + other_exit + vanished_exposed)
+    #   exposed_now = exposed_prev + (신규노출 + new_exposed) − (누락 + exposed_deleted + other_exit + vanished_exposed)
     new_exposed: int = 0       # 어제 없던 새 키워드가 오늘 상위노출(신규노출 kind엔 안 잡히던 것)
     vanished_exposed: int = 0  # 어제 노출됐는데 오늘 행 자체가 사라짐(줄 삭제 = 누락과 다름)
     other_exit: int = 0        # 노출→비노출인데 누락/삭제 아님(미노출/실패/재검사 등, 기존엔 '변화'로 묻힘)
+    # 사장님 2026-07-28: 정합식의 '삭제' 항은 '어제 진짜 상위노출이던' 삭제만 세야 함.
+    #   전체 삭제(kc['삭제'])를 나감에 넣으면 미노출·구좌4위 삭제까지 차감돼 항등식이 음수로 깨짐.
+    exposed_deleted: int = 0   # 어제 진짜 상위노출(구좌1~3위) 이던 행이 오늘 '삭제'된 수(나감 반영용)
     # 사장님 2026-07-28: 구좌 4위 이하 제외한 '진짜 상위노출' 카운트(행 단위, 구좌순위 반영).
     # build_trace 가 행에서 직접 채움. None 이면 분포 기반 폴백(합성 TabReport·구버전 호환).
     exposed_now_count: Optional[int] = None
@@ -313,6 +316,9 @@ def diff_backups(prev: Optional[dict], curr: dict, work_date: Optional[str] = No
                 # (구좌 4위 이하로 떨어져 노출에서 빠진 것 포함)
                 if p_exposed and not c_exposed and kind not in ("누락", "삭제"):
                     tr.other_exit += 1
+                # 정합용: '삭제'는 어제 진짜 상위노출이던 것만 나감에 반영(미노출·구좌4위 삭제 제외).
+                if kind == "삭제" and p_exposed:
+                    tr.exposed_deleted += 1
                 tr.diffs.append(
                     RowDiff(
                         tab=tab,

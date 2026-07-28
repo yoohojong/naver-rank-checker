@@ -36,6 +36,23 @@ def _default_cafe_slot_of(row):
     return cafe_slot_rank_value(_default_field_value(row, _H_CAFE_SLOT))
 
 
+def _ensure_archive_cols(ws) -> None:
+    """헤더 열 수만큼 그리드 폭을 먼저 확보한다 (2026-07-28 독립검토 HIGH).
+
+    gspread values.update 는 그리드 밖 열에 400 'exceeds grid limits' 를 반환하고 열을
+    자동 확장하지 않는다. 6열 헤더(카페구좌순위 추가)를 5열 그리드(기존 라이브 탭)에 쓰면
+    조용히 실패 → 아카이빙 영구 중단. 헤더를 쓰기 전에 add_cols 로 넓힌다.
+    (sheets.py 의 stale-formula 헤더 확장과 동일 가드.)
+    col_count 를 못 읽으면(테스트 fake 등) 건드리지 않는다.
+    """
+    try:
+        col_count = int(getattr(ws, "col_count", 0) or 0)
+    except (TypeError, ValueError):
+        col_count = 0
+    if col_count and len(ARCHIVE_HEADER) > col_count:
+        ws.add_cols(len(ARCHIVE_HEADER) - col_count)
+
+
 def build_archive_rows(
     tabs: dict,
     date_str: str,
@@ -88,10 +105,13 @@ def _get_or_create_archive_ws(client, tab_name: str):
         # 탭은 있는데 헤더가 비었으면 헤더부터 기록(방어적).
         existing = ws.row_values(1)
         if not existing:
+            _ensure_archive_cols(ws)
             ws.update("A1", [ARCHIVE_HEADER], value_input_option="RAW")
         elif existing != ARCHIVE_HEADER:
             # 스키마 확장(2026-07-28 카페구좌순위 추가) 시 헤더행만 갱신. 데이터행은 보존 —
             # 옛 행의 새 열은 빈칸(= 구좌 미상 → 노출 판정 자격 있음으로 처리, 과거 집계 유지).
+            # ★그리드가 좁으면(5열) 먼저 넓힌다 — 안 하면 A1:F1 write 가 400 으로 조용히 실패.
+            _ensure_archive_cols(ws)
             ws.update("A1", [ARCHIVE_HEADER], value_input_option="RAW")
         return ws, False
     except gspread.exceptions.WorksheetNotFound:

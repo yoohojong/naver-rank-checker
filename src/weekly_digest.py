@@ -17,11 +17,9 @@ from collections import Counter
 from datetime import date, timedelta
 
 from src.snapshot_diff import (  # noqa: F401 — _H_WORKDATE 는 의도적 재사용(헤더 drift 방지)
-    EXPOSED_VALUES,
     TabReport,
     _H_WORKDATE,
     is_exposed_row,
-    k_base_of,
 )
 
 # 비정상 신호 임계 (보수적 — 오탐 적게). 운영하며 데이터 보고 조정 가능.
@@ -104,7 +102,7 @@ def _sum(reports: list[TabReport], attr: str) -> int:
 def daily_product_breakdown(curr: dict, today: date, n: int = 7) -> list:
     """최근 n일 · 날짜별 × 제품(탭)별 (발행 수, 상위노출 수).
 
-    발행 = 작업일==그날 인 키워드 행 수 / 상위노출 = 그중 k_base_of ∈ EXPOSED_VALUES.
+    발행 = 작업일==그날 인 키워드 행 수 / 상위노출 = 그중 is_exposed_row(구좌 1~3위·2026-07-28).
     발행 0인 날은 생략. 최신일이 먼저(오늘→과거).
 
     Returns:

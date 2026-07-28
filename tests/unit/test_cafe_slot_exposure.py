@@ -6,6 +6,8 @@
   3) snapshot_diff: 리포트 exposed_now 가 구좌 4위 이하를 제외
   4) exposure_history: 일별 트렌드도 같은 기준(옛 4-tuple 아카이브 호환)
 """
+from collections import Counter
+
 from src.transitions import (
     CAFE_SLOT_EXPOSED_MAX,
     cafe_slot_qualifies,
@@ -108,3 +110,76 @@ def test_daily_trend_legacy_4tuple_still_counts():
     rows = [("2026-07-06", "샴푸 카외", "k1", "AB")]
     tr = daily_trend(rows, days=6)
     assert tr["2026-07-06"]["합계"] == 1
+
+
+# ── 5) 정합식(HIGH) — '삭제'는 어제 진짜노출이던 것만 나감에 반영 ──────────────
+def test_exposed_deleted_gating_keeps_identity_balanced():
+    """구좌 4위/미노출 행이 삭제돼도 정합식(어제+들어옴−나감=오늘)이 음수로 안 깨진다.
+    (2026-07-28 독립검토 HIGH: 전체 삭제를 나감에 넣으면 노출 아니던 삭제까지 차감)."""
+    prev = {"tabs": {"샴푸 카외": [
+        _r("a", "AB", "2", 2),      # 어제 진짜 노출(구좌2)
+        _r("b", "인기글", "4", 3),  # 어제 구좌4 = 노출 아님
+        _r("c", "미노출", "", 4),   # 어제 미노출
+    ]}}
+    curr = {"tabs": {"샴푸 카외": [
+        _r("a", "삭제", "", 2),     # 셋 다 오늘 삭제
+        _r("b", "삭제", "", 3),
+        _r("c", "삭제", "", 4),
+    ]}}
+    tr = diff_backups(prev, curr)[0]
+    assert tr.exposed_prev == 1      # a 만 어제 진짜 노출
+    assert tr.exposed_now == 0
+    assert tr.exposed_deleted == 1   # a 만 (b·c 는 노출 아니었음)
+
+    kc = Counter(d.kind for d in tr.diffs)
+    assert kc.get("삭제", 0) == 3    # 전체 삭제는 3(표시·점검용)
+    gained = kc.get("신규노출", 0) + tr.new_exposed
+    left = kc.get("누락", 0) + tr.exposed_deleted + tr.other_exit + tr.vanished_exposed
+    # 정합: 0 == 1 + 0 − 1 (fix 전엔 전체삭제3으로 1+0−3=-2 로 깨짐)
+    assert tr.exposed_now == tr.exposed_prev + gained - left
+
+
+# ── 6) 아카이브 그리드(HIGH) — 6열 헤더 쓰기 전 그리드 먼저 확장 ──────────────
+class _FakeWs5col:
+    """옛 5열 그리드 '상위노출_이력' 탭 대역 (col_count·add_cols 모델링)."""
+    def __init__(self):
+        self.col_count = 5
+        self.added_cols = []
+        self.header = ["날짜", "탭", "키워드", "노출영역", "통합순위"]
+        self.updated = []
+
+    def row_values(self, n):
+        return list(self.header) if n == 1 else []
+
+    def add_cols(self, n):
+        self.col_count += n
+        self.added_cols.append(n)
+
+    def update(self, cell, data, value_input_option="RAW"):
+        self.updated.append((cell, data))
+        if cell == "A1":
+            self.header = list(data[0])
+
+
+class _FakeSS:
+    def __init__(self, ws):
+        self._ws = ws
+
+    def worksheet(self, title):
+        return self._ws
+
+
+class _FakeClient:
+    def __init__(self, ws):
+        self.spreadsheet = _FakeSS(ws)
+
+
+def test_archive_migration_widens_grid_before_writing_6col_header():
+    """5열 라이브 탭에 6열 헤더를 쓰기 전에 add_cols 로 먼저 넓힌다.
+    (안 하면 A1:F1 write 가 'exceeds grid limits' 400 으로 조용히 실패 → 아카이빙 중단)."""
+    from src.archive import _get_or_create_archive_ws, ARCHIVE_HEADER
+    ws = _FakeWs5col()
+    _get_or_create_archive_ws(_FakeClient(ws), "상위노출_이력")
+    assert ws.added_cols == [1]           # 5→6, add_cols(1) 먼저 호출
+    assert ws.col_count == 6
+    assert ws.header == ARCHIVE_HEADER     # 그 다음 6열 헤더 기록
