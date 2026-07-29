@@ -10,12 +10,16 @@
   · 탭이 없으면 만든다. 있으면 링크 기준으로 갱신(같은 글은 덮어쓰고 새 글은 추가).
   · 고쳐서 합격이 되면 상태가 '해결'로 바뀐다 — 작업자가 손으로 체크할 필요 없다.
 
+★삭제 확인된 글은 다시 검사하지 않는다(2026-07-30). 검사한 글의 46%(159건)가
+  '삭제되었거나 존재하지 않는 게시글'(4003)로 확인됐다 — 지워진 카페 글은 되살아나지
+  않는데, 매일 같은 죽은 링크를 다시 읽어 매일 같은 🚨 경보를 울렸다. 하루 검사 예산도
+  산 글 대신 죽은 글에 썼다. 일시 오류(Timeout 등)는 삭제가 아니므로 계속 재시도한다.
+
 검수 로직 정본은 team-project/cafe-external/ 이다. 여기 scripts/audit/ 는 그 복사본.
 """
 from __future__ import annotations
 
 import importlib.util
-import json
 import os
 import random
 import re
@@ -98,7 +102,37 @@ def 단계뽑기(분류: str) -> int | None:
     return int(m.group(1)) if m else None
 
 
-def 대상읽기(sc: SheetsClient, limit: int) -> tuple[list[dict], list]:
+def 이전기록(sc: SheetsClient) -> tuple[set, dict, list]:
+    """'발행 검수' 탭의 지난 기록 — (삭제 확인된 링크, 링크→지난 판정, 삭제행의 카페/게시판).
+
+    삭제 확인('글 없음(404)')된 링크는 오늘 검사 대상에서 뺀다. 지난 판정은 보고에서
+    '새로 걸린 글'과 '전부터 걸려 있던 글'을 나누는 데 쓴다. 탭이 없으면 전부 빈 값.
+    """
+    try:
+        vals = sc.spreadsheet.worksheet(탭이름).get_all_values()
+    except Exception:
+        return set(), {}, []
+    if len(vals) < 2:
+        return set(), {}, []
+    h = [x.strip() for x in vals[0]]
+    try:
+        i_u, i_j = h.index("글 링크"), h.index("판정")
+        i_w, i_c = h.index("무엇이 걸렸나"), h.index("카페/게시판")
+    except ValueError:            # 옛 헤더 — 탭준비가 옮기기 전. 오늘은 그냥 전수 검사.
+        return set(), {}, []
+    죽은, 지난판정, 죽은자리 = set(), {}, []
+    for r in vals[1:]:
+        if len(r) <= max(i_u, i_j, i_w, i_c) or not r[i_u].strip():
+            continue
+        url = r[i_u].strip()
+        지난판정[url] = r[i_j].strip()
+        if r[i_j].strip() == "수집실패" and "글 없음(404)" in r[i_w]:
+            죽은.add(url)
+            죽은자리.append(r[i_c].strip() or "(게시판 미기재)")
+    return 죽은, 지난판정, 죽은자리
+
+
+def 대상읽기(sc: SheetsClient, limit: int, 빼기: set = frozenset()) -> tuple[list[dict], list]:
     """검수할 글 목록과, 단계를 못 읽어 건너뛴 목록을 함께 돌려준다.
 
     ★숨김 탭 제외(2026-07-23) — 사장님 규칙: 카외 보고·집계는 숨김 탭을 뺀다.
@@ -125,7 +159,7 @@ def 대상읽기(sc: SheetsClient, limit: int) -> tuple[list[dict], list]:
             링크 = next((c.strip() for c in row
                         if isinstance(c, str) and c.strip().startswith("http")
                         and CAFE_LINK.search(c)), None)
-            if not 링크:
+            if not 링크 or 링크 in 빼기:
                 continue
             m = CAFE_LINK.search(링크)
             ident = (m.group(1) or m.group(3), m.group(2) or m.group(4))
@@ -312,7 +346,10 @@ def 시트반영(ws, 결과들: list[tuple[dict, dict]], 실패들: list[dict]):
 
 def 검수하기(sc: SheetsClient, limit: int, 쓰기: bool, 마감분: int) -> dict:
     """검수를 끝까지 돌리고 결과를 돌려준다. 여기서 나는 예외는 '고장'이다."""
-    대상, 건너뜀 = 대상읽기(sc, limit)
+    죽은, 지난판정, 죽은자리 = 이전기록(sc)
+    if 죽은:
+        print(f"  삭제 확인된 글 {len(죽은)}건은 대상에서 뺌(재검사 안 함)")
+    대상, 건너뜀 = 대상읽기(sc, limit, 죽은)
     print(f"  검수 대상 {len(대상)}건", flush=True)
     if not 대상:
         raise RuntimeError("검수할 글이 한 건도 안 잡혔습니다 — 시트 링크 열·탭 이름이 "
@@ -355,20 +392,31 @@ def 검수하기(sc: SheetsClient, limit: int, 쓰기: bool, 마감분: int) -> 
         print("  (GEOMSU_WRITE=0 — 시트에 쓰지 않음)")
 
     return {"결과들": 결과들, "실패들": 실패들, "건너뜀": 건너뜀, "수": n,
-            "시간초과": 시간초과, "시트오류": 시트오류}
+            "시간초과": 시간초과, "시트오류": 시트오류,
+            "지난판정": 지난판정, "누적삭제": len(죽은), "죽은자리": 죽은자리}
 
 
 def 보고문(요약: dict, 시트url: str) -> str:
     """사장님이 이것만 읽고 다음 행동을 정할 수 있게 쓴다. 로그를 열게 만들지 않는다."""
     결과들, 실패들, 건너뜀, n = (요약["결과들"], 요약["실패들"],
                                  요약["건너뜀"], 요약["수"])
+    지난판정 = 요약.get("지난판정") or {}
     이제 = datetime.now(KST)
     오늘 = f"{이제.month}/{이제.day}"
     줄 = [f"📋 발행 검수 {오늘}",
           f"검사 {len(결과들)}건 — 합격 {n['합격']} · 고쳐야 함 {n['불합격']} · "
           f"한번 봐야 함 {n['보류']}"]
     if 실패들:
-        줄.append(f"글을 못 읽은 것 {len(실패들)}건")
+        # 삭제(404)와 일시 오류는 다른 문제다 — 삭제는 발행 손실, 오류는 내일 재시도.
+        삭제 = [p for p in 실패들 if "글 없음(404)" in (p.get("_실패") or "")]
+        줄.append(f"글을 못 읽은 것 {len(실패들)}건"
+                  + (f" — 그중 카페에서 삭제된 글 {len(삭제)}건" if 삭제 else ""))
+    if 요약.get("누적삭제"):
+        줄.append(f"이미 삭제 확인된 글 {요약['누적삭제']}건은 다시 검사하지 않습니다")
+        자리 = Counter(요약.get("죽은자리") or [])
+        if 자리:
+            줄.append("삭제가 몰린 곳: " + " · ".join(
+                f"{곳} {수}건" for 곳, 수 in 자리.most_common(3)))
 
     def 지적줄(묶음, 제목):
         if not 묶음:
@@ -386,8 +434,16 @@ def 보고문(요약: dict, 시트url: str) -> str:
 
     불합격 = [(p, r) for p, r in 결과들 if r["판정"] == "불합격"]
     보류 = [(p, r) for p, r in 결과들 if r["판정"] == "보류"]
-    지적줄(불합격, "고쳐야 할 글")
-    지적줄(보류, "사람이 한번 봐야 할 글")
+    # 매일 같은 글을 다시 나열하지 않는다 — 새로 걸린 글만 목록으로, 전부터 걸려
+    # 있던 글은 건수 한 줄로(자세한 목록은 시트에 있다). 지난 기록이 없으면 전부 '새로'.
+    새불 = [(p, r) for p, r in 불합격 if 지난판정.get(p.get("url")) != "불합격"]
+    새보류 = [(p, r) for p, r in 보류 if 지난판정.get(p.get("url")) != "보류"]
+    지적줄(새불, "고쳐야 할 글" + (" (새로 걸림)" if len(새불) < len(불합격) else ""))
+    지적줄(새보류, "사람이 한번 봐야 할 글")
+    남은 = (len(불합격) - len(새불)) + (len(보류) - len(새보류))
+    if 남은:
+        줄.append("")
+        줄.append(f"전부터 걸려 있는데 아직 안 고쳐진 글 {남은}건 — 목록은 시트 '발행 검수' 탭")
     if 결과들 and not 불합격 and not 보류:
         줄.append("")
         줄.append("고칠 글 없음 — 전부 통과")
@@ -494,8 +550,16 @@ def main() -> int:
     if 알림:
         본문 = 보고문(요약, 시트url)
         if 전멸:
-            본문 = (f"🚨 글을 못 읽은 것이 절반을 넘습니다 — 링크가 낡았거나 "
-                    f"네이버가 막고 있을 수 있습니다\n\n{본문}")
+            # 못 읽은 것의 대부분이 404(삭제)면 발행 손실 문제, 아니면 수집이 막힌 문제.
+            삭제수 = sum(1 for p in 요약["실패들"]
+                        if "글 없음(404)" in (p.get("_실패") or ""))
+            if 삭제수 * 2 >= len(요약["실패들"]):
+                머리 = ("🚨 오늘 검사한 글의 절반 이상이 카페에서 삭제돼 있습니다 — "
+                        "발행한 글이 지워지고 있습니다")
+            else:
+                머리 = ("🚨 글을 못 읽은 것이 절반을 넘습니다 — "
+                        "네이버가 막고 있을 수 있습니다")
+            본문 = f"{머리}\n\n{본문}"
         보냈나 = 알림보내기(본문)
         print("  텔레그램 보고 보냄" if 보냈나 else "  ✗ 텔레그램 보고를 보내지 못했습니다")
 

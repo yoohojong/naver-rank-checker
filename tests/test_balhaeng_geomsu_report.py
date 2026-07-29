@@ -141,3 +141,74 @@ def test_알림_한통이라도_가면_참이다(monkeypatch):
         PER_CHAT_INTERVAL_SEC=0)
     monkeypatch.setitem(sys.modules, "src.notify", 가짜)
     assert G.알림보내기("아무거나") is True
+
+
+# ── 삭제 확인된 글 재검사 중단(2026-07-30) ──────────────────────────────────
+# 검사한 글의 46%가 삭제(404)였는데 매일 다시 읽어 매일 같은 🚨가 울렸다.
+
+def _가짜탭(제목, 값들):
+    return types.SimpleNamespace(title=제목, row_count=len(값들),
+                                 get_all_values=lambda: 값들)
+
+
+def _가짜sc(탭들, 검수탭=None):
+    def worksheet(이름):
+        if 검수탭 is not None and 이름 == G.탭이름:
+            return 검수탭
+        raise KeyError(이름)
+    return types.SimpleNamespace(spreadsheet=types.SimpleNamespace(
+        worksheets=lambda exclude_hidden=True: 탭들, worksheet=worksheet))
+
+
+def test_삭제확인된_링크는_검사_대상에서_빠진다():
+    작업탭 = _가짜탭("샴푸 카외", [
+        ["키워드", "키워드 분류", "글 링크"],
+        ["두피염", "3 증상", "https://cafe.naver.com/aaa/111"],
+        ["비듬", "3 증상", "https://cafe.naver.com/aaa/222"],
+    ])
+    대상, _ = G.대상읽기(_가짜sc([작업탭]), 10,
+                        빼기={"https://cafe.naver.com/aaa/111"})
+    assert [t["keyword"] for t in 대상] == ["비듬"]
+
+
+def test_이전기록이_삭제링크와_지난판정을_돌려준다():
+    검수탭 = _가짜탭(G.탭이름, [
+        G.헤더,
+        ["a", "", "", "베나자/자유", "", "https://cafe.naver.com/aaa/111",
+         "수집실패", "글 없음(404)", "", "2026-07-29"],
+        ["b", "", "", "", "", "https://cafe.naver.com/aaa/222",
+         "불합격", "글자수", "", "2026-07-29"],
+        ["c", "", "", "", "", "https://cafe.naver.com/aaa/333",
+         "수집실패", "Timeout", "", "2026-07-29"],   # 일시 오류 — 재시도해야 함
+    ])
+    죽은, 지난판정, 자리 = G.이전기록(_가짜sc([], 검수탭))
+    assert 죽은 == {"https://cafe.naver.com/aaa/111"}
+    assert 지난판정["https://cafe.naver.com/aaa/222"] == "불합격"
+    assert 자리 == ["베나자/자유"]
+
+
+def test_검수탭이_없으면_이전기록은_빈값이다():
+    assert G.이전기록(_가짜sc([])) == (set(), {}, [])
+
+
+def test_보고문_전부터_걸린_글은_목록대신_건수한줄():
+    결과 = [글("새글", "불합격", 치명=["글자수"]),
+            글("옛글", "불합격", 치명=["글자수"])]
+    요 = 요약(결과)
+    요["지난판정"] = {"u/옛글": "불합격"}
+    본문 = G.보고문(요, "")
+    assert "· 새글" in 본문
+    assert "· 옛글" not in 본문
+    assert "아직 안 고쳐진 글 1건" in 본문
+
+
+def test_보고문_삭제와_누적삭제가_표시된다():
+    요 = 요약([글("a", "합격")],
+              실패들=[{"keyword": "x", "url": "u/x", "_실패": "글 없음(404)"},
+                      {"keyword": "y", "url": "u/y", "_실패": "Timeout"}])
+    요["누적삭제"] = 159
+    요["죽은자리"] = ["베나자/자유"] * 3 + ["기출비/출석"]
+    본문 = G.보고문(요, "")
+    assert "글을 못 읽은 것 2건 — 그중 카페에서 삭제된 글 1건" in 본문
+    assert "이미 삭제 확인된 글 159건" in 본문
+    assert "베나자/자유 3건" in 본문
