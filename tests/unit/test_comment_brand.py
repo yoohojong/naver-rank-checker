@@ -508,3 +508,28 @@ def test_댓글에_없어도_상위_구좌를_차지하면_표에_남는다():
     assert len(table) == 2
     head, out = table[0], table[1]
     assert out[head.index("상위노출 차지")] == 3 and out[head.index("우리가 놓친")] == 2
+
+
+# ── 이름 뽑기(read_batch)도 '무료 먼저, 막히면 유료' 경로를 탄다(2026-07-30) ──
+# 6일 연속 실패 수리 중 발견: 판정·이름묶기는 보험(유료 폴백)이 있는데 첫 단계인
+# 이름 뽑기만 Groq 전용이라, Groq 가 막힌 날은 파이프라인 전체가 빈손이었다.
+
+from src import brand_from_comments  # noqa: E402
+
+
+def test_이름뽑기가_공용_call을_타고_결과를_읽는다(monkeypatch):
+    monkeypatch.setenv("GROQ_API_KEY", "k")
+    reply = {"choices": [{"message": {"content":
+             json.dumps({"결과": [{"n": 1, "제품": ["맥단비"]}, {"n": 2, "제품": []}]},
+                        ensure_ascii=False)}, "finish_reason": "stop"}]}
+    monkeypatch.setattr(comment_brand_llm, "_post", lambda *a, **k: reply)
+    out = brand_from_comments.read_batch(["맥단비 써요", "그냥 댓글"], sleep=lambda s: None)
+    assert out == {0: ["맥단비"]}      # 빈 결과 댓글은 딕셔너리에 안 담는 게 설계
+
+
+def test_이름뽑기_키가_둘다_없으면_미판정과_사유(monkeypatch):
+    monkeypatch.delenv("GROQ_API_KEY", raising=False)
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    사유 = []
+    assert brand_from_comments.read_batch(["아무 댓글"], errors=사유) is None
+    assert "키 없음" in 사유

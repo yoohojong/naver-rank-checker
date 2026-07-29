@@ -166,24 +166,23 @@ def read_batch(texts: list, *, timeout: int = 60, sleep=time.sleep,
     texts = [t for t in texts if t]
     if not texts:
         return {}
-    if not _api_key():
+    # ★2026-07-30: 이름 뽑기만 Groq 전용이었다 — 판정·이름묶기(comment_brand_llm)는
+    #   '무료 먼저, 막히면 유료 보험' 인데 첫 단계인 여기가 Groq 하나에 매달려 있으면
+    #   Groq 가 막힌 날(7/23 실측: 4번 중 2번) 파이프라인 전체가 빈손이 된다.
+    #   같은 _call 로 통일한다(일이관지).
+    from . import comment_brand_llm as _llm
+    if not (_api_key() or _llm._api_key()):
         if errors is not None:
             errors.append("키 없음")
         return None
 
     lines = "\n".join(f"{i + 1}. {t}" for i, t in enumerate(texts))
-    data = _post({"model": _MODEL, "temperature": 0, "max_tokens": 2000,
-                  "messages": [{"role": "system", "content": SYSTEM},
-                               {"role": "user", "content": lines}]},
-                 timeout=timeout, sleep=sleep, errors=errors)
-    if not data:
+    content, truncated = _llm._call(SYSTEM, lines, max_tokens=2000,
+                                    timeout=timeout, sleep=sleep, errors=errors)
+    if not content:
         return None
-    try:
-        content = data["choices"][0]["message"]["content"]
-    except (KeyError, IndexError, TypeError):
-        if errors is not None:
-            errors.append("답 모양이 다름")
-        return None
+    if truncated and errors is not None:
+        errors.append("답 잘림")          # 그래도 읽히는 만큼은 아래에서 건진다
     obj = _read_json(content)
     rows = obj.get("결과") if isinstance(obj, dict) else None
     if not isinstance(rows, list):

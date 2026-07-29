@@ -7,7 +7,11 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from src import brand_from_comments as bfc  # noqa: E402
+from src import comment_brand_llm  # noqa: E402
 from src import shop_probe  # noqa: E402
+
+# ★2026-07-30: read_batch 가 comment_brand_llm._call(무료 먼저, 막히면 유료)을 타므로
+#   가짜 응답도 그 층(comment_brand_llm._post)에 꽂는다. bfc._post 는 더는 안 쓰인다.
 
 
 def _reply(obj):
@@ -16,7 +20,7 @@ def _reply(obj):
 
 def test_댓글에서_이름을_뽑는다(monkeypatch):
     monkeypatch.setenv("GROQ_API_KEY", "k")
-    monkeypatch.setattr(bfc, "_post", lambda *a, **k: _reply(
+    monkeypatch.setattr(comment_brand_llm, "_post", lambda *a, **k: _reply(
         {"결과": [{"n": 1, "제품": ["안티트로"]}, {"n": 2, "제품": []}]}))
     got = bfc.read_batch(["안ㅌ티트로 샴푸 써요", "그냥 잡담"])
     assert got == {0: ["안티트로"]}
@@ -24,12 +28,13 @@ def test_댓글에서_이름을_뽑는다(monkeypatch):
 
 def test_못_읽으면_None_판정_안함(monkeypatch):
     monkeypatch.setenv("GROQ_API_KEY", "k")
-    monkeypatch.setattr(bfc, "_post", lambda *a, **k: None)      # 호출 실패
+    monkeypatch.setattr(comment_brand_llm, "_post", lambda *a, **k: None)      # 호출 실패
     assert bfc.read_batch(["안티트로 써요"]) is None
 
 
 def test_키_없으면_None(monkeypatch):
     monkeypatch.delenv("GROQ_API_KEY", raising=False)
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)   # 유료 보험 키도 없어야 '키 없음'
     assert bfc.read_batch(["안티트로 써요"]) is None
 
 
@@ -41,7 +46,7 @@ def test_묶음_하나가_실패해도_나머지는_산다(monkeypatch):
         calls["n"] += 1
         return None if calls["n"] == 1 else _reply({"결과": [{"n": 1, "제품": ["맥단비"]}]})
 
-    monkeypatch.setattr(bfc, "_post", fake)
+    monkeypatch.setattr(comment_brand_llm, "_post", fake)
     # 둘째 묶음 첫 댓글에 실제 '맥단비' 를 넣어야 환각 관문을 통과한다.
     texts = [f"댓글{i}" for i in range(bfc.BATCH)] + ["맥단비 샴푸 써요"]   # 두 묶음
     out, stat = bfc.read_all(texts)
@@ -85,7 +90,7 @@ def test_한_글자_이름은_버린다():
 def test_read_batch_가_환각을_거른다(monkeypatch):
     monkeypatch.setenv("GROQ_API_KEY", "k")
     # AI 가 댓글1엔 맞는 안티트로, 댓글2엔 없는 아로마티카를 뱉는다
-    monkeypatch.setattr(bfc, "_post", lambda *a, **k: _reply({"결과": [
+    monkeypatch.setattr(comment_brand_llm, "_post", lambda *a, **k: _reply({"결과": [
         {"n": 1, "제품": ["안티트로"]}, {"n": 2, "제품": ["아로마티카"]}]}))
     got = bfc.read_batch(["안ㅌ티트로 샴푸 써요", "그냥 두피 고민이에요"])
     assert got == {0: ["안티트로"]}      # 근거 없는 아로마티카는 빠진다

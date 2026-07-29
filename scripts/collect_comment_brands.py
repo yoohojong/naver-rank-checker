@@ -567,7 +567,11 @@ def run_from_sheet(args) -> int:
             except Exception as e:          # 키워드 하나 실패가 전체를 죽이지 않는다
                 print(f"   {kw} 건너뜀: {type(e).__name__}")
         by_product[product] = mentions
-        print(f"[{product}] 제품 후보 {len({m['키'] for m in mentions})}종")
+        # ★2026-07-30: 여기서 '제품 후보'는 셀 수 없다 — 이름은 판정 단계(extract_brands)가
+        #   붙인다. 원문 mention 에 없는 '키'를 세다 매일 KeyError 로 죽었다(7/24 라이브부터
+        #   6일 연속, 29분 수집을 다 마친 직후). 이 시점에 셀 수 있는 것만 센다.
+        print(f"[{product}] 댓글 {len(mentions)}건 "
+              f"(글 {len({m['글'] for m in mentions})}개)")
 
     if args.mentions_file and not os.path.exists(args.mentions_file):
         try:
