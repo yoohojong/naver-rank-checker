@@ -77,8 +77,17 @@ def build_archive_rows(
         2D 리스트. 각 행 = [date_str, tab_name, keyword, area, rank_str, slot_str].
         - 키워드 공백/빈칸 행은 스킵(작업자 미기입 행 = 아카이브 의미 없음).
         - rank/slot None → 빈 문자열 "".
+        - ★같은 (탭·키워드)가 원본에 두 줄 이상이면 **한 줄만** 남긴다(마지막 값).
+          원본 제품탭은 사람이 편집하는 시트라 같은 키워드를 실수로 두 줄 넣는 일이
+          생긴다(실제: 2026-07-02~07-21 헤드앤숄더크리니컬 등 7개가 매일 2줄씩 아카이브에
+          쌓여 이력 중복 75줄 발생. 07-22 원본 정리로 멈췄으나 옛 날짜엔 잔재로 남음).
+          아카이브가 원본 행마다 쓰면 그 중복이 이력에 화석처럼 쌓이므로, 여기서
+          (탭·키워드)당 마지막 행만 남겨 이력을 항상 1키워드=1줄로 유지한다.
+          '마지막 값'은 다운스트림 ExposureHistory(같은 키 last-write-wins)와 동일 규칙 →
+          집계 숫자는 그대로, 중복 줄만 사라진다.
     """
     out: list[list] = []
+    seen: dict[tuple, int] = {}   # (탭, 키워드) → out 안의 위치. 재등장 시 그 자리 값만 갱신.
     for tab_name, rows in (tabs or {}).items():
         for row in rows or []:
             keyword = str(row.get(HEADER_KEYWORD, "") or "").strip()
@@ -89,7 +98,13 @@ def build_archive_rows(
             rank_str = "" if rank is None else str(rank)
             slot = cafe_slot_of(row)
             slot_str = "" if slot is None else str(slot)
-            out.append([date_str, tab_name, keyword, area, rank_str, slot_str])
+            entry = [date_str, tab_name, keyword, area, rank_str, slot_str]
+            key = (tab_name, keyword)
+            if key in seen:
+                out[seen[key]] = entry     # 원본 중복 → 이력엔 한 줄(마지막 값)로 접는다
+            else:
+                seen[key] = len(out)
+                out.append(entry)
     return out
 
 

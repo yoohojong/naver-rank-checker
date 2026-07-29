@@ -94,6 +94,40 @@ def test_build_archive_rows_empty_tabs():
     assert build_archive_rows(None, "2026-07-02") == []
 
 
+def test_build_archive_rows_dedupes_same_keyword_last_wins():
+    """원본에 같은 (탭·키워드)가 두 줄이면 이력엔 한 줄만(마지막 값).
+
+    회귀: 2026-07-02~07-21 원본 제품탭에 헤드앤숄더크리니컬 등이 매일 2줄씩 있어
+    이력 중복 75줄이 쌓였다. 아카이브가 (탭·키워드)당 마지막 행만 남겨 막는다.
+    """
+    tabs = {
+        "샴푸 카외": [
+            _row("두피간지러움샴푸", "누락 (7/2 03:00~)", ""),      # 먼저: 누락
+            _row("비듬샴푸", "AB (7/2 13:00~)", "5", "2"),
+            _row("두피간지러움샴푸", "AB (7/2 13:00~)", "1", "1"),  # 나중: 노출 → 이게 남음
+        ],
+    }
+    rows = build_archive_rows(tabs, "2026-07-02")
+    # 두피간지러움샴푸 는 한 줄만, 마지막(AB) 값으로.
+    gan = [r for r in rows if r[2] == "두피간지러움샴푸"]
+    assert len(gan) == 1, "같은 키워드는 한 줄만"
+    assert gan[0][3] == "AB" and gan[0][4] == "1" and gan[0][5] == "1", "마지막 값이 남아야"
+    # 전체 3줄 → 중복 접혀 2줄, 비듬샴푸는 그대로.
+    assert len(rows) == 2
+    assert any(r[2] == "비듬샴푸" for r in rows)
+
+
+def test_build_archive_rows_dedupe_is_per_tab():
+    """다른 탭의 같은 키워드는 별개로 둘 다 남긴다(탭 경계 안에서만 접는다)."""
+    tabs = {
+        "샴푸 카외": [_row("올인원", "AB", "1")],
+        "바디워시 카외": [_row("올인원", "누락", "")],
+    }
+    rows = build_archive_rows(tabs, "2026-07-02")
+    assert len(rows) == 2
+    assert {(r[1], r[3]) for r in rows} == {("샴푸 카외", "AB"), ("바디워시 카외", "누락")}
+
+
 # ----- append_daily_archive (fake client) -----
 
 class FakeWorksheet:
