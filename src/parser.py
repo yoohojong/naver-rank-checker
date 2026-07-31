@@ -109,6 +109,40 @@ def parse_search_result(
     return result
 
 
+# 네이버가 직접 편성한 '구좌 아닌' h2 블록 — 우리 카페글이 그 자리를 노려서 올라갈 수 없다.
+# (2026-07-31 사장님: "유형탭도 스마트블록이 엄청 많은데 들어가보면 스블 아닌게 엄청 많다")
+# 실측 근거(라이브 34개 검색결과 페이지 전수 조사):
+#   · '건강/뷰티/리빙 주제 네이버 메이트' 13회 — 네이버가 고른 지식인·블로그 큐레이션
+#     (10칸 중 kin 5~7 + blog 2~7, 카페는 0~4칸 끼워넣기). 유형='스마트블록' 오분류의 주범.
+#   · '브랜드 콘텐츠' 3회 — 링크가 전부 ader.naver.com = 광고.
+#   · '뉴스' 4회, '함께 보는OO 종합숏텐츠' 9회 — 뉴스·숏폼 영상.
+# 기존 _POPULAR_SKIP_PATTERNS 에는 '관련 브랜드 콘텐츠'·'숏폼'만 있어 '브랜드 콘텐츠'·'숏텐츠'
+# 같은 변형과 '네이버 메이트'를 못 걸렀고, 전부 else 로 떨어져 '스마트블록'이 됐다.
+_NON_SLOT_BLOCK_PATTERNS = (
+    "네이버 메이트",
+    "브랜드 콘텐츠",
+    "뉴스",
+    "숏텐츠",
+)
+
+
+def _is_slot_block(box, h2_text: str) -> bool:
+    """이 h2 블록이 '우리 글이 올라갈 수 있는 구좌'인가 (스마트블록 자격).
+
+    두 겹으로 본다:
+      ① 이름 — 네이버 편성 영역(_NON_SLOT_BLOCK_PATTERNS)은 제외.
+      ② 구조 — 카페·블로그 글 링크가 하나도 없으면 제외. 이름 목록은 네이버가 새 영역을
+         만들 때마다 뒤처지므로, 이름을 몰라도 글이 안 들어가는 블록(광고·영상·이미지·쇼핑)은
+         여기서 함께 걸러진다. ①만 두면 같은 오분류가 새 이름으로 반복된다.
+    """
+    if any(p in h2_text for p in _NON_SLOT_BLOCK_PATTERNS):
+        return False
+    return any(
+        ("cafe.naver.com" in a["href"] or "blog.naver.com" in a["href"])
+        for a in box.find_all("a", href=True)
+    )
+
+
 def _detect_block_order(html: str) -> list[str]:
     """페이지 위→아래로 등장하는 블록 종류 unique list (C 컬럼 용).
 
@@ -116,6 +150,7 @@ def _detect_block_order(html: str) -> list[str]:
     - h2 자손 없음 + 박스 안 cafe link ≥ 1 → 'AB'
     - h2 자손 없음 + cafe link 0 (blog/web 만) → skip (AB 아님)
     - h2 자손 있음 + h2 텍스트 POPULAR_SKIP (광고/이미지/AI 브리핑/쇼핑/네이버 클립/브랜드) → skip
+    - h2 자손 있음 + 네이버 편성 영역(_NON_SLOT_BLOCK_PATTERNS) 또는 글 링크 0 → skip (2026-07-31)
     - h2 자손 있음 + h2 텍스트 = '인기글' 키워드 → '인기글'
     - h2 자손 있음 + 그 외 (= 스마트블록) → '스마트블록' (D-022 ① 폐기 정합)
     """
@@ -142,8 +177,10 @@ def _detect_block_order(html: str) -> list[str]:
             # D-026 Phase A (2026-05-16): "인기글" 키워드 = 인기글, 그 외 h2 = 스마트블록
             if "인기글" in h2_text:
                 kind = ExposureArea.POPULAR.value
-            else:
+            elif _is_slot_block(box, h2_text):
                 kind = ExposureArea.SMART_BLOCK.value
+            else:
+                continue   # 네이버 편성 영역·글 없는 블록 = 구좌 아님 (2026-07-31)
         if kind and kind not in seen:
             seen.append(kind)
 

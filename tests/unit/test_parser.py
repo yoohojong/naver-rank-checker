@@ -300,6 +300,49 @@ class TestSmartBlockRevival:
         assert "스마트블록" in order
         assert "인기글" in order
 
+    def test_block_order_네이버메이트_스마트블록_아님(self):
+        """'주제 네이버 메이트' = 네이버 편성 큐레이션 = 구좌 아님 → 유형은 다음 블록으로.
+
+        2026-07-31 사장님 "유형에 스마트블록 엄청 많은데 들어가보면 스블 아닌게 엄청 많다".
+        실측: 이 블록은 10칸 중 지식인 5~7 + 블로그 2~7 이고 카페는 0~4칸 끼워넣기라
+        우리 카페글이 노려서 올라갈 자리가 아니다. 카페 링크가 있어도 이름으로 걸러야 한다.
+        """
+        from src.parser import _detect_block_order
+        mate = self._make_smart_box("건강 주제 네이버 메이트", "https://cafe.naver.com/x/1")
+        popular = self._make_smart_box("패션·미용 인기글", "https://cafe.naver.com/y/2")
+        html = f"<html><body>{self._PADDING}{mate}{popular}</body></html>"
+        assert _detect_block_order(html) == ["인기글"]
+
+    def test_block_order_광고_뉴스_숏텐츠_스마트블록_아님(self):
+        """'브랜드 콘텐츠'(광고)·'뉴스'·'종합숏텐츠'(영상) = 구좌 아님.
+
+        기존 skip 목록엔 '관련 브랜드 콘텐츠'·'숏폼'만 있어 이 변형들이 전부
+        '스마트블록'으로 떨어졌다.
+        """
+        from src.parser import _detect_block_order
+        for name in ("브랜드 콘텐츠", "뉴스", "함께 보는패션뷰티 종합숏텐츠"):
+            box = self._make_smart_box(name, "https://cafe.naver.com/x/1")
+            html = f"<html><body>{self._PADDING}{box}</body></html>"
+            assert _detect_block_order(html) == [], f"{name} 이 구좌로 잡힘"
+
+    def test_block_order_글링크_없는_블록은_구좌_아님(self):
+        """이름을 몰라도 카페·블로그 글이 0개인 h2 블록은 구좌가 아니다(구조 백스톱).
+
+        네이버가 새 영역을 만들 때마다 이름 목록만 늘리면 같은 오분류가 반복된다.
+        """
+        from src.parser import _detect_block_order
+        box = ('<div class="fds-default-mode api_subject_bx"><h2>새로운 무슨 영역</h2>'
+               '<a href="https://ader.naver.com/ad/1">광고</a></div>')
+        html = f"<html><body>{self._PADDING}{box}</body></html>"
+        assert _detect_block_order(html) == []
+
+    def test_block_order_진짜_스마트블록은_유지(self):
+        """주제형 카페글 묶음('관련 경험 카페글' 등)은 그대로 스마트블록 — 회귀 방지."""
+        from src.parser import _detect_block_order
+        box = self._make_smart_box("관련 경험 카페글", "https://cafe.naver.com/x/1")
+        html = f"<html><body>{self._PADDING}{box}</body></html>"
+        assert _detect_block_order(html) == ["스마트블록"]
+
     def test_smart_block_link_set_match(self):
         """target_url=None + link_set 매치 시 = SMART_BLOCK + matched_url 기록."""
         matched = "https://cafe.naver.com/cosmania/5555"
