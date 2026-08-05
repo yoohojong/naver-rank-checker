@@ -4,12 +4,13 @@
 왜 필요한가 (2026-08-05):
     사장님이 '약산성샴푸' 를 직접 검색해 우리 글이 2등인 걸 보셨는데 시트엔 3등이었다.
     네이버가 같은 카페 글 여러 개를 화면 한 칸에 묶는데 파서가 링크 개수대로 세면서
-    아래 글 순위가 밀린 것. 15개월간 아무도 못 잡은 이유 = 검사가 전부 '찾았는가' 만
+    아래 글 순위가 밀린 것. 3개월(2026-05-13~08-05)간 아무도 못 잡은 이유 = 검사가 전부 '찾았는가' 만
     보고 '숫자가 화면과 같은가' 는 안 봤기 때문. 그 빈자리를 메우는 감사다.
 
 독립성:
-    파서(src.parser)의 순위 계산을 쓰지 않고 DOM 에서 칸을 직접 세어 대조한다.
-    파서와 같은 코드를 쓰면 자기 자신과 비교하는 셈이라 결함을 못 잡는다.
+    파서와 **다른 방법으로 센다** — 파서는 DOM 칸 구조, 감사는 연속 같은 출처 묶기.
+    같은 코드를 쓰면 자기 자신과 비교하는 셈이라 결함을 못 잡는다. 단 파서도 DOM 을 못
+    읽어 되돌린 행은 두 방법이 같아지므로, 그 행은 "일치" 로 넘기지 않고 따로 센다.
 
 쓰는 법:
     python scripts/audit/구좌순위_화면대조.py                 # 인기글 계열 전 행
@@ -41,7 +42,12 @@ from bs4 import BeautifulSoup
 
 from src.config import SERVICE_ACCOUNT_JSON, SPREADSHEET_ID
 from src.crawler import Crawler, SlowdownController, resolve_short_url
-from src.parser import _POPULAR_SKIP_PATTERNS, _is_slot_block, parse_search_result
+from src.parser import (
+    _POPULAR_SKIP_PATTERNS,
+    _is_slot_block,
+    parse_search_result,
+    slot_owner_key,
+)
 from src.sheets import SheetsClient
 
 # 인기글/스마트블록 계열만 대상 — AB 는 박스 하나가 곧 한 칸이라 이 결함이 생기지 않는다.
@@ -90,12 +96,15 @@ def _post_links(node) -> list[str]:
     return out
 
 
-def _owner(url: str) -> str:
-    """이 글의 '주인'(카페/블로그) 식별자. cafe.naver.com/{slug}/{글번호} → cafe.naver.com/{slug}."""
-    parsed = urlparse(url)
-    parts = [s for s in parsed.path.split("/") if s]
-    host = _norm("https://" + parsed.netloc).rstrip("/")
-    return f"{host}/{parts[0]}" if parts else host
+def _owner(url: str) -> tuple:
+    """이 글의 '주인'(카페/블로그) 식별자.
+
+    파서와 **같은 판별 규칙**(slot_owner_key)을 쓴다 — 주인을 확실히 못 뽑으면 뭉치지 않는다.
+    예전엔 첫 경로 조각만 봐서 신형 카페 주소(ca-fe/cafes/{id})가 전부 한 주인으로 뭉쳤고,
+    그러면 감사가 파서보다 부정확해 헛된 '어긋남'을 쏟아낸다(2026-08-05 독립검증 M-3).
+    감사의 독립성은 '주인 판별'이 아니라 '세는 방식'(연속 묶기 대 DOM 칸)에 있다.
+    """
+    return slot_owner_key(url)
 
 
 def screen_cafe_slot(html: str, our_link: str) -> tuple[int | None, int | None, bool]:
@@ -209,7 +218,7 @@ def main(argv: list[str] | None = None) -> int:
     crawler.warmup()
 
     rows: list[dict] = []
-    mismatch = notfound = failed = 0
+    mismatch = notfound = failed = fallback_rows = 0
     for i, t in enumerate(targets, 1):
         link = resolve_short_url(t["링크"]) if "naver.me" in t["링크"] else t["링크"]
         try:
@@ -220,7 +229,12 @@ def main(argv: list[str] | None = None) -> int:
             print(f"  [{i}/{len(targets)}] {t['키워드']}: 검색 실패 {e}")
             continue
 
-        parsed = parse_search_result(html, None, link_set={link}).cafe_slot_rank
+        res = parse_search_result(html, None, link_set={link})
+        parsed = res.cafe_slot_rank
+        if parsed is not None and not res.rank_from_dom_cards:
+            # 파서도 화면 칸을 못 읽어 출처 묶기로 계산한 행 — 감사와 같은 방법이 되어
+            # 이 대조는 서로를 검증하지 못한다. '일치' 로 넘기지 않고 따로 센다.
+            fallback_rows += 1
         screen, _card, structure_ok = screen_cafe_slot(html, link)
 
         if not structure_ok and parsed is not None:
@@ -250,6 +264,9 @@ def main(argv: list[str] | None = None) -> int:
     checked = total - notfound - failed
     print(f"\n[감사 결과] 대상 {total} · 대조 {checked} · 어긋남 {mismatch} · "
           f"검색에 안 잡힘 {notfound} · 검색실패 {failed}")
+    if fallback_rows:
+        print(f"\n⚠ 이 중 {fallback_rows}행은 파서도 화면 칸을 못 읽어 감사와 같은 방법으로 계산했습니다.")
+        print("  = 그 행들의 '일치' 는 서로를 검증한 것이 아닙니다. 네이버 화면 구조 변경을 확인하세요.")
     if mismatch:
         print("\n※ 어긋난 행이 있습니다 — 순위 세는 규칙이 화면과 벌어졌다는 뜻입니다.")
         for r in rows:

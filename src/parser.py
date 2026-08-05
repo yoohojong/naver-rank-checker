@@ -61,6 +61,9 @@ class RankResult:
     smart_block_name: Optional[str] = None
     parser_confidence: float = 0.0
     matched_url: Optional[str] = None  # T-M14.2: 매치된 URL. link_set 매치 시 = 매치된 link, target_url 매치 시 = target_url
+    # 2026-08-05: 순위를 화면 칸 구조로 셌는가(True) / 못 읽어 출처 묶기로 되돌렸는가(False).
+    # 되돌린 값은 대조 상대가 없어 검증이 약하다 — 감사·리포트가 구분할 수 있게 남긴다.
+    rank_from_dom_cards: bool = True
 
 
 def parse_search_result(
@@ -541,7 +544,7 @@ def _parse_smart_blocks(
 
         # 박스 안 항목 추출 (= 인기글과 동일 logic).
         # 2026-08-05 fix: 세는 단위 = 화면 칸 (같은 카페 글 묶음 칸 = 1칸).
-        cards, _dom_ok = _items_by_card(box)
+        cards, dom_ok = _items_by_card(box)
         cafe_count = 0
         for idx, card_urls in enumerate(cards, start=1):
             if any("cafe.naver.com" in u for u in card_urls):
@@ -558,6 +561,7 @@ def _parse_smart_blocks(
                             result.cafe_slot_rank = cafe_count
                         result.smart_block_name = h2_text
                         result.parser_confidence = 0.85
+                        result.rank_from_dom_cards = dom_ok
                         result.matched_url = target_url
                         return True
                     continue
@@ -573,6 +577,7 @@ def _parse_smart_blocks(
                         result.cafe_slot_rank = cafe_count
                         result.smart_block_name = h2_text
                         result.parser_confidence = 0.85
+                        result.rank_from_dom_cards = dom_ok
                         result.matched_url = url
                         print(f"    [SMART_BLOCK_MATCH] idx={idx} h2={h2_text!r} matched_url={url[:90]}")
                         return True
@@ -586,6 +591,7 @@ def _parse_smart_blocks(
                         result.cafe_slot_rank = cafe_count
                         result.smart_block_name = h2_text
                         result.parser_confidence = 0.85
+                        result.rank_from_dom_cards = dom_ok
                         result.matched_url = url
                         print(f"    [SMART_BLOCK_SLUG_MATCH] idx={idx} slug={slug} h2={h2_text!r} matched_url={url[:90]}")
                         return True
@@ -678,7 +684,7 @@ def _parse_popular(
         # 2026-05-11 critic Major 2 fix: L = 박스 안 모든 항목 순위, M = 카페만 카운트.
         # 2026-08-05 사장님 지적 fix: 세는 단위 = 링크 → 화면 칸. 같은 카페 글 묶음 칸이
         # 2칸으로 세지며 아래 글 순위가 밀리던 것 차단(찾기 범위는 칸 안 모든 글 그대로).
-        cards, _dom_ok = _items_by_card(box)
+        cards, dom_ok = _items_by_card(box)
         cafe_count = 0
         for idx, card_urls in enumerate(cards, start=1):
             if any("cafe.naver.com" in u for u in card_urls):
@@ -695,6 +701,7 @@ def _parse_popular(
                             result.cafe_slot_rank = cafe_count
                         result.smart_block_name = h2_text
                         result.parser_confidence = 0.85
+                        result.rank_from_dom_cards = dom_ok
                         result.matched_url = target_url  # T-M14.2: target_url 매치 시 = target_url 기록
                         return True
                     continue
@@ -712,6 +719,7 @@ def _parse_popular(
                         result.cafe_slot_rank = cafe_count
                         result.smart_block_name = h2_text
                         result.parser_confidence = 0.85
+                        result.rank_from_dom_cards = dom_ok
                         result.matched_url = url  # T-M14.2: 매치된 URL 기록
                         print(f"    [POPULAR_MATCH] idx={idx} h2={h2_text!r} matched_url={url[:90]}")
                         return True
@@ -726,6 +734,7 @@ def _parse_popular(
                         result.cafe_slot_rank = cafe_count
                         result.smart_block_name = h2_text
                         result.parser_confidence = 0.85
+                        result.rank_from_dom_cards = dom_ok
                         result.matched_url = url
                         print(f"    [POPULAR_SLUG_MATCH] idx={idx} slug={slug} h2={h2_text!r} matched_url={url[:90]}")
                         return True
@@ -814,10 +823,46 @@ def _extract_popular_cards(box) -> list[list[str]]:
     # 안전장치 ② 주인 — 화면 한 칸은 출처 하나다. 한 칸에 카페가 둘 이상이면 칸을 못 읽은 것.
     # (개수로 판별하면 '한 칸에 같은 카페 글 2개' 인 진짜 묶음까지 옛 방식으로 되돌아가
     #  고치려던 그 오류가 되살아난다.)
-    if any(len({_owner_key(u) for u in card}) > 1 for card in cards):
+    if any(len({slot_owner_key(u) for u in card}) > 1 for card in cards):
         return []
 
     return cards
+
+
+def slot_owner_key(url: str) -> tuple:
+    """순위 계산 전용 '주인' 판별 — **확실할 때만 뭉친다.**
+
+    `_owner_key` 와 따로 두는 이유(2026-08-05 독립검증 H-2·M-2):
+      · `_owner_key` 는 경쟁사 이름 붙이기용으로 만들어졌고 `parts[0]` 을 그대로 주인으로
+        본다. 순위 계산에 쓰면 두 가지가 터진다 —
+        ① 네이버가 카페 주소 형식을 또 바꾸면(`ca-fe` 라는 글자에 하드코딩돼 있다)
+           **모든 카페가 한 주인으로 뭉쳐 전부 가짜 1등**이 된다. 1등은 이 시스템에서
+           가장 무거운 값이라(실패 횟수 리셋) 재작업 신호가 통째로 꺼진다.
+        ② 카페·블로그가 아닌 곳(글로우픽 `/products/…`, 지식인 `/qna/…`)은 `parts[0]` 이
+           주인이 아니라서 서로 다른 글 8건이 한 칸으로 뭉친다.
+
+    그래서 규칙을 뒤집는다: **주인을 확실히 못 뽑으면 뭉치지 않는다**(URL 자체를 키로).
+    뭉치면 순위가 당겨져 없던 상위노출이 생기고, 안 뭉치면 밀려서 재작업이 뜬다 —
+    **밀리는 쪽이 덜 위험하다.**
+    """
+    if not url:
+        return ("", "")
+    parsed = urlparse(url)
+    netloc = _normalize_netloc(parsed.netloc)
+    parts = [seg for seg in parsed.path.split("/") if seg]
+    if netloc == "cafe.naver.com":
+        # 구형 cafe.naver.com/{slug}/{글번호}
+        if len(parts) == 2 and parts[1].isdigit():
+            return (netloc, parts[0])
+        # 신형 cafe.naver.com/ca-fe/cafes/{카페id}/articles/{글번호}
+        if len(parts) >= 3 and parts[0] == "ca-fe" and parts[1] == "cafes":
+            return (netloc, f"cafes/{parts[2]}")
+        # 형식이 또 바뀐 것 = 주인 불명 → 혼자 한 칸 (뭉쳐서 가짜 1등 만드는 것보다 안전)
+        return (netloc, "?" + parsed.path.rstrip("/"))
+    if netloc == "blog.naver.com" and len(parts) == 2:
+        return (netloc, parts[0])
+    # 카페·블로그가 아닌 곳은 첫 경로 조각이 주인이 아니다 → 뭉치지 않는다
+    return (netloc, "?" + parsed.path.rstrip("/"))
 
 
 def _owner_runs(urls: list[str]) -> list[list[str]]:
@@ -826,13 +871,16 @@ def _owner_runs(urls: list[str]) -> list[list[str]]:
     네이버 클래스 이름에 **전혀 의존하지 않는다** — 화면 구조가 바뀌어도 이 규칙은 남는다.
     한 칸에는 한 출처의 글이 모여 나오고, 다음 칸은 다른 출처로 넘어가기 때문.
 
-    실측 검증(2026-08-05): 전 픽스처 + 그날 받은 실제 응답의 모든 인기글·스마트블록
-    박스에서 DOM 칸 구조와 **100% 일치**(불일치 0). 그래서 DOM 을 못 읽을 때의
-    대체 계산으로 쓸 수 있다.
+    실측 근거와 그 한계(2026-08-05 독립검증 M-4 지적 반영):
+      전 픽스처 + 그날 실제 응답에서 DOM 칸 구조와 일치했으나(불일치 0), 그 표본은
+      **모두 DOM 을 읽을 수 있었던 박스**다. 되돌림이 실제로 답을 내는 상황의 정확도는
+      아직 관측되지 않았다 — 상관의 방증이지 등가의 증명은 아니다.
+      성질상 이 계산은 DOM 칸을 더 뭉치기만 하므로(len(runs) ≤ len(cards)),
+      틀릴 때는 순위가 **당겨지는** 방향이다. 그래서 slot_owner_key 가 확실할 때만 뭉친다.
     """
     runs: list[list[str]] = []
     for url in urls:
-        if runs and _owner_key(url) == _owner_key(runs[-1][0]):
+        if runs and slot_owner_key(url) == slot_owner_key(runs[-1][0]):
             runs[-1].append(url)
         else:
             runs.append([url])

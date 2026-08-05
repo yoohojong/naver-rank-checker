@@ -218,6 +218,71 @@ class TestFallbackIsAlsoCorrect:
         assert [sorted(c) for c in dom] == [sorted(c) for c in runs]
 
 
+class TestOwnerJudgementIsConservative:
+    """뭉치는 판단은 '확실할 때만' — 틀리면 없던 상위노출이 생긴다 (독립검증 H-2·M-2).
+
+    뭉치면 순위가 당겨져 4위가 3위로 기록되고(상위노출 문턱 통과) 재작업 대상에서 빠진다.
+    특히 전부 한 주인으로 뭉치면 모두 1등이 되어, 1등일 때 리셋되는 '실패 횟수' 가
+    통째로 꺼진다. 그래서 못 뽑으면 안 뭉치는 쪽(순위가 밀리는 쪽)으로 기운다.
+    """
+
+    def test_unknown_cafe_url_shape_does_not_merge(self):
+        """네이버가 카페 주소 형식을 또 바꿔도 전부 한 칸으로 뭉치지 않는다."""
+        from src.parser import _owner_runs
+
+        urls = [f"https://cafe.naver.com/f-e/cafes/{i}/articles/{i}" for i in (111, 222, 333)]
+        assert len(_owner_runs(urls)) == 3, "주소 형식이 바뀌자 전 카페가 가짜 1등이 됐다"
+
+    def test_non_cafe_sites_do_not_merge(self):
+        """카페·블로그가 아닌 곳은 첫 경로 조각이 주인이 아니다."""
+        from src.parser import _owner_runs
+
+        urls = [
+            "https://www.glowpick.com/products/181751",
+            "https://www.glowpick.com/products/160715",
+            "https://kin.naver.com/qna/detail/111",
+            "https://kin.naver.com/qna/detail/222",
+        ]
+        assert len(_owner_runs(urls)) == 4
+
+    def test_known_cafe_shapes_still_merge(self):
+        """반대로, 확실히 아는 두 형식은 제대로 묶여야 한다(과잉 방어 금지)."""
+        from src.parser import _owner_runs
+
+        old = [
+            "https://cafe.naver.com/gloseems1/1284324",
+            "https://cafe.naver.com/gloseems1/1284056",
+            "https://cafe.naver.com/zzop/4142803",
+        ]
+        new = [
+            "https://cafe.naver.com/ca-fe/cafes/111/articles/1",
+            "https://cafe.naver.com/ca-fe/cafes/111/articles/2",
+            "https://cafe.naver.com/ca-fe/cafes/222/articles/3",
+        ]
+        assert len(_owner_runs(old)) == 2
+        assert len(_owner_runs(new)) == 2
+
+    def test_audit_and_parser_agree_on_owner(self):
+        """감사와 파서가 같은 주인 판별을 쓴다 — 달라지면 헛된 어긋남이 쏟아진다."""
+        import importlib.util
+        from pathlib import Path
+
+        from src.parser import slot_owner_key
+
+        path = Path(__file__).resolve().parents[2] / "scripts" / "audit" / "구좌순위_화면대조.py"
+        spec = importlib.util.spec_from_file_location("audit_slot", path)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        for url in [
+            "https://cafe.naver.com/zzop/4142803",
+            "https://cafe.naver.com/ca-fe/cafes/111/articles/1",
+            "https://cafe.naver.com/f-e/cafes/222/articles/2",
+            "https://m.cafe.naver.com/zzop/4142803",
+            "https://blog.naver.com/abc/224353549382",
+        ]:
+            assert mod._owner(url) == slot_owner_key(url), url
+
+
 class TestCardFallback:
     def test_unknown_structure_falls_back_to_link_units(self):
         """칸 구조를 못 읽는 HTML 이면 기존 링크 단위 방식으로 되돌아간다(정지 금지).
