@@ -82,7 +82,7 @@ def detect_anomalies(reports: list[TabReport]) -> list:
             continue
         prev, now = t.exposed_prev, t.exposed_now
         if prev >= _DROP_MIN_BASE and now < prev and (prev - now) >= prev * _DROP_RATIO:
-            signals.append(f"{t.tab}: 노출 {prev} → {now}개 급락  ← 점검")
+            signals.append(f"{tab_label(t.tab)}: 노출 {prev} → {now}개 급락  ← 점검")
 
     kc = _all_kinds(reports)
     lost = kc.get("누락", 0) + kc.get("삭제", 0)

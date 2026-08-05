@@ -53,7 +53,9 @@ def test_formatters():
     assert "없음" in qa.fmt_missing(r)  # 누락 0
     assert "탈모샴푸 추천" in qa.fmt_deleted(r) and "점검" in qa.fmt_deleted(r)
     assert "순위 상승 1개" in qa.fmt_rank(r)
-    assert "샴푸 카외" in qa.fmt_product(r)
+    # 봇 답변은 사장님이 부르는 이름으로 — 시트 탭 이름이 새면 안 된다(2026-08-05 명칭 변경).
+    assert "뽀얀샴푸" in qa.fmt_product(r)
+    assert "카외" not in qa.fmt_product(r)
     assert "AB→인기글" in qa.fmt_type(r)
     assert "지식인" in qa.fmt_jisikin(r) and "2개" in qa.fmt_jisikin(r)
     assert "전체 3개" in qa.fmt_summary(r)

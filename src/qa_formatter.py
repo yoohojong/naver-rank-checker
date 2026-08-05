@@ -97,7 +97,7 @@ def _list_block(title, rows, empty, limit=30):
         return empty
     lines = [title.format(n=len(rows))]
     for tab, d in rows[:limit]:
-        lines.append(f"  · {d.keyword} ({tab})")
+        lines.append(f"  · {d.keyword} ({tab_label(tab)})")
     if len(rows) > limit:
         lines.append(f"  …외 {len(rows) - limit}개")
     return "\n".join(lines)
@@ -132,7 +132,7 @@ def fmt_product(reports, tab_name=None):
         if t.baseline_available:
             d = t.exposed_now - t.exposed_prev
             tail = f" (어제보다 {'+' if d > 0 else ''}{d})" if d else " (그대로)"
-        lines.append(f"📦 {t.tab}: 전체 {t.total} · 상위노출 {t.exposed_now}{tail}")
+        lines.append(f"📦 {tab_label(t.tab)}: 전체 {t.total} · 상위노출 {t.exposed_now}{tail}")
     return "\n".join(lines)
 
 

@@ -296,13 +296,23 @@ def build_console_report(overall_alert, tab_alerts):
             label = a.get("tab", "전체")
             lines.append(f"  [하락] [{label}] {a['what']} | 출처: {a['source']}")
     for a in unknown_alerts:
-        label = a.get("tab", "전체")
-        lines.append(f"  [데이터없음] [{label}] {a['what']}")
+        lines.append(f"  [데이터없음] [{_tab_label(a.get('tab'))}] {a['what']}")
     if not down_alerts and not unknown_alerts:
         lines.append(f"[exposure_trend_alert] 이상 없음 ({_now_str()})")
     elif not down_alerts:
         lines.append(f"[exposure_trend_alert] 하락 없음 ({_now_str()})")
     return "\n".join(lines)
+
+
+def _tab_label(tab):
+    """탭 이름 → 사장님이 부르는 제품 이름. scripts/ 에서 직접 돌아도 되게 지연 import."""
+    if not tab:
+        return "전체"
+    repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    if repo_root not in sys.path:
+        sys.path.insert(0, repo_root)
+    from src.product_label import tab_label  # noqa: PLC0415
+    return tab_label(tab)
 
 
 def build_telegram_message(overall_alert, tab_alerts):
@@ -314,8 +324,7 @@ def build_telegram_message(overall_alert, tab_alerts):
 
     lines = ["📉 상위노출 감소 알림", ""]
     for a in down_alerts:
-        label = a.get("tab", "전체")
-        lines.append(f"[{label}] {a['what']}")
+        lines.append(f"[{_tab_label(a.get('tab'))}] {a['what']}")
         lines.append(f"  출처: {a['source']}")
         lines.append("")
     lines.append(f"(읽기 전용 · {_now_str()} · exposure_trend_alert.py)")
