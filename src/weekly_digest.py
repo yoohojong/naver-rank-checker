@@ -16,6 +16,7 @@ from __future__ import annotations
 from collections import Counter
 from datetime import date, timedelta
 
+from src.product_label import tab_label
 from src.snapshot_diff import (  # noqa: F401 — _H_WORKDATE 는 의도적 재사용(헤더 drift 방지)
     TabReport,
     _H_WORKDATE,
@@ -158,7 +159,7 @@ def build_weekly_text(
         for ds, per, (dw, de) in breakdown:
             pct = round(de / dw * 100) if dw else 0
             seg = " · ".join(
-                f"{t.replace(' 카외', '')} {w}→{e}"
+                f"{tab_label(t)} {w}→{e}"
                 for t, (w, e) in per.items() if w
             )
             L.append(f"   {ds}  발행 {dw} → 노출 {de} ({pct}%)   [{seg}]")

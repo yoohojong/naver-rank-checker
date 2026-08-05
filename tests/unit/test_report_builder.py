@@ -32,7 +32,8 @@ def test_evening_words_format():
     # 한글 라벨 중심 (breakdown 미전달 시 날짜별 섹션 생략)
     assert "[어제 한 작업]" not in out   # 2026-07-02: 날짜별 발행→상위노출 breakdown 으로 교체
     assert "지금 상위노출 2개 / 전체 3" in out   # 2026-07-07 가독성: 제품별 한 줄로 합침
-    assert "(샴푸 2)" in out                      # 제품별 = 지금 줄에 병합
+    # 제품별 = 지금 줄에 병합. 이름은 사장님이 부르는 이름(2026-08-05 명칭 변경).
+    assert "(뽀얀샴푸 2)" in out
     assert "새로 뜸(미노출→상위노출): 1개" in out
     assert "삭제(글 사라짐): 1개" in out  # ③ 어제→오늘 변화(정합)
     assert "── 정합: 어제 2 + 들어옴 1 − 나감 1 = 오늘 2" in out

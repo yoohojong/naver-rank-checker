@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from collections import Counter
 
+from src.product_label import tab_label
 from src.snapshot_diff import TabReport
 
 # 상노 프로그램(시트)이 쓰는 용어 그대로 + 설명 (사장님 인지부담↓)
@@ -76,7 +77,7 @@ def _build_full_report(reports: list[TabReport], kst: str, status_line: str, tit
         for ds, per, (dw, de) in breakdown:
             pct = round(de / dw * 100) if dw else 0
             seg = " · ".join(
-                f"{t.replace(' 카외', '')} {w}→{e}"
+                f"{tab_label(t)} {w}→{e}"
                 for t, (w, e) in per.items() if w
             )
             L.append(f"   {ds}  발행 {dw} → 상위노출 {de} ({pct}%)   [{seg}]")
@@ -101,7 +102,7 @@ def _build_full_report(reports: list[TabReport], kst: str, status_line: str, tit
 
     # ━━━ 지금 · 흐름 그룹 ━━━ (지금 개수+제품별 / 추세 / 발행분 변화)
     L.append("━━━ 지금 · 흐름 ━━━")
-    prod = " · ".join(f"{t.tab.replace(' 카외', '')} {t.exposed_now}" for t in reports)
+    prod = " · ".join(f"{tab_label(t.tab)} {t.exposed_now}" for t in reports)
     L.append(f"지금 상위노출 {now}개 / 전체 {tot}" + (f"   ({prod})" if prod else ""))
     L.append("")
 
@@ -114,7 +115,7 @@ def _build_full_report(reports: list[TabReport], kst: str, status_line: str, tit
         tabs = sorted({t for d in dates for t in exposure_trend[d] if t != "합계"})
         for t in tabs:
             seq = [exposure_trend[d].get(t, 0) for d in dates]
-            L.append(f"   {t.replace(' 카외', '')}   " + " → ".join(str(x) for x in seq))
+            L.append(f"   {tab_label(t)}   " + " → ".join(str(x) for x in seq))
         prev_t, today_t = totals[-2], totals[-1]
         diff = today_t - prev_t
         word = f"{diff}개 늘음" if diff > 0 else (f"{-diff}개 줄음" if diff < 0 else "그대로")

@@ -16,6 +16,7 @@ from collections import Counter
 from datetime import date, timedelta
 
 from src.metric_guards import audit_daily, audit_monthly, audit_weekly
+from src.product_label import tab_label
 from src.snapshot_diff import (  # noqa: F401 — _H_WORKDATE 는 헤더 drift 방지 위해 의도적 재사용
     _H_WORKDATE,
     diff_backups,
@@ -49,7 +50,8 @@ def _is_cafe(tab: str) -> bool:
 
 
 def _short(tab: str) -> str:
-    return str(tab).replace("카외", "").strip()
+    """화면·보고서에 찍는 제품 이름(2026-08-05: 샴푸→뽀얀샴푸, 바디워시→뽀얀바디워시)."""
+    return tab_label(tab)
 
 
 def _cafe_rows(backup: dict) -> list:

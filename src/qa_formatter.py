@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from collections import Counter
 
+from src.product_label import tab_label
 from src.snapshot_diff import _norm_kw, field_value, k_base_of, rank_of
 
 _HELP = (
@@ -55,8 +56,10 @@ def classify_with_confidence(text, tab_names=None):
     # 탭명 토큰 일치 → 제품 (부분일치 금지: '비듬샴푸'가 '샴푸'로 새지 않게)
     toks = t.split()
     for tab in tab_names or []:
-        base = tab.replace("카외", "").strip().lower()
-        if base and (t == base or base in toks):
+        # 옛 이름('샴푸')과 지금 이름('뽀얀샴푸') 둘 다 알아듣는다 — 사장님이 어느 쪽으로
+        # 물어도 같은 탭이어야 한다(2026-08-05 명칭 변경).
+        names = {tab.replace("카외", "").strip().lower(), tab_label(tab).lower()}
+        if any(n and (t == n or n in toks) for n in names):
             return ("product", tab, True)
     if any(k in t for k in ("제품", "탭", "분포")):
         return ("product", None, True)
@@ -149,7 +152,7 @@ def fmt_type(reports):
 def fmt_jisikin(reports):
     total = _sum(reports, "jisikin_now")
     parts = " · ".join(
-        f"{t.tab.replace('카외', '').strip()} {t.jisikin_now}" for t in reports if t.jisikin_now
+        f"{tab_label(t.tab)} {t.jisikin_now}" for t in reports if t.jisikin_now
     )
     head = f"지식iN 구좌(지식인 노출 키워드): {total}개"
     return f"{head}\n  {parts}" if parts else head
