@@ -539,53 +539,55 @@ def _parse_smart_blocks(
         if "인기글" in h2_text:
             continue
 
-        # 박스 안 모든 항목 추출 (= _extract_popular_items 동일 logic)
-        items = _extract_popular_items(box)
+        # 박스 안 항목 추출 (= 인기글과 동일 logic).
+        # 2026-08-05 fix: 세는 단위 = 화면 칸 (같은 카페 글 묶음 칸 = 1칸).
         cafe_count = 0
-        for idx, url in enumerate(items, start=1):
-            is_cafe = "cafe.naver.com" in url
-            if is_cafe:
+        for idx, card_urls in enumerate(_items_by_card(box), start=1):
+            if any("cafe.naver.com" in u for u in card_urls):
                 cafe_count += 1
 
-            # 1. target_url 정확 매치
-            if target_url is not None:
-                if _urls_match(url, target_url):
-                    result.integrated_rank = idx
-                    if is_cafe:
-                        result.cafe_slot_rank = cafe_count
-                    result.smart_block_name = h2_text
-                    result.parser_confidence = 0.85
-                    result.matched_url = target_url
-                    return True
-                continue
+            for url in card_urls:
+                is_cafe = "cafe.naver.com" in url
 
-            # target_url=None 이하: link_set / cafe_slug_whitelist 분기
-
-            # 2. link_set 정확 매치 (T-M16 정합: 카페만)
-            if link_set:
-                if not is_cafe:
+                # 1. target_url 정확 매치
+                if target_url is not None:
+                    if _urls_match(url, target_url):
+                        result.integrated_rank = idx
+                        if is_cafe:
+                            result.cafe_slot_rank = cafe_count
+                        result.smart_block_name = h2_text
+                        result.parser_confidence = 0.85
+                        result.matched_url = target_url
+                        return True
                     continue
-                if _urls_match_any(url, link_set):
-                    result.integrated_rank = idx
-                    result.cafe_slot_rank = cafe_count
-                    result.smart_block_name = h2_text
-                    result.parser_confidence = 0.85
-                    result.matched_url = url
-                    print(f"    [SMART_BLOCK_MATCH] idx={idx} h2={h2_text!r} matched_url={url[:90]}")
-                    return True
-                continue
 
-            # 3. cafe_slug_whitelist slug 매치 (T-M14.7 정합)
-            if cafe_slug_whitelist and is_cafe:
-                slug = _extract_cafe_slug(url)
-                if slug and slug in cafe_slug_whitelist:
-                    result.integrated_rank = idx
-                    result.cafe_slot_rank = cafe_count
-                    result.smart_block_name = h2_text
-                    result.parser_confidence = 0.85
-                    result.matched_url = url
-                    print(f"    [SMART_BLOCK_SLUG_MATCH] idx={idx} slug={slug} h2={h2_text!r} matched_url={url[:90]}")
-                    return True
+                # target_url=None 이하: link_set / cafe_slug_whitelist 분기
+
+                # 2. link_set 정확 매치 (T-M16 정합: 카페만)
+                if link_set:
+                    if not is_cafe:
+                        continue
+                    if _urls_match_any(url, link_set):
+                        result.integrated_rank = idx
+                        result.cafe_slot_rank = cafe_count
+                        result.smart_block_name = h2_text
+                        result.parser_confidence = 0.85
+                        result.matched_url = url
+                        print(f"    [SMART_BLOCK_MATCH] idx={idx} h2={h2_text!r} matched_url={url[:90]}")
+                        return True
+                    continue
+
+                # 3. cafe_slug_whitelist slug 매치 (T-M14.7 정합)
+                if cafe_slug_whitelist and is_cafe:
+                    slug = _extract_cafe_slug(url)
+                    if slug and slug in cafe_slug_whitelist:
+                        result.integrated_rank = idx
+                        result.cafe_slot_rank = cafe_count
+                        result.smart_block_name = h2_text
+                        result.parser_confidence = 0.85
+                        result.matched_url = url
+                        print(f"    [SMART_BLOCK_SLUG_MATCH] idx={idx} slug={slug} h2={h2_text!r} matched_url={url[:90]}")
+                        return True
 
     return False
 
@@ -672,58 +674,61 @@ def _parse_popular(
         if "인기글" not in h2_text:
             continue
 
-        items = _extract_popular_items(box)
         # 2026-05-11 critic Major 2 fix: L = 박스 안 모든 항목 순위, M = 카페만 카운트.
+        # 2026-08-05 사장님 지적 fix: 세는 단위 = 링크 → 화면 칸. 같은 카페 글 묶음 칸이
+        # 2칸으로 세지며 아래 글 순위가 밀리던 것 차단(찾기 범위는 칸 안 모든 글 그대로).
         cafe_count = 0
-        for idx, url in enumerate(items, start=1):
-            is_cafe = "cafe.naver.com" in url
-            if is_cafe:
+        for idx, card_urls in enumerate(_items_by_card(box), start=1):
+            if any("cafe.naver.com" in u for u in card_urls):
                 cafe_count += 1
 
-            # 1. target_url 정확 매치 (기존 동작)
-            if target_url is not None:
-                if _urls_match(url, target_url):
-                    result.integrated_rank = idx
-                    if is_cafe:
+            for url in card_urls:
+                is_cafe = "cafe.naver.com" in url
+
+                # 1. target_url 정확 매치 (기존 동작)
+                if target_url is not None:
+                    if _urls_match(url, target_url):
+                        result.integrated_rank = idx
+                        if is_cafe:
+                            result.cafe_slot_rank = cafe_count
+                        result.smart_block_name = h2_text
+                        result.parser_confidence = 0.85
+                        result.matched_url = target_url  # T-M14.2: target_url 매치 시 = target_url 기록
+                        return True
+                    continue
+
+                # target_url=None 이하: link_set / cafe_slug_whitelist 분기
+
+                # T-M14: target_url=None + link_set 지정 = 사장님 시트 link 매치
+                # T-M16 (2026-05-12): 카페 link 만 매치 (사장님 의도 = 카페만 작업)
+                if link_set:
+                    if not is_cafe:
+                        continue  # T-M16: blog/web 매치 시도 X
+                    # 2. link_set 정확 매치 (T-M14.2)
+                    if _urls_match_any(url, link_set):
+                        result.integrated_rank = idx
                         result.cafe_slot_rank = cafe_count
-                    result.smart_block_name = h2_text
-                    result.parser_confidence = 0.85
-                    result.matched_url = target_url  # T-M14.2: target_url 매치 시 = target_url 기록
-                    return True
-                continue
+                        result.smart_block_name = h2_text
+                        result.parser_confidence = 0.85
+                        result.matched_url = url  # T-M14.2: 매치된 URL 기록
+                        print(f"    [POPULAR_MATCH] idx={idx} h2={h2_text!r} matched_url={url[:90]}")
+                        return True
+                    continue
 
-            # target_url=None 이하: link_set / cafe_slug_whitelist 분기
+                # 3. cafe_slug_whitelist slug 매치 (T-M14.7 신규)
+                # target_url=None + link_set 없음 + cafe_slug_whitelist 지정 = 새 글 자동 검출
+                if cafe_slug_whitelist and is_cafe:
+                    slug = _extract_cafe_slug(url)
+                    if slug and slug in cafe_slug_whitelist:
+                        result.integrated_rank = idx
+                        result.cafe_slot_rank = cafe_count
+                        result.smart_block_name = h2_text
+                        result.parser_confidence = 0.85
+                        result.matched_url = url
+                        print(f"    [POPULAR_SLUG_MATCH] idx={idx} slug={slug} h2={h2_text!r} matched_url={url[:90]}")
+                        return True
 
-            # T-M14: target_url=None + link_set 지정 = 사장님 시트 link 매치
-            # T-M16 (2026-05-12): 카페 link 만 매치 (사장님 의도 = 카페만 작업)
-            if link_set:
-                if not is_cafe:
-                    continue  # T-M16: blog/web 매치 시도 X
-                # 2. link_set 정확 매치 (T-M14.2)
-                if _urls_match_any(url, link_set):
-                    result.integrated_rank = idx
-                    result.cafe_slot_rank = cafe_count
-                    result.smart_block_name = h2_text
-                    result.parser_confidence = 0.85
-                    result.matched_url = url  # T-M14.2: 매치된 URL 기록
-                    print(f"    [POPULAR_MATCH] idx={idx} h2={h2_text!r} matched_url={url[:90]}")
-                    return True
-                continue
-
-            # 3. cafe_slug_whitelist slug 매치 (T-M14.7 신규)
-            # target_url=None + link_set 없음 + cafe_slug_whitelist 지정 = 새 글 자동 검출
-            if cafe_slug_whitelist and is_cafe:
-                slug = _extract_cafe_slug(url)
-                if slug and slug in cafe_slug_whitelist:
-                    result.integrated_rank = idx
-                    result.cafe_slot_rank = cafe_count
-                    result.smart_block_name = h2_text
-                    result.parser_confidence = 0.85
-                    result.matched_url = url
-                    print(f"    [POPULAR_SLUG_MATCH] idx={idx} slug={slug} h2={h2_text!r} matched_url={url[:90]}")
-                    return True
-
-            # link_set 도 cafe_slug_whitelist 도 없으면 매치하지 않음
+                # link_set 도 cafe_slug_whitelist 도 없으면 매치하지 않음
 
     return False
 
@@ -759,6 +764,53 @@ def _extract_popular_items(box) -> list[str]:
         seen_urls.add(url_key)
         items.append(href)
     return items
+
+
+def _extract_popular_cards(box) -> list[list[str]]:
+    """박스를 '화면에 보이는 칸' 단위로 나눠, 칸마다 그 안의 본문 글 URL 목록을 반환.
+
+    2026-08-05 사장님 지적 fix: 네이버는 같은 카페 글 여러 개를 한 칸에 묶어 보여준다
+    (fds-ugc-after-article-list). 링크 개수로 세면 그 칸이 2칸으로 계산돼 아래 글의
+    순위가 한 칸씩 밀린다 — 실측 '약산성샴푸' 우리 글이 화면 2등인데 3등으로 기록됨.
+    순위는 사람이 화면에서 세는 기준(칸)과 같아야 하므로 칸 단위로 센다.
+
+    반환 = 칸별 URL 묶음 (위→아래). 매칭은 칸 안 어느 링크든 되도록 URL을 모두 담는다
+    (T-M14.3 의 '두 번째 글도 매치' 취지 유지 — 찾기 범위는 그대로, 세는 단위만 칸).
+    칸 구조를 확신 못 하면 빈 리스트 → 호출부가 기존 링크 단위 방식으로 되돌아간다.
+    """
+    containers = box.select("div[class*='fds-ugc']")
+    if not containers:
+        return []
+    root = containers[0]
+    cards: list[list[str]] = []
+    seen_urls: set[tuple[str, str]] = set()
+    for child in root.find_all(recursive=False):
+        if "sds-comps-divider" in " ".join(child.get("class", [])):
+            continue  # 칸 사이 구분선
+        fresh: list[str] = []
+        for url in _extract_popular_items(child):  # 글 URL 판별 규칙 재사용
+            p = urlparse(url)
+            key = (p.netloc, p.path.rstrip("/"))
+            if key in seen_urls:
+                continue  # 박스 전체 기준 같은 글 중복 제거
+            seen_urls.add(key)
+            fresh.append(url)
+        if fresh:
+            cards.append(fresh)
+    if not cards:
+        return []
+    # 칸이 하나뿐인데 글이 여러 개 = 칸 구조를 못 읽은 것 → 기존 방식에 맡긴다.
+    if len(cards) == 1 and len(cards[0]) > 1:
+        return []
+    return cards
+
+
+def _items_by_card(box) -> list[list[str]]:
+    """순위 계산 단위 목록. 칸 구조를 읽으면 칸 단위, 못 읽으면 기존 링크 단위."""
+    cards = _extract_popular_cards(box)
+    if cards:
+        return cards
+    return [[url] for url in _extract_popular_items(box)]
 
 
 _JISIKIN_H2_PATTERNS = ("지식iN", "지식인", "지식 iN")
