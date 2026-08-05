@@ -460,6 +460,118 @@ class TestJsonFallbackIsMarked:
         assert result.rank_from_dom_cards is False
 
 
+class TestRankSignalsAreVisible:
+    """순위가 '평소와 다르게' 돈 횟수를 사이클 요약이 실어 나른다 (독립검증 M-2).
+
+    이 사고의 원인 진단이 "3개월간 틀렸다는 신호가 없었다" 였다. 신호를 만들어 놓고
+    보이는 곳에 안 달면 같은 일이 되풀이된다.
+    """
+
+    def test_fallback_and_mismatch_are_counted(self, load_fixture):
+        from src.parser import rank_signals, reset_rank_signals
+
+        reset_rank_signals()
+        assert rank_signals == {"fallback_boxes": 0, "mismatch_boxes": 0}
+
+        # DOM 을 못 읽게 만든 페이지 → fallback 카운트
+        broken = load_fixture(FIXTURE).replace("fds-ugc", "zzz-renamed")
+        parse_search_result(broken, None, link_set={OURS})
+        assert rank_signals["fallback_boxes"] >= 1
+
+        # 두 계산이 갈리는 실측 페이지 → mismatch 카운트
+        reset_rank_signals()
+        parse_search_result(
+            load_fixture("naver/popular_same_cafe_two_cards.html"),
+            None,
+            link_set={"https://cafe.naver.com/com2usbaseball2015/1996063"},
+        )
+        assert rank_signals["mismatch_boxes"] >= 1
+
+    def test_reset_clears_counts(self):
+        from src.parser import rank_signals, reset_rank_signals
+
+        rank_signals["fallback_boxes"] = 7
+        reset_rank_signals()
+        assert rank_signals["fallback_boxes"] == 0
+
+    def test_cycle_summary_carries_the_signals(self):
+        """main.py 가 요약에 실제로 싣는지 — 배선이 끊기면 신호가 다시 안 보이게 된다."""
+        import inspect
+
+        from src import main as main_module
+
+        src = inspect.getsource(main_module)
+        assert 'summary["rank_fallback_boxes"]' in src
+        assert 'summary["rank_mismatch_boxes"]' in src
+        assert "reset_rank_signals()" in src
+
+
+class TestSplitBundleIsDetectable:
+    """묶음이 쪼개진 것(원래 사고와 같은 모양)과 이웃 별도 칸을 구분한다 (독립검증 M-1).
+
+    두 경우 모두 두 계산의 차이가 1이라, 차이만 보면 원래 사고의 재발이 조용히 통과한다.
+    '대문 링크 없는 칸' 이 그 둘을 가르는 지문이다 — 화면 한 칸은 자기 출처 대문을 갖는데,
+    묶여 있던 글이 쪼개져 나오면 대문 없이 글만 남는다.
+    """
+
+    def _audit_module(self):
+        import importlib.util
+        from pathlib import Path
+
+        path = Path(__file__).resolve().parents[2] / "scripts" / "audit" / "구좌순위_화면대조.py"
+        spec = importlib.util.spec_from_file_location("audit_slot_orphan", path)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        return mod
+
+    def _box(self, cards):
+        from bs4 import BeautifulSoup
+
+        inner = "".join(f'<div class="fds-ugc-item">{c}</div>' for c in cards)
+        html = (
+            '<div class="desktop_mode api_subject_bx"><h2>인기글</h2>'
+            f'<div class="fds-ugc-single-intention-item-list">{inner}</div></div>'
+        )
+        return BeautifulSoup(html, "html.parser").select_one(".api_subject_bx")
+
+    HOME = '<a href="https://cafe.naver.com/{s}">대문</a>'
+    POST = '<a href="https://cafe.naver.com/{s}/{n}">글</a>'
+
+    def _card(self, slug, nums, with_home=True):
+        parts = [self.HOME.format(s=slug)] if with_home else []
+        parts += [self.POST.format(s=slug, n=n) for n in nums]
+        return "".join(parts)
+
+    def test_intact_bundle_has_no_orphan(self):
+        mod = self._audit_module()
+        box = self._box([self._card("aaa", [1, 2]), self._card("bbb", [3])])
+        assert mod._has_orphan_card(box) is False
+
+    def test_split_bundle_is_flagged(self):
+        """원래 사고와 같은 모양 — 반드시 잡혀야 한다."""
+        mod = self._audit_module()
+        box = self._box(
+            [self._card("aaa", [1]), self._card("aaa", [2], with_home=False), self._card("bbb", [3])]
+        )
+        assert mod._has_orphan_card(box) is True
+
+    def test_neighbouring_separate_cards_are_not_flagged(self):
+        """같은 카페 이웃 별도 칸 — 정상이므로 잡히면 안 된다(헛경보)."""
+        mod = self._audit_module()
+        box = self._box([self._card("aaa", [1]), self._card("aaa", [2]), self._card("bbb", [3])])
+        assert mod._has_orphan_card(box) is False
+
+    def test_real_fixture_has_no_orphan(self, load_fixture):
+        """실측 반례(닭살피부바디워시)는 정상이므로 지문이 안 나와야 한다."""
+        from bs4 import BeautifulSoup
+
+        mod = self._audit_module()
+        box = BeautifulSoup(
+            load_fixture("naver/popular_same_cafe_two_cards.html"), "html.parser"
+        ).select_one(".desktop_mode.api_subject_bx, .fds-default-mode.api_subject_bx")
+        assert mod._has_orphan_card(box) is False
+
+
 class TestCardFallback:
     def test_unknown_structure_falls_back_to_link_units(self):
         """칸 구조를 못 읽는 HTML 이면 기존 링크 단위 방식으로 되돌아간다(정지 금지).

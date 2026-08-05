@@ -25,6 +25,7 @@ from typing import Optional
 from src.config import SPREADSHEET_ID, SERVICE_ACCOUNT_JSON, NAVER_SLOWDOWN_BASE_SEC, NAVER_SLOWDOWN_MAX_SEC, CAFE_WHITELIST
 from src.crawler import Crawler, SlowdownController, CrawlerError, CafeStatus, CircuitBreakerOpen, parse_cafe_url, resolve_short_url
 from src.health import HealthMonitor
+from src import parser as parser_module
 from src.parser import parse_search_result
 from src.retry import RetryQueue
 from src.audit import audit_sheet_rows, build_update_trace, filter_invalid_updates, write_jsonl
@@ -496,6 +497,7 @@ def run_cycle() -> dict:
         2026-05-11: 풍부한 summary (K 분포, 처리 시간, 행 수) — Telegram/이메일 알림용.
         CI 환경 (GITHUB_ACTIONS=true) 에서는 cycle_summary.json 도 작성.
     """
+    parser_module.reset_rank_signals()  # 이번 회차 몫만 센다
     if not SPREADSHEET_ID or not SERVICE_ACCOUNT_JSON:
         print("❌ SPREADSHEET_ID 또는 SERVICE_ACCOUNT_JSON 환경변수 누락. 종료.")
         return {"error": "missing_env"}
@@ -1066,6 +1068,11 @@ def run_cycle() -> dict:
     summary["relocation_conflict_keys"] = stale_relocation_stats["relocation_conflict_keys"]
     summary["relocation_fanout_rows"] = stale_relocation_stats["relocation_fanout_rows"]
     summary["ghost_sanitized_rows"] = ghost_sanitized_rows
+    # 2026-08-05: 순위를 평소와 다르게 센 횟수. 0 이 아니면 네이버 화면 구조가 바뀌었을 수
+    # 있으니 scripts/audit/구좌순위_화면대조.py 로 확인한다. 신호를 만들어 놓고 보이는 곳에
+    # 안 달면 "틀렸다는 신호가 없어서 3개월 몰랐던" 그 일이 되풀이된다(독립검증 M-2).
+    summary["rank_fallback_boxes"] = parser_module.rank_signals["fallback_boxes"]
+    summary["rank_mismatch_boxes"] = parser_module.rank_signals["mismatch_boxes"]
     summary["recheck_stale_only_enabled"] = recheck_stale_only_enabled
     summary["recheck_stale_only_target_rows"] = len(recheck_stale_only_targets)
     summary["type_preview_bulk_guard_overridden"] = (

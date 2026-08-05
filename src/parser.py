@@ -912,6 +912,21 @@ def _owner_runs(urls: list[str]) -> list[list[str]]:
     return runs
 
 
+# 순위 계산이 '평소와 다르게' 돈 횟수. main.py 가 사이클 요약에 실어 보이게 한다.
+# (2026-08-05 독립검증 M-2: 4라운드에 걸쳐 만든 신호가 크론 stdout 으로만 흘러
+#  아무도 안 읽는 상태였다. 이 사고의 원인 진단이 "틀렸다는 신호가 없었다" 였는데
+#  신호를 만들어 놓고 울리는 곳에 안 달면 같은 일이 반복된다.)
+#   fallback_boxes = DOM 칸을 못 읽어 출처 묶기로 센 박스 수
+#   mismatch_boxes = 두 계산이 다른 답을 낸 박스 수
+rank_signals = {"fallback_boxes": 0, "mismatch_boxes": 0}
+
+
+def reset_rank_signals() -> None:
+    """사이클 시작 시 호출 — 이번 회차 몫만 세기 위해."""
+    for key in rank_signals:
+        rank_signals[key] = 0
+
+
 def _items_by_card(box) -> tuple[list[list[str]], bool]:
     """순위 계산 단위 목록 + DOM 칸을 읽었는지 여부.
 
@@ -929,9 +944,11 @@ def _items_by_card(box) -> tuple[list[list[str]], bool]:
     cards = _extract_popular_cards(box)
     if not cards:
         if flat:
+            rank_signals["fallback_boxes"] += 1
             print(f"    [CARD_FALLBACK] DOM 칸을 못 읽어 출처 묶기로 계산 ({len(runs)}칸)")
         return runs, False
     if len(cards) != len(runs):
+        rank_signals["mismatch_boxes"] += 1
         print(
             f"    [CARD_MISMATCH] DOM 칸 {len(cards)} ≠ 출처 묶기 {len(runs)} "
             f"— 네이버 화면 구조가 바뀌었는지 확인 필요"

@@ -107,7 +107,37 @@ def _owner(url: str) -> tuple:
     return slot_owner_key(url)
 
 
-def screen_cafe_slot(html: str, our_link: str) -> tuple[int | None, int | None, bool]:
+_HOME_LINK_RE = re.compile(r"^https://(cafe|blog)\.naver\.com/[^/]+/?$")
+
+
+def _has_orphan_card(box) -> bool:
+    """대문 링크가 없는 칸이 있는가 = '원래 앞 칸의 일부였다' 는 지문.
+
+    화면의 한 칸은 자기 출처 대문 링크를 정확히 하나 갖는다(실측 칸 50개에서 2개 이상은 0건).
+    묶여 있던 글이 별도 칸으로 쪼개지면, 쪼개진 쪽은 대문 없이 글만 있다.
+
+    쓰는 이유(2026-08-05 독립검증 M-1): 두 계산의 차이 1은 두 가지 원인에서 나온다 —
+      (a) 같은 카페가 이웃한 별도 두 칸 = 정상, 파서가 맞다
+      (b) 한 칸이던 묶음이 두 칸으로 쪼개짐 = **2026-05-13 사고와 같은 모양**, 파서가 틀리다
+    차이 1을 전부 통과시키면 (b)가 조용히 지나간다. 이 지문이 둘을 가른다.
+    """
+    for container in box.select("div[class*='fds-ugc']")[:1]:
+        for child in container.find_all(recursive=False):
+            if "sds-comps-divider" in " ".join(child.get("class", [])):
+                continue
+            if not _post_links(child):
+                continue  # 글이 없는 조각은 칸이 아니다
+            homes = {
+                a["href"].split("?")[0]
+                for a in child.find_all("a", href=True)
+                if _HOME_LINK_RE.match(a["href"].split("?")[0])
+            }
+            if not homes:
+                return True
+    return False
+
+
+def screen_cafe_slot(html: str, our_link: str) -> tuple[int | None, int | None, bool, bool]:
     """화면 칸 기준 (카페 구좌순위, 전체 칸순위, 셀 수 있었는가).
 
     **파서와 다른 방법으로 센다** — 이것이 이 감사의 존재 이유다.
@@ -121,6 +151,7 @@ def screen_cafe_slot(html: str, our_link: str) -> tuple[int | None, int | None, 
     """
     soup = BeautifulSoup(html, "html.parser")
     counted_any = False
+    orphan_box = False
     for box in soup.select(".desktop_mode.api_subject_bx, .fds-default-mode.api_subject_bx"):
         h2 = box.find("h2")
         if h2 is None:
@@ -137,6 +168,8 @@ def screen_cafe_slot(html: str, our_link: str) -> tuple[int | None, int | None, 
         if not links:
             continue
         counted_any = True
+        if _has_orphan_card(box):
+            orphan_box = True
 
         # 연속 같은 출처 = 한 칸 (네이버가 같은 카페 글을 한 칸에 묶어 보여주기 때문)
         cafe_slot = 0
@@ -154,8 +187,8 @@ def screen_cafe_slot(html: str, our_link: str) -> tuple[int | None, int | None, 
                 found_here = True
                 break
         if found_here:
-            return (cafe_slot, card_idx, True)
-    return (None, None, counted_any)
+            return (cafe_slot, card_idx, True, orphan_box)
+    return (None, None, counted_any, orphan_box)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -247,7 +280,7 @@ def main(argv: list[str] | None = None) -> int:
             # 파서도 화면 칸을 못 읽어 출처 묶기로 계산한 행 — 감사와 같은 방법이 되어
             # 이 대조는 서로를 검증하지 못한다. '일치' 로 넘기지 않고 따로 센다.
             fallback_rows += 1
-        screen, _card, structure_ok = screen_cafe_slot(html, link)
+        screen, _card, structure_ok, orphan = screen_cafe_slot(html, link)
 
         if not structure_ok and parsed is not None:
             # 감사는 셀 자리를 못 찾았는데 파서만 값을 냈다 = 한쪽 가정이 무너진 신호.
@@ -264,11 +297,15 @@ def main(argv: list[str] | None = None) -> int:
             verdict = "★파서가 못 찾음(화면엔 있음)"
         elif int(parsed) == int(screen):
             verdict = "일치"
-        elif int(parsed) - int(screen) == 1:
+        elif int(parsed) - int(screen) == 1 and not orphan:
             # 딱 한 칸 차이 = 같은 카페가 이웃한 별도 칸 2개를 차지한 경우.
             # 2026-08-05 '닭살피부바디워시' 실측으로 확인된 정상 모양이고, 이때는 파서가 맞다.
             # (감사의 묶기 방식은 그 둘을 한 칸으로 합쳐 하나 적게 센다.)
             verdict = f"일치(한 칸 차 — 같은 카페 이웃 칸, 파서{parsed} 채택)"
+        elif int(parsed) - int(screen) == 1:
+            # 차이 1인데 대문 없는 칸이 있다 = 묶음이 쪼개진 것 = 원래 사고와 같은 모양.
+            mismatch += 1
+            verdict = f"★어긋남 파서{parsed} ≠ 화면{screen} — 대문 없는 칸 발견(묶음이 쪼개졌을 수 있음)"
         else:
             # 두 칸 이상 벌어졌다 = 위 사유로 설명되지 않는다. 사람이 봐야 한다.
             mismatch += 1
