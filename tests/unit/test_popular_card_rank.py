@@ -283,6 +283,183 @@ class TestOwnerJudgementIsConservative:
             assert mod._owner(url) == slot_owner_key(url), url
 
 
+class TestSameCafeTwoSeparateCards:
+    """같은 카페가 **이웃한 별도 칸 2개**를 차지하는 실물 (2026-08-05 '닭살피부바디워시').
+
+    '연속 같은 출처 = 한 칸' 규칙이 틀리는 유일한 조건이고, 라이브에 실재한다.
+    이때는 DOM 칸(파서)이 맞고 되돌림이 한 칸 적게 센다 — 알고 감수하는 위험이라
+    그 사실 자체를 검사로 못박는다. 이 검사가 깨지면 되돌림의 위험 범위가 달라진 것이다.
+
+    별도 칸이라는 독립 근거: 칸5·칸6 이 **각각 자기 카페 대문 링크**를 하나씩 갖는다
+    (묶인 칸이면 대문이 하나여야 한다 — 실측 칸 50개에서 대문 2개인 칸은 0이었다).
+    """
+
+    FIXTURE2 = "naver/popular_same_cafe_two_cards.html"
+    SECOND_OF_PAIR = "https://cafe.naver.com/com2usbaseball2015/1996063"
+
+    def _box(self, load_fixture):
+        from bs4 import BeautifulSoup
+
+        return BeautifulSoup(load_fixture(self.FIXTURE2), "lxml").select_one(
+            ".desktop_mode.api_subject_bx, .fds-default-mode.api_subject_bx"
+        )
+
+    def test_dom_sees_two_cards_owner_runs_merges_them(self, load_fixture):
+        from src.parser import _extract_popular_cards, _owner_runs
+
+        box = self._box(load_fixture)
+        cards = _extract_popular_cards(box)
+        runs = _owner_runs(_extract_popular_items(box))
+        assert len(cards) == 7
+        assert len(runs) == 6, "이 픽스처는 두 계산이 갈리는 실물이어야 의미가 있다"
+
+    def test_parser_uses_dom_answer(self, load_fixture):
+        """파서는 DOM 을 우선하므로 5(맞는 값)를 내야 한다."""
+        result = parse_search_result(
+            load_fixture(self.FIXTURE2), None, link_set={self.SECOND_OF_PAIR}
+        )
+        assert result.cafe_slot_rank == 5
+        assert result.rank_from_dom_cards is True
+
+    def test_each_card_has_its_own_source_home_link(self, load_fixture):
+        """별도 칸이라는 독립 근거 — 두 칸이 각각 대문 링크를 갖는다."""
+        import re
+
+        box = self._box(load_fixture)
+        root = box.select("div[class*='fds-ugc']")[0]
+        kids = [
+            ch
+            for ch in root.find_all(recursive=False)
+            if "sds-comps-divider" not in " ".join(ch.get("class", []))
+        ]
+        homes = [
+            {
+                a["href"].split("?")[0]
+                for a in ch.find_all("a", href=True)
+                if re.match(r"^https://(cafe|blog)\.naver\.com/[^/]+/?$", a["href"].split("?")[0])
+            }
+            for ch in kids
+        ]
+        assert all(len(h) <= 1 for h in homes), "한 칸에 대문이 둘이면 칸 경계를 잘못 읽은 것"
+        pair = [h for h in homes if "https://cafe.naver.com/com2usbaseball2015" in h]
+        assert len(pair) == 2, "같은 카페가 대문을 각각 가진 별도 두 칸이어야 한다"
+
+
+class TestUnknownOwnerIsNotDisagreement:
+    """'주인을 모른다' 와 '주인이 다르다' 는 다르다 (독립검증 H-2).
+
+    모르는 형식 하나 때문에 박스 전체가 되돌림으로 떨어지면, 거기에 위 '이웃 별도 칸'
+    이 겹쳤을 때 화면 4등이 3등으로 기록된다 — 상위노출 문턱을 넘는 방향이다.
+    """
+
+    def test_clip_and_in_naver_shapes_are_recognised(self):
+        from src.parser import slot_owner_key
+
+        assert slot_owner_key("https://m.blog.naver.com/l971031/clip/1") == slot_owner_key(
+            "https://m.blog.naver.com/l971031/clip/2"
+        )
+        assert slot_owner_key("https://in.naver.com/abc/contents/internal/1") == slot_owner_key(
+            "https://in.naver.com/abc/contents/internal/2"
+        )
+
+    def test_unknown_shapes_do_not_trip_the_guard(self):
+        """주인을 모르는 링크 둘이 한 칸에 있어도 되돌림을 부르지 않는다."""
+        from bs4 import BeautifulSoup
+
+        from src.parser import _extract_popular_cards
+
+        html = """
+        <div class="desktop_mode api_subject_bx"><h2>인기글</h2>
+          <div class="fds-ugc-single-intention-item-list">
+            <div class="fds-ugc-item">
+              <a href="https://www.glowpick.com/products/111">가</a>
+              <a href="https://www.glowpick.com/products/222">나</a>
+            </div>
+            <div class="fds-ugc-item"><a href="https://cafe.naver.com/aaa/333">다</a></div>
+          </div>
+        </div>"""
+        box = BeautifulSoup(html, "lxml").select_one(".api_subject_bx")
+        cards = _extract_popular_cards(box)
+        assert cards != [], "주인을 '모른다' 는 것을 '다르다' 로 읽어 되돌림이 발동했다"
+        assert len(cards) == 2
+
+    def test_two_known_owners_in_one_card_still_trips_the_guard(self):
+        """반대로 확실히 아는 주인이 둘이면 여전히 되돌린다(안전장치가 죽으면 안 된다)."""
+        from bs4 import BeautifulSoup
+
+        from src.parser import _extract_popular_cards
+
+        html = """
+        <div class="desktop_mode api_subject_bx"><h2>인기글</h2>
+          <div class="fds-ugc-single-intention-item-list">
+            <div class="fds-ugc-item">
+              <a href="https://cafe.naver.com/aaa/111">가</a>
+              <a href="https://cafe.naver.com/bbb/222">나</a>
+            </div>
+          </div>
+        </div>"""
+        box = BeautifulSoup(html, "lxml").select_one(".api_subject_bx")
+        assert _extract_popular_cards(box) == []
+
+
+class TestJsonFallbackIsMarked:
+    """JSON 대체 경로는 화면 칸으로 센 값이 아니다 — 감사가 건너뛰면 안 된다 (독립검증 H-1).
+
+    이 경로는 아직 링크 개수로 세므로 사장님이 겪은 그 오류가 남아 있다.
+    표시가 없으면 감사의 'AB 는 대상 아님' 규칙에 걸려 조용히 빠진다.
+    """
+
+    def test_json_fallback_marks_rank_as_not_from_dom(self):
+        import json
+
+        from src.parser import parse_search_result
+
+        payload = {
+            "items": [
+                {"url": "https://cafe.naver.com/aaa/1"},
+                {"url": "https://cafe.naver.com/aaa/2"},
+                {"url": "https://cafe.naver.com/bbb/3"},
+            ]
+        }
+        # 실제 형식: entry.bootstrap(document.getElementById("fdr-…"), {…JSON…});
+        html = (
+            "<html><body><div>" + "x" * 600 + "</div>"
+            '<script>entry.bootstrap(document.getElementById("fdr-1"), '
+            + json.dumps(payload)
+            + ");</script></body></html>"
+        )
+        result = parse_search_result(html, None, link_set={"https://cafe.naver.com/bbb/3"})
+        assert result.cafe_slot_rank is not None, "JSON 경로가 안 탔다 — 이 검사가 무의미해진다"
+        assert result.rank_from_dom_cards is False, "JSON 경로 값이 DOM 칸으로 센 것처럼 표시됐다"
+
+    def test_json_fallback_still_counts_by_link(self):
+        """아직 링크 개수로 센다는 사실 자체를 기록해 둔다 — 고쳐지면 이 검사가 알려준다.
+
+        같은 카페 글 2건 + 다른 카페 1건에서 화면 정답은 M=2 인데 JSON 경로는 3을 낸다.
+        지금은 표시(rank_from_dom_cards=False)로 감사가 잡게 하고, 근본 수정은 별도 과제.
+        """
+        import json
+
+        from src.parser import parse_search_result
+
+        payload = {
+            "items": [
+                {"url": "https://cafe.naver.com/aaa/1"},
+                {"url": "https://cafe.naver.com/aaa/2"},
+                {"url": "https://cafe.naver.com/bbb/3"},
+            ]
+        }
+        html = (
+            "<html><body><div>" + "x" * 600 + "</div>"
+            '<script>entry.bootstrap(document.getElementById("fdr-1"), '
+            + json.dumps(payload)
+            + ");</script></body></html>"
+        )
+        result = parse_search_result(html, None, link_set={"https://cafe.naver.com/bbb/3"})
+        assert result.cafe_slot_rank == 3  # 화면 칸 기준 정답은 2 — 알려진 미해결 경로
+        assert result.rank_from_dom_cards is False
+
+
 class TestCardFallback:
     def test_unknown_structure_falls_back_to_link_units(self):
         """칸 구조를 못 읽는 HTML 이면 기존 링크 단위 방식으로 되돌아간다(정지 금지).

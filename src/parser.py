@@ -820,10 +820,20 @@ def _extract_popular_cards(box) -> list[list[str]]:
     }:
         return []
 
-    # 안전장치 ② 주인 — 화면 한 칸은 출처 하나다. 한 칸에 카페가 둘 이상이면 칸을 못 읽은 것.
+    # 안전장치 ② 주인 — 화면 한 칸은 출처 하나다. 한 칸에 출처가 둘 이상이면 칸을 못 읽은 것.
     # (개수로 판별하면 '한 칸에 같은 카페 글 2개' 인 진짜 묶음까지 옛 방식으로 되돌아가
     #  고치려던 그 오류가 되살아난다.)
-    if any(len({slot_owner_key(u) for u in card}) > 1 for card in cards):
+    #
+    # 단 **확실히 알아본 주인끼리만** 비교한다. slot_owner_key 는 모르는 형식을 '보류'(?)
+    # 처리하는데, 보류는 '주인이 다르다' 는 증거가 아니다. 둘을 섞으면 클립 링크
+    # (m.blog.naver.com/{id}/clip/{n}) 같은 형식 하나 때문에 박스 전체가 되돌림으로 떨어지고,
+    # 거기에 '같은 카페가 이웃한 별도 칸 2개' 가 겹치면 화면 4등이 3등으로 기록된다
+    # — 상위노출 문턱을 넘는 방향이다(2026-08-05 독립검증 H-2, 재현 확인).
+    # 칸 경계는 DOM 이 준 것이고, 주인을 모른다고 그 경계가 틀린 것은 아니다.
+    def _confident_owners(card: list[str]) -> set:
+        return {k for k in (slot_owner_key(u) for u in card) if not str(k[1]).startswith("?")}
+
+    if any(len(_confident_owners(card)) > 1 for card in cards):
         return []
 
     return cards
@@ -859,9 +869,18 @@ def slot_owner_key(url: str) -> tuple:
             return (netloc, f"cafes/{parts[2]}")
         # 형식이 또 바뀐 것 = 주인 불명 → 혼자 한 칸 (뭉쳐서 가짜 1등 만드는 것보다 안전)
         return (netloc, "?" + parsed.path.rstrip("/"))
-    if netloc == "blog.naver.com" and len(parts) == 2:
+    if netloc == "blog.naver.com":
+        # blog.naver.com/{id}/{글번호}
+        if len(parts) == 2 and parts[1].isdigit():
+            return (netloc, parts[0])
+        # m.blog.naver.com/{id}/clip/{번호} — 실측에 있는 모양(popular_cafe.html 4건)
+        if len(parts) == 3 and parts[1] == "clip":
+            return (netloc, parts[0])
+    # in.naver.com/{id}/contents/internal/{번호} — 실측에 있는 모양(serp.html 4건)
+    if netloc == "in.naver.com" and len(parts) >= 2 and parts[1] == "contents":
         return (netloc, parts[0])
-    # 카페·블로그가 아닌 곳은 첫 경로 조각이 주인이 아니다 → 뭉치지 않는다
+    # 그 밖에는 첫 경로 조각이 주인이 아니다(글로우픽 /products/…, 지식인 /qna/… 등)
+    # → 판단 보류. '?' 로 시작하는 키 = 모른다는 표시이고, 안전장치②가 이를 구분한다.
     return (netloc, "?" + parsed.path.rstrip("/"))
 
 
@@ -1118,6 +1137,8 @@ def _parse_bootstrap_json_fallback(
                     result.cafe_slot_rank = cafe_count
                 result.exposure_area = ExposureArea.AB
                 result.parser_confidence = 0.75
+                # JSON 대체 경로는 화면 칸 개념이 없다(링크 순서로 셈) — 정직하게 표시한다.
+                result.rank_from_dom_cards = False
                 result.matched_url = target_url
                 return True
             continue
@@ -1133,6 +1154,8 @@ def _parse_bootstrap_json_fallback(
                 result.cafe_slot_rank = cafe_count
                 result.exposure_area = ExposureArea.AB
                 result.parser_confidence = 0.75
+                # JSON 대체 경로는 화면 칸 개념이 없다(링크 순서로 셈) — 정직하게 표시한다.
+                result.rank_from_dom_cards = False
                 result.matched_url = url
                 print(f"    [JSON_FALLBACK_MATCH] idx={idx} kind={kind} matched_url={url[:90]}")
                 return True
@@ -1146,6 +1169,8 @@ def _parse_bootstrap_json_fallback(
                 result.cafe_slot_rank = cafe_count
                 result.exposure_area = ExposureArea.AB
                 result.parser_confidence = 0.70
+                # JSON 대체 경로는 화면 칸 개념이 없다(링크 순서로 셈) — 정직하게 표시한다.
+                result.rank_from_dom_cards = False
                 result.matched_url = url
                 print(f"    [JSON_FALLBACK_SLUG_MATCH] idx={idx} slug={slug} matched_url={url[:90]}")
                 return True

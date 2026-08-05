@@ -232,10 +232,13 @@ def main(argv: list[str] | None = None) -> int:
         res = parse_search_result(html, None, link_set={link})
         parsed = res.cafe_slot_rank
 
-        if res.exposure_area.value == "AB":
-            # 대상 선정은 시트의 옛 기록으로 했는데 지금은 AB 구좌에 잡혔다.
-            # AB 는 박스 하나가 곧 한 칸이라 이 결함과 무관 = 검사할 것이 없다.
-            # 여기서 ★로 세면 헛경보가 되고, 헛경보는 진짜 경보를 못 믿게 만든다.
+        if res.exposure_area.value == "AB" and res.rank_from_dom_cards:
+            # 진짜 AB 박스만 건너뛴다. 박스 하나가 곧 한 칸이라 이 결함과 무관하고,
+            # 여기서 ★로 세면 헛경보가 되며 헛경보는 진짜 경보를 못 믿게 만든다.
+            #
+            # 단 rank_from_dom_cards=False 인 AB 는 JSON 대체 경로로 잡힌 것이다.
+            # 그 경로는 아직 링크 개수로 세므로 사장님이 겪은 그 오류가 남아 있다 —
+            # 조건 없이 건너뛰면 유일한 감시자를 끄는 셈이다(2026-08-05 독립검증 H-1).
             outside += 1
             rows.append({**t, "파서구좌": parsed or "", "화면구좌": "", "판정": "대상 아님(지금은 AB 구좌)"})
             continue
@@ -261,9 +264,15 @@ def main(argv: list[str] | None = None) -> int:
             verdict = "★파서가 못 찾음(화면엔 있음)"
         elif int(parsed) == int(screen):
             verdict = "일치"
+        elif int(parsed) - int(screen) == 1:
+            # 딱 한 칸 차이 = 같은 카페가 이웃한 별도 칸 2개를 차지한 경우.
+            # 2026-08-05 '닭살피부바디워시' 실측으로 확인된 정상 모양이고, 이때는 파서가 맞다.
+            # (감사의 묶기 방식은 그 둘을 한 칸으로 합쳐 하나 적게 센다.)
+            verdict = f"일치(한 칸 차 — 같은 카페 이웃 칸, 파서{parsed} 채택)"
         else:
+            # 두 칸 이상 벌어졌다 = 위 사유로 설명되지 않는다. 사람이 봐야 한다.
             mismatch += 1
-            verdict = f"★어긋남 파서{parsed} ≠ 화면{screen}"
+            verdict = f"★어긋남 파서{parsed} ≠ 화면{screen} (차이 {int(parsed)-int(screen)})"
 
         rows.append({**t, "파서구좌": parsed or "", "화면구좌": screen or "", "판정": verdict})
         if verdict != "일치":
@@ -277,10 +286,9 @@ def main(argv: list[str] | None = None) -> int:
         print(f"\n⚠ 이 중 {fallback_rows}행은 파서도 화면 칸을 못 읽어 감사와 같은 방법으로 계산했습니다.")
         print("  = 그 행들의 '일치' 는 서로를 검증한 것이 아닙니다. 네이버 화면 구조 변경을 확인하세요.")
     if mismatch:
-        print("\n※ 어긋난 행이 있습니다 — 두 계산이 다른 답을 냈다는 뜻입니다. 확인하세요.")
-        print("  참고: 파서(화면 칸)가 감사(출처 묶기)보다 큰 값이면, 같은 카페가 이웃한 별도")
-        print("        칸 2개를 차지한 경우일 수 있습니다 — 그때는 파서 쪽이 맞습니다.")
-        print("        (2026-08-05 라이브 실측: '닭살피부바디워시' 에서 실제로 확인됨)")
+        print("\n※ 어긋난 행이 있습니다 — 두 계산이 두 칸 이상 벌어졌습니다. 사람이 봐야 합니다.")
+        print("  (한 칸 차이는 '같은 카페 이웃 칸' 으로 설명되는 정상이라 여기 안 셉니다.")
+        print("   두 칸 이상은 그 사유로 설명되지 않습니다.)")
         for r in rows:
             if str(r["판정"]).startswith("★"):
                 print(f"   {r['탭']} r{r['행']} {r['키워드']}: {r['판정']}")
