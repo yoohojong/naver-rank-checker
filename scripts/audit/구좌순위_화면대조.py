@@ -107,7 +107,10 @@ def _owner(url: str) -> tuple:
     return slot_owner_key(url)
 
 
-_HOME_LINK_RE = re.compile(r"^https://(cafe|blog)\.naver\.com/[^/]+/?$")
+# 출처 대문 링크의 실제 형태들. 좁게 잡으면 정상 칸이 'orphan' 으로 뒤집혀
+# 헛경보가 쏟아진다 — 실측에서 인플루언서 블로그는 대문이 in.naver.com/{id} 로 실리고,
+# 모바일 페이지는 m. 접두가 붙는다(2026-08-05 독립검증 M-1: 실측 7박스 중 2개 오탐).
+_HOME_LINK_RE = re.compile(r"^https?://(m\.)?(cafe|blog|in)\.naver\.com/[^/]+/?$")
 
 
 def _has_orphan_card(box) -> bool:

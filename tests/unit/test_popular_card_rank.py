@@ -478,14 +478,46 @@ class TestRankSignalsAreVisible:
         parse_search_result(broken, None, link_set={OURS})
         assert rank_signals["fallback_boxes"] >= 1
 
-        # 두 계산이 갈리는 실측 페이지 → mismatch 카운트
+    def test_normal_pages_leave_the_signals_at_zero(self, load_fixture):
+        """정상 페이지에서는 두 신호가 0이어야 한다 — 늘 켜져 있으면 아무도 안 본다.
+
+        특히 실측 '닭살피부바디워시'(같은 카페 이웃 별도 칸)는 두 계산이 1 차이 나지만
+        평범한 검색 결과다. 그것까지 세면 이 숫자가 매 회차 켜진다
+        (2026-08-05 독립검증 M-2).
+        """
+        from src.parser import rank_signals, reset_rank_signals
+
         reset_rank_signals()
         parse_search_result(
             load_fixture("naver/popular_same_cafe_two_cards.html"),
             None,
             link_set={"https://cafe.naver.com/com2usbaseball2015/1996063"},
         )
-        assert rank_signals["mismatch_boxes"] >= 1
+        assert rank_signals == {"fallback_boxes": 0, "mismatch_boxes": 0}
+
+        reset_rank_signals()
+        parse_search_result(load_fixture(FIXTURE), None, link_set={OURS})
+        assert rank_signals == {"fallback_boxes": 0, "mismatch_boxes": 0}
+
+    def test_unexplained_gap_is_counted(self):
+        """차이 2 이상 = 이웃 같은 주인 칸으로 설명 안 되는 것 → 센다."""
+        from bs4 import BeautifulSoup
+
+        from src.parser import _items_by_card, rank_signals, reset_rank_signals
+
+        # 한 칸 = 글 1개인 칸 4개인데, 그중 3개가 같은 카페 = DOM 4칸 대 묶기 2칸
+        cards = "".join(
+            f'<div class="fds-ugc-item"><a href="https://cafe.naver.com/{s}/{n}">글</a></div>'
+            for s, n in [("aaa", 1), ("aaa", 2), ("aaa", 3), ("bbb", 4)]
+        )
+        html = (
+            '<div class="desktop_mode api_subject_bx"><h2>인기글</h2>'
+            f'<div class="fds-ugc-single-intention-item-list">{cards}</div></div>'
+        )
+        box = BeautifulSoup(html, "lxml").select_one(".api_subject_bx")
+        reset_rank_signals()
+        _items_by_card(box)
+        assert rank_signals["mismatch_boxes"] == 1
 
     def test_reset_clears_counts(self):
         from src.parser import rank_signals, reset_rank_signals
@@ -494,16 +526,54 @@ class TestRankSignalsAreVisible:
         reset_rank_signals()
         assert rank_signals["fallback_boxes"] == 0
 
-    def test_cycle_summary_carries_the_signals(self):
-        """main.py 가 요약에 실제로 싣는지 — 배선이 끊기면 신호가 다시 안 보이게 된다."""
-        import inspect
+    def test_cycle_summary_actually_carries_the_signals(self, tmp_path, monkeypatch):
+        """run_cycle() 을 실제로 돌려 요약에 두 숫자가 실리는지 본다.
 
-        from src import main as main_module
+        소스 문자열만 뒤지면 누가 그 줄을 주석 처리해도 초록불이 된다 —
+        배선이 끊긴 걸 잡겠다는 검사가 배선이 끊겨도 통과하면 안 된다
+        (2026-08-05 독립검증 L-1).
+        """
+        from unittest.mock import MagicMock, patch
 
-        src = inspect.getsource(main_module)
-        assert 'summary["rank_fallback_boxes"]' in src
-        assert 'summary["rank_mismatch_boxes"]' in src
-        assert "reset_rank_signals()" in src
+        from src.crawler import CrawlerError
+
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr("src.main.SPREADSHEET_ID", "fake_id")
+        monkeypatch.setattr(
+            "src.main.SERVICE_ACCOUNT_JSON",
+            '{"type":"service_account","client_email":"x@x.iam.gserviceaccount.com",'
+            '"private_key":"-----BEGIN PRIVATE KEY-----\\nFAKE\\n-----END PRIVATE KEY-----\\n",'
+            '"token_uri":"https://oauth2.googleapis.com/token"}',
+        )
+
+        mock_client = MagicMock()
+        mock_client.load_all_data_tabs.return_value = {
+            "샴푸 카외": [
+                {
+                    "_row": 2,
+                    "_tab": "샴푸 카외",
+                    "키워드": "kw1",
+                    "링크": "https://cafe.naver.com/cosmania/111",
+                    "노출영역": "AB",
+                }
+            ]
+        }
+        mock_client.write_results.return_value = 0
+        mock_client.write_timestamp.return_value = None
+
+        mock_crawler = MagicMock()
+        mock_crawler.warmup.return_value = None
+        mock_crawler.fetch_search.side_effect = CrawlerError("dummy = skip")
+
+        with patch("src.main.SheetsClient", return_value=mock_client), patch(
+            "src.main.Crawler", return_value=mock_crawler
+        ):
+            from src.main import run_cycle
+
+            summary = run_cycle()
+
+        assert "rank_fallback_boxes" in summary, "요약에 신호가 안 실린다 = 배선이 끊겼다"
+        assert "rank_mismatch_boxes" in summary
 
 
 class TestSplitBundleIsDetectable:

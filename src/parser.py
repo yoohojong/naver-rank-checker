@@ -947,11 +947,17 @@ def _items_by_card(box) -> tuple[list[list[str]], bool]:
             rank_signals["fallback_boxes"] += 1
             print(f"    [CARD_FALLBACK] DOM 칸을 못 읽어 출처 묶기로 계산 ({len(runs)}칸)")
         return runs, False
-    if len(cards) != len(runs):
-        rank_signals["mismatch_boxes"] += 1
+    gap = len(cards) - len(runs)
+    if gap:
+        # 차이 1 = 같은 카페가 이웃한 별도 칸 2개 = 평범한 검색 결과다
+        # (2026-08-05 '닭살피부바디워시' 실측으로 정상 확정). 그것까지 세면 이 숫자가
+        # 매 회차 켜져 있어 아무도 안 보게 된다 — 신호를 못 믿게 만드는 게 이 사고의 뿌리다.
+        # 그 사유로 설명되지 않는 차이(2 이상)만 '확인 필요' 로 센다.
+        if gap >= 2:
+            rank_signals["mismatch_boxes"] += 1
         print(
-            f"    [CARD_MISMATCH] DOM 칸 {len(cards)} ≠ 출처 묶기 {len(runs)} "
-            f"— 네이버 화면 구조가 바뀌었는지 확인 필요"
+            f"    [CARD_MISMATCH] DOM 칸 {len(cards)} ≠ 출처 묶기 {len(runs)}"
+            + ("" if gap >= 2 else " (차이 1 — 같은 카페 이웃 칸으로 설명됨)")
         )
     return cards, True
 
