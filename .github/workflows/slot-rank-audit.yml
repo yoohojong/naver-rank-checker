@@ -1,0 +1,96 @@
+name: 구좌순위 화면대조 감사
+
+# 목적: 시스템이 매긴 카페 구좌순위가 '사람이 화면에서 세는 순서' 와 같은지 매일 대조한다.
+#
+# 왜 필요한가 (2026-08-05):
+#   사장님이 '약산성샴푸' 를 직접 검색해 우리 글이 2등인 걸 보셨는데 시트엔 3등이었다.
+#   네이버가 같은 카페 글 여러 개를 화면 한 칸에 묶는데 파서가 링크 개수대로 세면서
+#   순위가 밀린 것. 84일(2026-05-13~08-05)간 아무도 못 잡은 이유 = 검사가 전부
+#   '찾았는가' 만 보고 '숫자가 화면과 같은가' 는 안 봤기 때문.
+#   그 눈을 만들어 놓고 사람이 생각날 때만 돌리면, 다음에도 사장님이 먼저 발견하시게 된다.
+#
+# 격리 원칙:
+#   - rank-check 와 완전히 독립. 시간대도 겹치지 않게 잡음(rank-check = KST 00/06/12/18시).
+#   - **시트 읽기 전용.** 어떤 시트도 수정하지 않는다.
+#   - 어긋남이 나오면 job 을 실패로 표시한다 = Actions 화면에 빨간불.
+#     텔레그램 경보는 붙이지 않았다(사장님께 시험 경보를 울리지 않는다는 규칙).
+
+on:
+  schedule:
+    # KST 10:30 = UTC 01:30 — 아침 정기검사(KST 06시) 가 끝난 뒤, 낮 검사(12시) 전
+    - cron: "30 1 * * *"
+  workflow_dispatch:
+    inputs:
+      tab:
+        description: "검사할 탭 (비우면 샴푸·바디워시·두드러기 전부)"
+        required: false
+        default: ""
+        type: string
+      limit:
+        description: "앞 N개만 검사 (0 = 전부)"
+        required: false
+        default: "0"
+        type: string
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  slot-rank-audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    continue-on-error: true   # 이 job 실패가 순위체킹·아카이빙에 영향 없음
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python 3.13
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install dependencies
+        shell: bash
+        run: pip install -r requirements.txt
+
+      - name: 구좌순위 화면대조
+        id: audit
+        shell: bash
+        env:
+          SPREADSHEET_ID: ${{ secrets.SPREADSHEET_ID }}
+          SERVICE_ACCOUNT_JSON: ${{ secrets.SERVICE_ACCOUNT_JSON }}
+          PYTHONIOENCODING: "utf-8"
+        run: |
+          ARGS=""
+          if [ -n "${{ github.event.inputs.tab }}" ]; then
+            ARGS="$ARGS --tab '${{ github.event.inputs.tab }}'"
+          fi
+          LIMIT="${{ github.event.inputs.limit }}"
+          if [ -n "$LIMIT" ] && [ "$LIMIT" != "0" ]; then
+            ARGS="$ARGS --limit $LIMIT"
+          fi
+          # 어긋남이 있으면 스크립트가 1 을 반환한다 → 이 step 이 실패 → 빨간불
+          eval python "scripts/audit/구좌순위_화면대조.py" $ARGS --out audit_result.csv
+
+      - name: 결과 파일 보관
+        if: always()
+        continue-on-error: true
+        uses: actions/upload-artifact@v4
+        with:
+          name: slot-rank-audit
+          path: audit_result.csv
+          retention-days: 30
+          if-no-files-found: ignore
+
+      - name: 자가치유 보고
+        if: always()
+        continue-on-error: true
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          WORKFLOW_FILE: slot-rank-audit.yml
+          PYTHONIOENCODING: utf-8
+        run: python scripts/자가치유.py --이름 "구좌순위 화면대조" --결과 ${{ job.status }} --크론 "30 1 * * *"
