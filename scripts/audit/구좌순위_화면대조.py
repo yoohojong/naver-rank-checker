@@ -90,53 +90,63 @@ def _post_links(node) -> list[str]:
     return out
 
 
+def _owner(url: str) -> str:
+    """이 글의 '주인'(카페/블로그) 식별자. cafe.naver.com/{slug}/{글번호} → cafe.naver.com/{slug}."""
+    parsed = urlparse(url)
+    parts = [s for s in parsed.path.split("/") if s]
+    host = _norm("https://" + parsed.netloc).rstrip("/")
+    return f"{host}/{parts[0]}" if parts else host
+
+
 def screen_cafe_slot(html: str, our_link: str) -> tuple[int | None, int | None, bool]:
-    """화면 칸 기준 (카페 구좌순위, 전체 칸순위, 구조를 읽었는가).
+    """화면 칸 기준 (카페 구좌순위, 전체 칸순위, 셀 수 있었는가).
 
-    파서를 쓰지 않고 DOM 에서 직접 센다 — 이것이 이 감사의 존재 이유다.
+    **파서와 다른 방법으로 센다** — 이것이 이 감사의 존재 이유다.
+      · 파서 = DOM 칸 구조(네이버 클래스 이름 기반)
+      · 감사 = 연속 같은 출처 묶기(클래스와 무관한 규칙)
+    두 방법이 같은 답을 내야 정상이다. 한쪽 가정이 무너지면 다른 쪽이 잡아낸다.
+    (2026-08-05 독립검증 지적: 예전 판은 파서 코드를 그대로 옮겨 적어, 가정이 깨지면
+     감사도 같이 눈을 감았다.)
+
     광고 칸은 글 링크가 없어(ader.naver.com) 자연히 빠진다.
-
-    세 번째 값 = 칸 구조를 신뢰할 수 있는가. 칸들이 박스 안 글을 다 덮지 못하면 False —
-    이때 '어긋남 없음' 으로 넘기면 감사가 파서와 같이 눈을 감는다(2026-08-05 독립검증 지적).
     """
     soup = BeautifulSoup(html, "html.parser")
-    structure_ok = False
+    counted_any = False
     for box in soup.select(".desktop_mode.api_subject_bx, .fds-default-mode.api_subject_bx"):
         h2 = box.find("h2")
         if h2 is None:
             continue  # h2 없는 박스 = AB = 박스 하나가 곧 한 칸이라 이 결함과 무관
-        # 파서가 보는 자리와 같은 자리를 봐야 비교가 성립한다. 박스 '선별' 규칙은
-        # 공유하고, '세는 방식' 만 독립으로 둔다 — 그게 이 감사의 독립성이다.
+        # 박스 '선별' 규칙만 파서와 맞춘다 — 같은 자리를 봐야 비교가 성립하기 때문.
+        # '세는 방식' 은 아래에서 독립으로 간다.
         h2_text = h2.get_text(strip=True)
         if any(p in h2_text for p in _POPULAR_SKIP_PATTERNS):
             continue  # 광고·이미지·AI·쇼핑
         if "인기글" not in h2_text and not _is_slot_block(box, h2_text):
             continue  # 네이버 편성 영역(메이트·브랜드 콘텐츠·뉴스·숏텐츠) = 구좌 아님
-        containers = box.select("div[class*='fds-ugc']")
-        if not containers:
+
+        links = _post_links(box)
+        if not links:
             continue
+        counted_any = True
+
+        # 연속 같은 출처 = 한 칸 (네이버가 같은 카페 글을 한 칸에 묶어 보여주기 때문)
         cafe_slot = 0
         card_idx = 0
-        seen: set[str] = set()
-        cards: list[list[str]] = []
-        for child in containers[0].find_all(recursive=False):
-            if "sds-comps-divider" in " ".join(child.get("class", [])):
-                continue
-            links = [u for u in _post_links(child) if _norm(u) not in seen]
-            if not links:
-                continue
-            seen.update(_norm(u) for u in links)
-            cards.append(links)
-        # 덮개 검사 — 칸이 박스 전체 글을 담았는가.
-        covered = seen == {_norm(u) for u in _post_links(box)}
-        structure_ok = structure_ok or covered
-        for links in cards:
-            card_idx += 1
-            if any("cafe.naver.com" in u for u in links):
-                cafe_slot += 1
-            if any(_norm(u) == _norm(our_link) for u in links):
-                return (cafe_slot, card_idx, covered)
-    return (None, None, structure_ok)
+        prev_owner = None
+        found_here = False
+        for url in links:
+            owner = _owner(url)
+            if owner != prev_owner:
+                card_idx += 1
+                if "cafe.naver.com" in url:
+                    cafe_slot += 1
+                prev_owner = owner
+            if _norm(url) == _norm(our_link):
+                found_here = True
+                break
+        if found_here:
+            return (cafe_slot, card_idx, True)
+    return (None, None, counted_any)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -213,10 +223,10 @@ def main(argv: list[str] | None = None) -> int:
         parsed = parse_search_result(html, None, link_set={link}).cafe_slot_rank
         screen, _card, structure_ok = screen_cafe_slot(html, link)
 
-        if not structure_ok:
-            # 감사 자신이 칸을 못 읽은 상태 = 파서도 같이 눈감았을 수 있다. 조용히 넘기지 않는다.
+        if not structure_ok and parsed is not None:
+            # 감사는 셀 자리를 못 찾았는데 파서만 값을 냈다 = 한쪽 가정이 무너진 신호.
             mismatch += 1
-            verdict = f"★칸 구조를 못 읽음(파서값 {parsed}) — 네이버 화면 구조가 바뀌었는지 확인 필요"
+            verdict = f"★감사가 셀 자리를 못 찾음(파서값 {parsed}) — 화면 구조 확인 필요"
         elif screen is None and parsed is not None:
             mismatch += 1
             verdict = f"★파서만 값을 냄(파서{parsed}, 화면엔 없음)"

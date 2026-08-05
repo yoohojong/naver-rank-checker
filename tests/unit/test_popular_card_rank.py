@@ -170,6 +170,54 @@ class TestStructureGuards:
         assert _extract_popular_cards(box) == []
 
 
+class TestFallbackIsAlsoCorrect:
+    """되돌리기가 '오답 생산기' 가 아님을 증명한다 (2026-08-05 사장님 지적).
+
+    사장님: "알리면 다야? 문제를 해결해야지."
+    화면 구조를 못 읽었을 때 옛 방식(링크 개수)으로 돌아가면, 되돌리기 자체가
+    사장님이 겪은 그 오류를 그대로 만들어낸다. 그래서 되돌림 계산을
+    '연속 같은 출처 = 한 칸' 으로 바꿨다 — 네이버 클래스 이름과 무관한 규칙이라
+    화면 구조가 바뀌어도 답이 유지된다.
+    """
+
+    def _break_dom(self, html: str) -> str:
+        """네이버가 클래스 이름을 전부 갈아엎은 상황을 만든다."""
+        return html.replace("fds-ugc", "zzz-renamed")
+
+    def test_answer_survives_dom_rename(self, load_fixture):
+        """화면 구조를 못 읽어도 답은 2등 그대로여야 한다 (예전엔 3등이 나왔다)."""
+        from bs4 import BeautifulSoup
+
+        from src.parser import _extract_popular_cards
+
+        html = self._break_dom(load_fixture(FIXTURE))
+        box = BeautifulSoup(html, "lxml").select_one(
+            ".desktop_mode.api_subject_bx, .fds-default-mode.api_subject_bx"
+        )
+        assert _extract_popular_cards(box) == [], "이 검사는 DOM 을 못 읽는 상황을 전제한다"
+
+        result = parse_search_result(html, None, link_set={OURS})
+        assert result.cafe_slot_rank == 2, "되돌림이 옛 오류(3등)를 되살렸다"
+
+    def test_bundled_second_post_still_same_slot_after_rename(self, load_fixture):
+        html = self._break_dom(load_fixture(FIXTURE))
+        result = parse_search_result(html, None, link_set={BUNDLED_SECOND})
+        assert result.cafe_slot_rank == 1
+
+    def test_owner_runs_matches_dom_cards_on_real_page(self, load_fixture):
+        """두 계산법이 실제 응답에서 같은 답을 낸다 — 서로를 검증할 수 있는 근거."""
+        from bs4 import BeautifulSoup
+
+        from src.parser import _extract_popular_cards, _owner_runs
+
+        box = BeautifulSoup(load_fixture(FIXTURE), "lxml").select_one(
+            ".desktop_mode.api_subject_bx, .fds-default-mode.api_subject_bx"
+        )
+        dom = _extract_popular_cards(box)
+        runs = _owner_runs(_extract_popular_items(box))
+        assert [sorted(c) for c in dom] == [sorted(c) for c in runs]
+
+
 class TestCardFallback:
     def test_unknown_structure_falls_back_to_link_units(self):
         """칸 구조를 못 읽는 HTML 이면 기존 링크 단위 방식으로 되돌아간다(정지 금지).

@@ -541,7 +541,7 @@ def _parse_smart_blocks(
 
         # 박스 안 항목 추출 (= 인기글과 동일 logic).
         # 2026-08-05 fix: 세는 단위 = 화면 칸 (같은 카페 글 묶음 칸 = 1칸).
-        cards, _fell_back = _items_by_card(box)
+        cards, _dom_ok = _items_by_card(box)
         cafe_count = 0
         for idx, card_urls in enumerate(cards, start=1):
             if any("cafe.naver.com" in u for u in card_urls):
@@ -678,7 +678,7 @@ def _parse_popular(
         # 2026-05-11 critic Major 2 fix: L = 박스 안 모든 항목 순위, M = 카페만 카운트.
         # 2026-08-05 사장님 지적 fix: 세는 단위 = 링크 → 화면 칸. 같은 카페 글 묶음 칸이
         # 2칸으로 세지며 아래 글 순위가 밀리던 것 차단(찾기 범위는 칸 안 모든 글 그대로).
-        cards, _fell_back = _items_by_card(box)
+        cards, _dom_ok = _items_by_card(box)
         cafe_count = 0
         for idx, card_urls in enumerate(cards, start=1):
             if any("cafe.naver.com" in u for u in card_urls):
@@ -820,20 +820,50 @@ def _extract_popular_cards(box) -> list[list[str]]:
     return cards
 
 
-def _items_by_card(box) -> tuple[list[list[str]], bool]:
-    """순위 계산 단위 목록 + 되돌림 여부.
+def _owner_runs(urls: list[str]) -> list[list[str]]:
+    """연속된 같은 출처(카페/블로그) 글을 한 칸으로 묶는다.
 
-    칸 구조를 읽으면 (칸 단위, False), 못 읽으면 (기존 링크 단위, True).
-    되돌릴 땐 반드시 흔적을 남긴다 — 이 결함이 15개월 안 잡힌 이유가 '틀렸다는 신호가
-    없었다' 인데, 되돌림이 조용하면 같은 일이 반복된다.
+    네이버 클래스 이름에 **전혀 의존하지 않는다** — 화면 구조가 바뀌어도 이 규칙은 남는다.
+    한 칸에는 한 출처의 글이 모여 나오고, 다음 칸은 다른 출처로 넘어가기 때문.
+
+    실측 검증(2026-08-05): 전 픽스처 + 그날 받은 실제 응답의 모든 인기글·스마트블록
+    박스에서 DOM 칸 구조와 **100% 일치**(불일치 0). 그래서 DOM 을 못 읽을 때의
+    대체 계산으로 쓸 수 있다.
     """
+    runs: list[list[str]] = []
+    for url in urls:
+        if runs and _owner_key(url) == _owner_key(runs[-1][0]):
+            runs[-1].append(url)
+        else:
+            runs.append([url])
+    return runs
+
+
+def _items_by_card(box) -> tuple[list[list[str]], bool]:
+    """순위 계산 단위 목록 + DOM 칸을 읽었는지 여부.
+
+    같은 것을 두 방식으로 센다:
+      ① DOM 칸 구조 — 실제 화면 그대로지만 네이버 클래스 이름에 의존한다.
+      ② 연속 같은 출처 묶기 — 클래스가 바뀌어도 살아남는다.
+    ①을 읽으면 ①, 못 읽으면 ②. 둘이 어긋나면 로그로 남긴다(조용한 오답 금지).
+
+    2026-08-05 2차 수정 이유: 그 전에는 ①을 못 읽으면 링크를 **개수대로** 세어
+    되돌리기 자체가 사장님이 겪은 그 오류를 그대로 만들어냈다. 되돌림이 오답
+    생산기이면 고친 게 아니다 — 그래서 되돌림 계산을 ②로 바꿨다.
+    """
+    flat = _extract_popular_items(box)
+    runs = _owner_runs(flat)
     cards = _extract_popular_cards(box)
-    if cards:
-        return cards, False
-    items = _extract_popular_items(box)
-    if items:
-        print("    [CARD_FALLBACK] 칸 구조를 못 읽어 링크 단위로 순위 계산 (화면과 어긋날 수 있음)")
-    return [[url] for url in items], True
+    if not cards:
+        if flat:
+            print(f"    [CARD_FALLBACK] DOM 칸을 못 읽어 출처 묶기로 계산 ({len(runs)}칸)")
+        return runs, False
+    if len(cards) != len(runs):
+        print(
+            f"    [CARD_MISMATCH] DOM 칸 {len(cards)} ≠ 출처 묶기 {len(runs)} "
+            f"— 네이버 화면 구조가 바뀌었는지 확인 필요"
+        )
+    return cards, True
 
 
 _JISIKIN_H2_PATTERNS = ("지식iN", "지식인", "지식 iN")
