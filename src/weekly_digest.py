@@ -51,7 +51,7 @@ def funnel_last_n_days(curr: dict, work_dates: set) -> tuple:
     """(worked, exposed): 작업일 ∈ work_dates 인 행 수 / 그중 현재 상위노출 수. 전 탭 합산.
 
     노출은 며칠 걸쳐 올라오므로 '어제'가 아닌 '지난 7일' 작업분을 누적 추적해
-    '작업이 노출로 바뀌고 있나'(헛수고 여부)를 본다.
+    '쓴 글이 실제로 뜨고 있나'(헛수고 여부)를 본다.
     """
     worked = exposed = 0
     for rows in (curr.get("tabs") or {}).values():
@@ -155,17 +155,17 @@ def build_weekly_text(
 
     # 날짜별 발행 → 상위노출 (사장님 2026-07-02: 날짜별·제품별 발행분과 그중 상위노출 수·비율)
     if breakdown:
-        L.append("[날짜별 발행 → 상위노출]")
+        L.append("[날짜별 쓴 글 → 그중 뜬 글]")
         for ds, per, (dw, de) in breakdown:
             pct = round(de / dw * 100) if dw else 0
             seg = " · ".join(
                 f"{tab_label(t)} {w}→{e}"
                 for t, (w, e) in per.items() if w
             )
-            L.append(f"   {ds}  발행 {dw} → 노출 {de} ({pct}%)   [{seg}]")
+            L.append(f"   {ds}  쓴 글 {dw} → 그중 뜬 글 {de} ({pct}%)   [{seg}]")
         tw = sum(b[2][0] for b in breakdown)
         te = sum(b[2][1] for b in breakdown)
-        L.append(f"   ── 주간 합계: 발행 {tw} → 상위노출 {te} ({round(te / tw * 100) if tw else 0}%)")
+        L.append(f"   ── 주간 합계: 쓴 글 {tw} → 그중 뜬 글 {te} ({round(te / tw * 100) if tw else 0}%)")
         L.append("")
 
     # 이번 주 한눈에
@@ -176,9 +176,9 @@ def build_weekly_text(
         L.append(f"   지금 노출: {now}개")
     if worked:
         pct = round(exposed / worked * 100)
-        L.append(f"   작업 → 노출: 지난 7일 {worked}개 작업 → {exposed}개 떴어요 ({pct}%)")
+        L.append(f"   쓴 글 → 뜬 글: 지난 7일 쓴 글 {worked}개 → {exposed}개 떴어요 ({pct}%)")
     else:
-        L.append("   작업 → 노출: 지난 7일 기록된 작업 없음")
+        L.append("   쓴 글 → 뜬 글: 지난 7일 쓴 글 기록 없음")
     L.append("")
 
     # 봐야 할 신호
@@ -196,7 +196,7 @@ def build_weekly_text(
         L.append("[지난주 대비 변화]")
         seg = []
         if kc.get("신규노출"):
-            seg.append(f"신규 노출 +{kc['신규노출']}")
+            seg.append(f"새로 뜬 글 +{kc['신규노출']}")
         if kc.get("오름"):
             seg.append(f"순위 상승 {kc['오름']}")
         if kc.get("내림"):

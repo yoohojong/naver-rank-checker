@@ -71,19 +71,19 @@ def _build_full_report(reports: list[TabReport], kst: str, status_line: str, tit
     L = [title, f"프로그램: {status_line}", ""]
 
     # ━━━ 발행 성과 그룹 ━━━ (① 날짜별 / ② 며칠만에 / 발행분 변화)
-    L.append("━━━ 발행 성과 (작업한 날 기준) ━━━")
+    L.append("━━━ 쓴 글이 얼마나 떴나 (글 쓴 날 기준) ━━━")
     if breakdown:
-        L.append("① 날짜별 발행 → 상위노출")
+        L.append("① 날짜별 쓴 글 → 그중 뜬 글")
         for ds, per, (dw, de) in breakdown:
             pct = round(de / dw * 100) if dw else 0
             seg = " · ".join(
                 f"{tab_label(t)} {w}→{e}"
                 for t, (w, e) in per.items() if w
             )
-            L.append(f"   {ds}  발행 {dw} → 상위노출 {de} ({pct}%)   [{seg}]")
+            L.append(f"   {ds}  쓴 글 {dw} → 그중 뜬 글 {de} ({pct}%)   [{seg}]")
         tw = sum(b[2][0] for b in breakdown)
         te = sum(b[2][1] for b in breakdown)
-        L.append(f"   ── 최근 7일 합계: 발행 {tw} → 상위노출 {te} ({round(te / tw * 100) if tw else 0}%)")
+        L.append(f"   ── 최근 7일 합계: 쓴 글 {tw} → 그중 뜬 글 {te} ({round(te / tw * 100) if tw else 0}%)")
         L.append("")
 
     # ② 노출 소요일 (발행 후 며칠 만에 떴나 — 지금 노출된 키워드 대상, 근사치=K스탬프 기준)
@@ -97,7 +97,7 @@ def _build_full_report(reports: list[TabReport], kst: str, status_line: str, tit
             parts.append(f"1~6일 {wk}")
         if over:
             parts.append(f"일주일+ {over}")
-        L.append(f"② 발행 후 며칠에 뜨나 (지금 뜬 {total_exp}개 중): " + " · ".join(parts) + " (개)")
+        L.append(f"② 글 쓰고 며칠 만에 뜨나 (지금 뜬 {total_exp}개 중): " + " · ".join(parts) + " (개)")
         L.append("")
 
     # ━━━ 지금 · 흐름 그룹 ━━━ (지금 개수+제품별 / 추세 / 발행분 변화)
@@ -124,10 +124,10 @@ def _build_full_report(reports: list[TabReport], kst: str, status_line: str, tit
 
     # [발행분 변화] 발행일별 코호트가 며칠 뒤 몇 개 떠 있나 (사장님 2026-07-07: 7/6 발행분의 변화)
     if cohort:
-        L.append("발행분 변화 — 발행한 날 글이 며칠 뒤 몇 개")
+        L.append("쓴 날짜별로, 그 글들이 며칠 뒤 몇 개나 떠 있나")
         for md, total, steps in cohort:
             seq = " → ".join(f"{lab} {n}개" for lab, n in steps)
-            L.append(f"   {md} 발행 {total}개  →  {seq}")
+            L.append(f"   {md} 쓴 글 {total}개  →  {seq}")
         L.append("")
 
     # ③ 어제 → 오늘 변화 (날짜 무관) + 정합: 노출 개수 변화를 완전 설명 (사장님 2026-07-07)
@@ -155,7 +155,7 @@ def _build_full_report(reports: list[TabReport], kst: str, status_line: str, tit
             else:
                 L.append(f"   삭제(글 사라짐): {total_del}개  ← 점검")
         if other_exit:
-            L.append(f"   기타 이탈(미노출/재검사 등): {other_exit}개")
+            L.append(f"   그 밖에 빠진 것(아직 못 뜸/재검사 등): {other_exit}개")
         if vanished:
             L.append(f"   사라진 행(줄 자체 삭제): {vanished}개")
         if kc.get("오름"):

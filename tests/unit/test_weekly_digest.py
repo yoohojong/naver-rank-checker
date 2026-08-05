@@ -100,9 +100,9 @@ def test_build_weekly_text_with_baseline():
     assert "카페외부 주간 총괄 · 6/17~6/23" in text
     assert "지금 노출: 2개" in text          # 인기글 + AB
     assert "지난주 1개" in text              # 어제 AB 1개만
-    assert "작업 → 노출: 지난 7일 1개 작업 → 1개 떴어요 (100%)" in text
+    assert "쓴 글 → 뜬 글: 지난 7일 쓴 글 1개 → 1개 떴어요 (100%)" in text
     assert "[지난주 대비 변화]" in text
-    assert "신규 노출 +1" in text and "순위 상승 1" in text
+    assert "새로 뜬 글 +1" in text and "순위 상승 1" in text
 
 
 def test_build_weekly_text_no_baseline():
@@ -112,7 +112,7 @@ def test_build_weekly_text_no_baseline():
     assert "지금 노출: 1개" in text
     assert "지난주" not in text              # baseline 없음 → 비교 문구 생략
     assert "[지난주 대비 변화]" not in text
-    assert "지난 7일 기록된 작업 없음" in text
+    assert "지난 7일 쓴 글 기록 없음" in text
 
 
 # ----- 날짜별 × 제품별 발행 → 상위노출 (사장님 2026-07-02) -----
@@ -145,6 +145,6 @@ def test_build_weekly_text_includes_breakdown_section():
     reports = diff_backups(None, curr)
     bd = daily_product_breakdown(curr, date(2026, 7, 2), 7)
     text = build_weekly_text(reports, (1, 1), "6/26~7/2", breakdown=bd)
-    assert "[날짜별 발행 → 상위노출]" in text
-    assert "7/1" in text and "발행 1 → 노출 1" in text
+    assert "[날짜별 쓴 글 → 그중 뜬 글]" in text
+    assert "7/1" in text and "쓴 글 1 → 그중 뜬 글 1" in text
     assert "주간 합계" in text

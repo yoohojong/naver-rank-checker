@@ -63,18 +63,18 @@ def test_morning_same_as_evening_except_header():
 
 
 def test_breakdown_section_renders_when_provided():
-    """2026-07-02: build_*_report 에 breakdown 주면 '[날짜별 발행 → 상위노출]' 섹션이 맨 위에.
+    """2026-07-02: build_*_report 에 breakdown 주면 '[날짜별 쓴 글 → 그중 뜬 글]' 섹션이 맨 위에.
     ('어제 한 작업 N→M' 1일 라인의 7일·제품별 업그레이드.)"""
     bd = [
         ("7/1", {"샴푸 카외": (5, 2), "바디워시 카외": (3, 1)}, (8, 3)),
         ("6/30", {"샴푸 카외": (4, 1), "바디워시 카외": (0, 0)}, (4, 1)),
     ]
     out = rb.build_evening_report([_shampoo()], "7/2", "정상", breakdown=bd)
-    assert "날짜별 발행 → 상위노출" in out
-    assert "7/1  발행 8 → 상위노출 3" in out
-    assert "샴푸 5→2" in out and "바디워시 3→1" in out
-    assert "6/30" in out and "샴푸 4→1" in out  # 발행0 제품(바디워시)은 생략
-    assert "최근 7일 합계: 발행 12 → 상위노출 4" in out
+    assert "날짜별 쓴 글 → 그중 뜬 글" in out
+    assert "7/1  쓴 글 8 → 그중 뜬 글 3" in out
+    assert "뽀얀샴푸 5→2" in out and "뽀얀바디워시 3→1" in out
+    assert "6/30" in out and "뽀얀샴푸 4→1" in out  # 발행0 제품(바디워시)은 생략
+    assert "최근 7일 합계: 쓴 글 12 → 그중 뜬 글 4" in out
     assert "[어제 한 작업]" not in out
 
 
@@ -125,7 +125,7 @@ def test_reconciliation_balances_and_line_correct():
     out = rb.build_evening_report(reports, "7/7", "정상")
     assert "── 정합: 어제 4 + 들어옴 2 − 나감 3 = 오늘 3" in out
     assert "새 키워드 노출(어제 없던 글): 1개" in out
-    assert "기타 이탈(미노출/재검사 등): 1개" in out
+    assert "그 밖에 빠진 것(아직 못 뜸/재검사 등): 1개" in out
     assert "사라진 행(줄 자체 삭제): 1개" in out
 
 
@@ -133,7 +133,7 @@ def test_lag_section_renders():
     """② 발행하고 며칠 만에 떴나 — 쉬운말·묶음(당일/1~6일/일주일+/애매)·합계."""
     lag = Counter({"당일": 139, "+1일": 3, "+2일": 2, "+3~6일": 1, "+7일+": 15, "음수(재노출)": 4})
     out = rb.build_evening_report([_shampoo()], "7/7", "정상", lag_dist=lag)
-    assert "② 발행 후 며칠에 뜨나 (지금 뜬 164개 중):" in out   # 139+3+2+1+15+4
+    assert "② 글 쓰고 며칠 만에 뜨나 (지금 뜬 164개 중):" in out   # 139+3+2+1+15+4
     assert "당일 139" in out
     assert "1~6일 6" in out                          # 3+2+1
     assert "일주일+ 15" in out
@@ -162,6 +162,6 @@ def test_cohort_section_renders():
         ("7/5", 68, [("당일", 14), ("1일뒤", 30), ("2일뒤", 28)]),
     ]
     out = rb.build_evening_report([_shampoo()], "7/7", "정상", cohort=cohort)
-    assert "발행분 변화" in out
-    assert "7/6 발행 62개  →  당일 39개 → 1일뒤 22개" in out
-    assert "7/5 발행 68개  →  당일 14개 → 1일뒤 30개 → 2일뒤 28개" in out
+    assert "그 글들이 며칠 뒤 몇 개나 떠 있나" in out
+    assert "7/6 쓴 글 62개  →  당일 39개 → 1일뒤 22개" in out
+    assert "7/5 쓴 글 68개  →  당일 14개 → 1일뒤 30개 → 2일뒤 28개" in out
