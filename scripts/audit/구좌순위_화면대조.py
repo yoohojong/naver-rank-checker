@@ -218,7 +218,7 @@ def main(argv: list[str] | None = None) -> int:
     crawler.warmup()
 
     rows: list[dict] = []
-    mismatch = notfound = failed = fallback_rows = 0
+    mismatch = notfound = failed = fallback_rows = outside = 0
     for i, t in enumerate(targets, 1):
         link = resolve_short_url(t["링크"]) if "naver.me" in t["링크"] else t["링크"]
         try:
@@ -231,6 +231,15 @@ def main(argv: list[str] | None = None) -> int:
 
         res = parse_search_result(html, None, link_set={link})
         parsed = res.cafe_slot_rank
+
+        if res.exposure_area.value == "AB":
+            # 대상 선정은 시트의 옛 기록으로 했는데 지금은 AB 구좌에 잡혔다.
+            # AB 는 박스 하나가 곧 한 칸이라 이 결함과 무관 = 검사할 것이 없다.
+            # 여기서 ★로 세면 헛경보가 되고, 헛경보는 진짜 경보를 못 믿게 만든다.
+            outside += 1
+            rows.append({**t, "파서구좌": parsed or "", "화면구좌": "", "판정": "대상 아님(지금은 AB 구좌)"})
+            continue
+
         if parsed is not None and not res.rank_from_dom_cards:
             # 파서도 화면 칸을 못 읽어 출처 묶기로 계산한 행 — 감사와 같은 방법이 되어
             # 이 대조는 서로를 검증하지 못한다. '일치' 로 넘기지 않고 따로 센다.
@@ -261,14 +270,17 @@ def main(argv: list[str] | None = None) -> int:
             print(f"  [{i}/{len(targets)}] {t['탭']} r{t['행']} {t['키워드']}: {verdict}")
 
     total = len(rows)
-    checked = total - notfound - failed
+    checked = total - notfound - failed - outside
     print(f"\n[감사 결과] 대상 {total} · 대조 {checked} · 어긋남 {mismatch} · "
-          f"검색에 안 잡힘 {notfound} · 검색실패 {failed}")
+          f"검색에 안 잡힘 {notfound} · 검색실패 {failed} · 대상 아님(AB) {outside}")
     if fallback_rows:
         print(f"\n⚠ 이 중 {fallback_rows}행은 파서도 화면 칸을 못 읽어 감사와 같은 방법으로 계산했습니다.")
         print("  = 그 행들의 '일치' 는 서로를 검증한 것이 아닙니다. 네이버 화면 구조 변경을 확인하세요.")
     if mismatch:
-        print("\n※ 어긋난 행이 있습니다 — 순위 세는 규칙이 화면과 벌어졌다는 뜻입니다.")
+        print("\n※ 어긋난 행이 있습니다 — 두 계산이 다른 답을 냈다는 뜻입니다. 확인하세요.")
+        print("  참고: 파서(화면 칸)가 감사(출처 묶기)보다 큰 값이면, 같은 카페가 이웃한 별도")
+        print("        칸 2개를 차지한 경우일 수 있습니다 — 그때는 파서 쪽이 맞습니다.")
+        print("        (2026-08-05 라이브 실측: '닭살피부바디워시' 에서 실제로 확인됨)")
         for r in rows:
             if str(r["판정"]).startswith("★"):
                 print(f"   {r['탭']} r{r['행']} {r['키워드']}: {r['판정']}")
