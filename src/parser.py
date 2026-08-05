@@ -541,8 +541,9 @@ def _parse_smart_blocks(
 
         # 박스 안 항목 추출 (= 인기글과 동일 logic).
         # 2026-08-05 fix: 세는 단위 = 화면 칸 (같은 카페 글 묶음 칸 = 1칸).
+        cards, _fell_back = _items_by_card(box)
         cafe_count = 0
-        for idx, card_urls in enumerate(_items_by_card(box), start=1):
+        for idx, card_urls in enumerate(cards, start=1):
             if any("cafe.naver.com" in u for u in card_urls):
                 cafe_count += 1
 
@@ -677,8 +678,9 @@ def _parse_popular(
         # 2026-05-11 critic Major 2 fix: L = 박스 안 모든 항목 순위, M = 카페만 카운트.
         # 2026-08-05 사장님 지적 fix: 세는 단위 = 링크 → 화면 칸. 같은 카페 글 묶음 칸이
         # 2칸으로 세지며 아래 글 순위가 밀리던 것 차단(찾기 범위는 칸 안 모든 글 그대로).
+        cards, _fell_back = _items_by_card(box)
         cafe_count = 0
-        for idx, card_urls in enumerate(_items_by_card(box), start=1):
+        for idx, card_urls in enumerate(cards, start=1):
             if any("cafe.naver.com" in u for u in card_urls):
                 cafe_count += 1
 
@@ -799,18 +801,39 @@ def _extract_popular_cards(box) -> list[list[str]]:
             cards.append(fresh)
     if not cards:
         return []
-    # 칸이 하나뿐인데 글이 여러 개 = 칸 구조를 못 읽은 것 → 기존 방식에 맡긴다.
-    if len(cards) == 1 and len(cards[0]) > 1:
+
+    # 안전장치 ① 덮개 — 칸들이 박스 안 글을 하나도 빠짐없이 담아야 한다.
+    # containers[0] 이 진짜 바깥 목록이 아니면(네이버가 클래스 이름을 부분만 바꾸는 일이
+    # 이미 있었다) 일부 글만 범위에 들어와, 노출된 글이 조용히 '미노출' 로 기록된다.
+    # 못 덮으면 칸을 못 읽은 것으로 보고 기존 방식에 맡긴다.
+    if seen_urls != {
+        (urlparse(u).netloc, urlparse(u).path.rstrip("/")) for u in _extract_popular_items(box)
+    }:
         return []
+
+    # 안전장치 ② 주인 — 화면 한 칸은 출처 하나다. 한 칸에 카페가 둘 이상이면 칸을 못 읽은 것.
+    # (개수로 판별하면 '한 칸에 같은 카페 글 2개' 인 진짜 묶음까지 옛 방식으로 되돌아가
+    #  고치려던 그 오류가 되살아난다.)
+    if any(len({_owner_key(u) for u in card}) > 1 for card in cards):
+        return []
+
     return cards
 
 
-def _items_by_card(box) -> list[list[str]]:
-    """순위 계산 단위 목록. 칸 구조를 읽으면 칸 단위, 못 읽으면 기존 링크 단위."""
+def _items_by_card(box) -> tuple[list[list[str]], bool]:
+    """순위 계산 단위 목록 + 되돌림 여부.
+
+    칸 구조를 읽으면 (칸 단위, False), 못 읽으면 (기존 링크 단위, True).
+    되돌릴 땐 반드시 흔적을 남긴다 — 이 결함이 15개월 안 잡힌 이유가 '틀렸다는 신호가
+    없었다' 인데, 되돌림이 조용하면 같은 일이 반복된다.
+    """
     cards = _extract_popular_cards(box)
     if cards:
-        return cards
-    return [[url] for url in _extract_popular_items(box)]
+        return cards, False
+    items = _extract_popular_items(box)
+    if items:
+        print("    [CARD_FALLBACK] 칸 구조를 못 읽어 링크 단위로 순위 계산 (화면과 어긋날 수 있음)")
+    return [[url] for url in items], True
 
 
 _JISIKIN_H2_PATTERNS = ("지식iN", "지식인", "지식 iN")

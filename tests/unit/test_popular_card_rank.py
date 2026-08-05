@@ -71,6 +71,105 @@ class TestPopularCardRank:
         assert len(_extract_popular_items(box)) > len(_extract_popular_cards(box))
 
 
+class TestSmartBlockSameFix:
+    """스마트블록 파서도 같은 칸 단위로 바뀌었다 — 인기글만 검사하면 반쪽이다.
+
+    실측 인기글 박스의 h2 만 스마트블록 이름으로 바꿔, 같은 DOM 구조가 스마트블록
+    경로로 흘렀을 때도 묶음 칸이 1칸으로 세어지는지 본다.
+    """
+
+    def _as_smart_block(self, html: str) -> str:
+        return html.replace("패션·미용 인기글", "이용자 두피케어").replace(
+            "<h2>인기글</h2>", "<h2>이용자 두피케어</h2>"
+        )
+
+    def test_bundle_counts_as_one_slot_in_smart_block(self, load_fixture):
+        html = self._as_smart_block(load_fixture(FIXTURE))
+        result = parse_search_result(html, None, link_set={OURS})
+        assert result.exposure_area == ExposureArea.SMART_BLOCK
+        assert result.cafe_slot_rank == 2
+
+    def test_bundled_second_post_matches_in_smart_block(self, load_fixture):
+        html = self._as_smart_block(load_fixture(FIXTURE))
+        result = parse_search_result(html, None, link_set={BUNDLED_SECOND})
+        assert result.matched_url is not None
+        assert result.cafe_slot_rank == 1
+
+
+class TestOtherMatchPaths:
+    """target_url 경로와 slug 화이트리스트 경로도 구조가 바뀌었다 — 같이 지킨다."""
+
+    def test_target_url_path_uses_card_unit(self, load_fixture):
+        result = parse_search_result(load_fixture(FIXTURE), OURS)
+        assert result.cafe_slot_rank == 2
+        assert result.integrated_rank == 2
+
+    def test_slug_whitelist_path_uses_card_unit(self, load_fixture):
+        result = parse_search_result(load_fixture(FIXTURE), None, cafe_slug_whitelist={"zzop"})
+        assert result.cafe_slot_rank == 2
+
+
+class TestStructureGuards:
+    """칸을 '읽었다고 착각' 하는 두 갈래를 막는다 (2026-08-05 독립검증 지적).
+
+    두 안전장치가 없으면:
+      · 덮개 안 됨 → 노출된 글이 조용히 '미노출' 로 기록된다(시트 빨강·재작업).
+      · 한 칸 = 여러 주인 → 칸을 잘못 읽은 채 순위를 매긴다.
+    """
+
+    def test_partial_container_rename_falls_back_not_unexposed(self, load_fixture):
+        """바깥 목록의 fds-ugc 이름만 바뀌어도 글을 놓치지 않는다.
+
+        네이버가 클래스 이름을 부분만 바꾸는 일은 이미 있었다
+        (fds-ugc-single-intention-item-list 대 …-rra). 그때 안쪽 묶음만 칸으로
+        잡히면 범위가 좁아져 우리 글이 사라진다 — 되돌려서라도 찾아내야 한다.
+        """
+        html = load_fixture(FIXTURE).replace("fds-ugc-single-intention-item-list", "xx-item-list")
+        result = parse_search_result(html, None, link_set={OURS})
+        assert result.exposure_area == ExposureArea.POPULAR, "노출된 글이 미노출로 기록됐다"
+        assert result.cafe_slot_rank is not None
+
+    def test_single_card_bundle_keeps_card_unit(self):
+        """칸이 하나여도 같은 카페 묶음이면 1칸으로 센다 (개수 휴리스틱이면 여기서 되살아난다)."""
+        from bs4 import BeautifulSoup
+
+        from src.parser import _extract_popular_cards
+
+        html = """
+        <div class="desktop_mode api_subject_bx"><h2>인기글</h2>
+          <div class="fds-ugc-single-intention-item-list">
+            <div class="fds-ugc-item">
+              <div class="fds-ugc-after-article-list">
+                <a href="https://cafe.naver.com/mycafe/111">글1</a>
+                <a href="https://cafe.naver.com/mycafe/222">글2</a>
+              </div>
+            </div>
+          </div>
+        </div>"""
+        box = BeautifulSoup(html, "lxml").select_one(".api_subject_bx")
+        cards = _extract_popular_cards(box)
+        assert len(cards) == 1, "같은 카페 묶음이 여러 칸으로 쪼개졌다"
+        assert len(cards[0]) == 2, "칸 안 두 글이 다 담겨야 매치가 유지된다"
+
+    def test_two_owners_in_one_card_falls_back(self):
+        """한 칸에 서로 다른 카페가 섞였다 = 칸을 잘못 읽은 것 → 되돌린다."""
+        from bs4 import BeautifulSoup
+
+        from src.parser import _extract_popular_cards
+
+        html = """
+        <div class="desktop_mode api_subject_bx"><h2>인기글</h2>
+          <div class="fds-ugc-single-intention-item-list">
+            <div class="fds-ugc-item">
+              <a href="https://cafe.naver.com/aaa/111">글1</a>
+              <a href="https://cafe.naver.com/bbb/222">글2</a>
+            </div>
+          </div>
+        </div>"""
+        box = BeautifulSoup(html, "lxml").select_one(".api_subject_bx")
+        assert _extract_popular_cards(box) == []
+
+
 class TestCardFallback:
     def test_unknown_structure_falls_back_to_link_units(self):
         """칸 구조를 못 읽는 HTML 이면 기존 링크 단위 방식으로 되돌아간다(정지 금지).
