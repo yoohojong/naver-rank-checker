@@ -14,6 +14,7 @@ on:
 permissions:
   actions: write   # gh run rerun 에 필요
   contents: read
+  checks: read     # 실패 사유(주석) 읽기 — 없으면 'not acquired by Runner' 문구를 못 본다
 
 jobs:
   watchdog:
@@ -32,9 +33,13 @@ jobs:
       RUN_ATTEMPT: ${{ github.event.workflow_run.run_attempt }}
 
     steps:
-      # ★2026-08-06: 재시도를 **맨 앞으로**. 예전엔 checkout+python+pip 뒤에 있어서,
-      #   러너를 늦게 잡거나 설치가 길어지면 timeout 10분에 걸려 'gh run rerun' 한 줄이
-      #   실행조차 안 됐다. gh 는 러너에 기본 설치돼 있어 준비가 필요 없다.
+      # ★2026-08-06: 재시도를 **맨 앞으로**. gh 는 러너에 기본 설치돼 있어 준비가 필요 없는데,
+      #   예전엔 checkout+python+pip 뒤에 있었다. 설치가 길어지면 timeout 10분에 걸려
+      #   'gh run rerun' 한 줄이 실행조차 못 하는 구조였다.
+      #   ※ 2026-08-07 정정: **08-06 사고는 이것 때문이 아니었다.** 그날 워치독 job 은
+      #     스텝이 0개 실행된 채 15분 02초 만에 cancelled 였다(run 31122290959 실측).
+      #     러너를 아예 못 받았으니 스텝 순서는 무관했다. 이 재배치는 다른 상황의 보험일 뿐,
+      #     진짜 구멍('고치는 장치가 고장 원인과 같은 러너에 매달려 있다')은 그대로 남아 있다.
       - name: 자동 재시도 (run_attempt == 1 일 때만)
         id: rerun_step
         if: ${{ github.event.workflow_run.run_attempt == 1 }}
@@ -44,26 +49,42 @@ jobs:
           echo "[WATCHDOG] run_attempt=1 — 1회 자동 재시도 시작 (run_id=${RUN_ID})"
           gh run rerun "${RUN_ID}" --repo "${GH_REPO}" --failed
 
-      # ★실패 사유 판별: 'GitHub 이 러너를 못 붙여서' 인가, 진짜 코드 실패인가.
-      #   전자는 우리 잘못이 아니고 다음 정기 회차(하루 8회)가 알아서 잇는다.
-      #   그걸 같은 톤으로 알리면 사장님이 진짜 경보까지 무시하게 된다
-      #   (2026-08-06: 러너 미배정으로 상노체크와 **워치독까지 같이** 죽었다).
+      # ★실패 사유 판별: 'GitHub 이 러너를 못 붙여서' 인가, 결제·한도인가, 진짜 코드 실패인가.
+      #   사유는 **말투만** 바꾼다. 어느 경우에도 알림을 생략하지 않는다(2026-08-07 리뷰 반영).
+      #   판별을 못 하면 cause=unknown → 평소 경보. 못 잰 것이 침묵이 되면 안 된다.
       - name: 실패 사유 판별
         id: cause
         continue-on-error: true
         shell: bash
         run: |
-          ann=$(gh api "repos/${GH_REPO}/actions/runs/${RUN_ID}/jobs" \
-                --jq '.jobs[].steps | length' 2>/dev/null | head -1 || echo "")
-          txt=$(gh run view "${RUN_ID}" --repo "${GH_REPO}" 2>/dev/null || echo "")
-          infra=0
-          case "$txt" in
-            *"not acquired by Runner"*|*"recent account payments"*|*"spending limit"*) infra=1 ;;
+          set -uo pipefail
+          # ★위 재시도(gh run rerun)가 **새 attempt** 를 만든다. 기본 조회는 최신 attempt 를
+          #   보므로, 그냥 조회하면 '방금 큐에 들어간 새 시도'(스텝 0)를 실패 원인으로 오독한다.
+          #   반드시 실패한 그 attempt 를 못박아 읽는다.
+          JOBS_API="repos/${GH_REPO}/actions/runs/${RUN_ID}/attempts/${RUN_ATTEMPT}/jobs"
+          # jobs 가 비면 max 가 null → -1. '0'(스텝 0개)과 구분해야 오판을 막는다.
+          steps=$(gh api "$JOBS_API" --jq '[.jobs[] | (.steps|length)] | max // -1' 2>/dev/null || echo "")
+          ids=$(gh api "$JOBS_API" --jq '.jobs[].id' 2>/dev/null || echo "")
+          if [ -z "$steps" ]; then
+            echo "cause=unknown" >> "$GITHUB_OUTPUT"
+            echo "[WATCHDOG] 사유 조회 실패 — unknown(=평소대로 알린다)"
+            exit 0
+          fi
+          msgs=""
+          for jid in $ids; do
+            m=$(gh api "repos/${GH_REPO}/check-runs/${jid}/annotations" \
+                --jq '.[].message' 2>/dev/null || echo "")
+            msgs="${msgs} ${m}"
+          done
+          cause=code
+          case "$msgs" in
+            *"spending limit"*|*"recent account payments"*) cause=billing ;;
+            *"not acquired by Runner"*|*"was not acquired"*) cause=runner ;;
           esac
-          # 스텝이 하나도 안 돈 것도 '시작조차 못 함' 신호
-          [ "$ann" = "0" ] && infra=1
-          echo "infra=$infra" >> "$GITHUB_OUTPUT"
-          echo "[WATCHDOG] 인프라성 실패=$infra (스텝수=$ann)"
+          # 주석을 못 읽었어도, 스텝이 한 개도 안 돌았으면 '시작조차 못 함' 은 사실이다.
+          if [ "$cause" = "code" ] && [ "$steps" = "0" ]; then cause=runner; fi
+          echo "cause=$cause" >> "$GITHUB_OUTPUT"
+          echo "[WATCHDOG] 사유=$cause (실행된 스텝수=$steps, attempt=${RUN_ATTEMPT})"
 
       - name: Checkout
         uses: actions/checkout@v6.0.2
@@ -97,6 +118,7 @@ jobs:
           echo "[WATCHDOG] 최근 연속 실패=$streak"
 
       - name: 텔레그램 알림 발송
+        id: notify
         if: always()
         continue-on-error: true
         shell: bash
@@ -106,8 +128,35 @@ jobs:
           # 재시도가 '실제로' 성공했을 때만 '재시도 중' 알림 — rerun 실패/skip 시 '사람 확인'(code-reviewer CRITICAL fix)
           RETRYING: ${{ steps.rerun_step.outcome == 'success' && '1' || '0' }}
           STREAK: ${{ steps.streak.outputs.streak || '0' }}
-          # 'GitHub 이 기계를 못 붙인' 실패인가. 1이면 우리 코드 문제가 아니다.
-          INFRA: ${{ steps.cause.outputs.infra || '0' }}
+          # 실패 사유. 말투만 바꾼다 — 어느 값이어도 알림은 나간다.
+          CAUSE: ${{ steps.cause.outputs.cause || 'unknown' }}
           PYTHONIOENCODING: 'utf-8'
+        # ★'|| true' 제거(2026-08-07): 이걸 붙여 두면 파이썬 준비가 깨져도 성공처럼 보여
+        #   아래 최후수단이 안 돈다 = 완전 침묵. continue-on-error 가 job 을 살리니 충분하다.
         run: |
-          ./.venv/bin/python -u scripts/notify_run_failure.py || true
+          ./.venv/bin/python -u scripts/notify_run_failure.py
+
+      # ★알림 통로 자체가 죽는 경우(PyPI 장애·setup-python 실패 등) 대비.
+      #   위 스텝은 checkout+파이썬+pip 을 거치므로 그 중 하나만 깨져도 사장님은 아무것도 못 받는다.
+      #   curl 은 러너 기본 도구라 준비가 필요 없다 — 통로를 하나 더 둔다.
+      - name: 알림 최후수단 (알림 스크립트가 못 돌았을 때만)
+        if: ${{ always() && steps.notify.outcome != 'success' }}
+        continue-on-error: true
+        shell: bash
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          set -uo pipefail
+          if [ -z "${TELEGRAM_BOT_TOKEN}" ] || [ -z "${TELEGRAM_CHAT_ID}" ]; then
+            echo "[WATCHDOG] 텔레그램 secret 없음 — 최후수단 건너뜀"
+            exit 0
+          fi
+          text=$(printf '%s\n%s' \
+            "🚨 상노 점검이 실패했고, 알림 스크립트조차 못 돌았습니다. 사람 확인이 필요해요." \
+            "${RUN_URL}")
+          curl -sS -m 15 -X POST \
+            "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+            -d chat_id="${TELEGRAM_CHAT_ID}" \
+            --data-urlencode "text=${text}" >/dev/null
+          echo "[WATCHDOG] 최후수단 통로로 발송함"

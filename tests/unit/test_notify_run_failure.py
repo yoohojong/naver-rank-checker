@@ -130,39 +130,111 @@ class TestMain:
         assert rc == 0
 
 
-class Test인프라성_실패는_다르게_알린다:
-    """GitHub 이 러너를 못 붙여 '시작조차 못 한' 실패 (2026-08-06).
+class Test실패_사유는_말투만_바꾼다:
+    """GitHub 이 실행할 기계를 못 붙여 '시작조차 못 한' 실패 (2026-08-06 실사고).
 
-    그날 상노 점검이 실패했고, 그걸 고치려던 워치독까지 **같은 이유로** 죽었다.
-    자동 재시도는 불발되고 사장님께 경보만 갔다. 그런데 이건 우리 코드 문제가 아니고
-    점검은 하루 8회 도니 다음 회차가 알아서 잇는다(실측 최근 20회 중 19회 성공).
+    그날 상노 점검이 실패했고, 그걸 고치려던 워치독까지 **같은 이유로** 죽었다
+    (워치독 job 은 스텝 0개로 15분 02초 만에 cancelled — run 31122290959 실측).
 
-    코드 실패와 같은 톤으로 알리면 사장님이 진짜 경보까지 무시하게 된다 —
-    이 파일이 이미 막으려던 '9일 침묵' 과 같은 병이다.
+    ★2026-08-07: 처음엔 '1회면 알리지 않는다'로 만들었다가 독립 리뷰에서 뒤집혔다.
+      기계 미배정은 드문드문 오기 때문에 연속 2회가 거의 안 생기고, 연속 수 계산이
+      실패하면 0으로 떨어져 또 침묵한다 — '안 알림'이 사실상 기본값이 되어 있었다.
+      그래서 **사유는 침묵 여부가 아니라 말투만 바꾼다.** 여기 검사들이 그걸 지킨다.
     """
 
-    def test_한_번뿐이면_알리지_않는다(self):
-        msg = build_failure_alert(run_url="u", attempt=1, retrying=False, streak=1, infra=True)
-        assert msg == ""
+    def test_어떤_조합에서도_침묵하지_않는다(self):
+        """★이 검사가 이 파일의 핵심이다. 빈 메시지 = 사장님이 아무것도 못 받음."""
+        for cause in ("", "code", "unknown", "runner", "billing", "이상한값"):
+            for streak in (0, 1, 2, 3, 5, 9):
+                for retrying in (True, False):
+                    msg = build_failure_alert(run_url="u", attempt=1, retrying=retrying,
+                                              streak=streak, cause=cause)
+                    assert msg, f"침묵했다: cause={cause} streak={streak} retrying={retrying}"
 
-    def test_이어지면_알린다(self):
-        msg = build_failure_alert(run_url="u", attempt=1, retrying=False, streak=2, infra=True)
-        assert msg != ""
+    def test_기계_미배정은_1회여도_알린다(self):
+        msg = build_failure_alert(run_url="u", attempt=1, retrying=False, streak=1, cause="runner")
         assert "기계를 못 붙임" in msg
         assert "우리 코드 문제 아님" in msg
 
+    def test_기계_미배정_1회는_조치가_필요없다고_말한다(self):
+        """다음 회차가 잇는다 — 사장님이 뭘 해야 하는 것처럼 읽히면 안 된다."""
+        msg = build_failure_alert(run_url="u", attempt=1, retrying=False, streak=1, cause="runner")
+        assert "조치는 필요 없어요" in msg
+        assert "사람 확인이 필요" not in msg
+
+    def test_기계_미배정도_이어지면_톤이_올라간다(self):
+        msg = build_failure_alert(run_url="u", attempt=1, retrying=False, streak=3, cause="runner")
+        assert "3회 연속" in msg
+        assert "확인이 필요해요" in msg
+
+    def test_결제_한도는_1회여도_사람을_부른다(self):
+        """저절로 안 낫는다 — 기계 미배정과 같은 통에 넣으면 안 된다."""
+        msg = build_failure_alert(run_url="u", attempt=1, retrying=False, streak=1, cause="billing")
+        assert "결제" in msg
+        assert "확인이 필요해요" in msg
+        assert "조치는 필요 없어요" not in msg
+
     def test_진짜_코드_실패는_그대로_알린다(self):
-        """과잉 침묵 금지 — 인프라가 아니면 예전대로 경보가 나가야 한다."""
-        msg = build_failure_alert(run_url="u", attempt=2, retrying=False, streak=1, infra=False)
-        assert msg != ""
+        """과잉 완화 금지 — 사유가 아니면 예전대로 경보가 나가야 한다."""
+        msg = build_failure_alert(run_url="u", attempt=2, retrying=False, streak=1, cause="code")
         assert "사람 확인" in msg
 
-    def test_인프라여도_재시도중_문구를_덮어쓴다(self):
-        """시작조차 못 했으면 '재시도 중' 이 아니라 인프라 문구가 맞다."""
-        msg = build_failure_alert(run_url="u", attempt=1, retrying=True, streak=3, infra=True)
+    def test_사유를_모르면_평소대로_알린다(self):
+        """판별 실패가 침묵이 되면 안 된다(fail-closed)."""
+        for cause in ("", "unknown", "알수없음"):
+            msg = build_failure_alert(run_url="u", attempt=2, retrying=False,
+                                      streak=1, cause=cause)
+            assert "사람 확인" in msg, f"cause={cause} 에서 평소 경보가 사라졌다"
+
+    def test_시작조차_못_했으면_재시도중_문구를_덮어쓴다(self):
+        msg = build_failure_alert(run_url="u", attempt=1, retrying=True, streak=3, cause="runner")
         assert "기계를 못 붙임" in msg
 
     def test_기본값은_기존_동작(self):
-        """infra 인자를 안 주면 예전과 똑같아야 한다(회귀 방지)."""
-        assert build_failure_alert(run_url="u", attempt=1, retrying=True) != ""
-        assert build_failure_alert(run_url="u", attempt=2, retrying=False) != ""
+        """cause 인자를 안 주면 예전과 똑같아야 한다(회귀 방지)."""
+        assert "자동 재시도" in build_failure_alert(run_url="u", attempt=1, retrying=True)
+        assert "사람 확인" in build_failure_alert(run_url="u", attempt=2, retrying=False)
+
+
+class Test환경변수_배선이_살아있는가:
+    """★순수 함수만 검사하면 배선이 끊겨도 전부 초록이다(2026-08-07 리뷰 지적).
+
+    실제로 `cause = os.environ.get("CAUSE",...)` 를 `cause = ""` 로 바꿔도 검사가
+    전부 통과했다. main() 이 env 를 읽어 실제로 다른 메시지를 보내는지 여기서 본다.
+    """
+
+    def _send(self, env: dict) -> str:
+        base = {"RUN_URL": "https://x/1", "RUN_ATTEMPT": "1", "RETRYING": "0",
+                "STREAK": "1", "CAUSE": "", "TELEGRAM_BOT_TOKEN": "", "TELEGRAM_CHAT_ID": ""}
+        base.update(env)
+        sent = []
+        with mock.patch.dict(os.environ, base, clear=False):
+            with mock.patch("scripts.notify_run_failure.send_report",
+                            side_effect=lambda t: sent.append(t)):
+                rc = main()
+        assert rc == 0
+        assert len(sent) == 1, f"발송이 1건이 아니다({len(sent)}건) — 침묵했거나 중복 발송"
+        return sent[0]
+
+    def test_CAUSE_runner_가_메시지에_반영된다(self):
+        assert "기계를 못 붙임" in self._send({"CAUSE": "runner"})
+
+    def test_CAUSE_billing_이_메시지에_반영된다(self):
+        assert "결제" in self._send({"CAUSE": "billing"})
+
+    def test_CAUSE_없으면_평소_경보(self):
+        assert "사람 확인" in self._send({"CAUSE": ""})
+
+    def test_CAUSE_unknown_도_평소_경보(self):
+        assert "사람 확인" in self._send({"CAUSE": "unknown"})
+
+    def test_대소문자_공백이_섞여도_읽는다(self):
+        """워크플로 출력이 ' Runner\\n' 처럼 와도 분류가 살아야 한다."""
+        assert "기계를 못 붙임" in self._send({"CAUSE": "  RUNNER  "})
+
+    def test_STREAK_가_메시지에_반영된다(self):
+        assert "4회 연속" in self._send({"CAUSE": "runner", "STREAK": "4"})
+
+    def test_STREAK_를_못_재도_알린다(self):
+        """연속 수 계산 스텝이 실패해 빈 값이 와도 침묵하면 안 된다."""
+        assert self._send({"CAUSE": "runner", "STREAK": ""})
