@@ -39,20 +39,22 @@ def _사유판별_셸() -> str:
     raise AssertionError("워크플로에서 id=cause 스텝이 사라졌다")
 
 
-def _가짜gh(*, steps: str, annotation: str, jobs_api_실패: bool = False) -> str:
+def _가짜gh(*, steps: str, annotation: str, jobs_api_실패: bool = False,
+            주석_실패: bool = False) -> str:
     """gh 를 흉내내는 **셸 함수**. 호출된 URL 을 calls.log 에 남긴다.
 
     PATH 에 파일을 두는 방식은 윈도우 Git Bash 가 실제 gh.exe 를 먼저 집어 안 통했다.
     함수는 PATH 조회보다 우선하므로 어디서든 확실히 가로챈다.
     """
     실패 = "return 1" if jobs_api_실패 else ":"
+    주석 = "return 1" if 주석_실패 else ":"
     return (
         "gh() {\n"
         '  echo "$@" >> "$FAKE_GH_LOG"\n'
         '  case "$*" in\n'
         f'    *"/jobs"*steps*) {실패}; printf "%s\\n" "{steps}" ;;\n'
         f'    *"/jobs"*.id*) {실패}; printf "%s\\n" "$FAKE_JOB_IDS" ;;\n'
-        f'    *annotations*) printf "%s\\n" "{annotation}" ;;\n'
+        f'    *annotations*) {주석}; printf "%s\\n" "{annotation}" ;;\n'
         "    *) return 1 ;;\n"
         "  esac\n"
         "}\n"
@@ -60,7 +62,7 @@ def _가짜gh(*, steps: str, annotation: str, jobs_api_실패: bool = False) -> 
 
 
 def _돌린다(tmp_path, *, steps="0", annotation="", attempt="1",
-            job_ids="111", jobs_api_실패=False) -> tuple:
+            job_ids="111", jobs_api_실패=False, 주석_실패=False) -> tuple:
     """(cause, gh 가 호출된 URL 목록) 반환."""
     out = tmp_path / "gh_out"
     log = tmp_path / "calls.log"
@@ -80,7 +82,8 @@ def _돌린다(tmp_path, *, steps="0", annotation="", attempt="1",
     # GitHub Actions 의 shell: bash 기본값과 같은 옵션으로 돌린다(-e 포함).
     script.write_text(
         "set -eo pipefail\n"
-        + _가짜gh(steps=steps, annotation=annotation, jobs_api_실패=jobs_api_실패)
+        + _가짜gh(steps=steps, annotation=annotation, jobs_api_실패=jobs_api_실패,
+                  주석_실패=주석_실패)
         + _사유판별_셸(),
         encoding="utf-8",
     )
@@ -118,8 +121,8 @@ class Test사유를_제대로_가른다:
         cause, _ = _돌린다(tmp_path, steps="12", annotation="")
         assert cause == "code"
 
-    def test_주석을_못_읽어도_스텝0이면_runner(self, tmp_path):
-        """checks 권한이 없어 주석이 안 보이는 경우의 보루."""
+    def test_주석이_비어있고_스텝0이면_runner(self, tmp_path):
+        """주석 조회는 됐는데 내용이 없는 경우 — 스텝 0개면 '시작조차 못 함'이 맞다."""
         cause, _ = _돌린다(tmp_path, steps="0", annotation="")
         assert cause == "runner"
 
@@ -130,6 +133,16 @@ class Test못_읽으면_평소대로_알린다:
     def test_조회_실패면_unknown(self, tmp_path):
         cause, _ = _돌린다(tmp_path, jobs_api_실패=True)
         assert cause == "unknown", "조회가 깨졌는데 사유를 단정했다"
+
+    def test_주석을_못_읽으면_runner_로_단정하지_않는다(self, tmp_path):
+        """★결제 차단도 스텝 0개로 끝난다. 둘을 가르는 유일한 단서가 주석이다.
+
+        주석 API 가 막히거나(권한·403) 흔들리면 결제인지 러너인지 모른다.
+        그런데 모르는 채로 runner 라고 하면, 크레딧이 끊긴 상태에 대고
+        '다음 회차가 이어받습니다' 를 하루 8번 보내게 된다.
+        """
+        cause, _ = _돌린다(tmp_path, steps="0", annotation="", 주석_실패=True)
+        assert cause == "unknown", "주석을 못 읽고서 러너로 단정했다 — 결제 차단을 놓친다"
 
     def test_잡이_비면_code(self, tmp_path):
         """jobs 가 빈 배열이면 max→null→-1. '스텝 0개'와 헷갈리면 안 된다."""

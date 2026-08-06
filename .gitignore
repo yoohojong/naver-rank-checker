@@ -56,3 +56,6 @@ cycle_summary.json
 # 발행 검수가 이유를 담아 스스로 알렸다는 표시(워크플로 중복 알림 방지)
 .geomsu_alerted
 geomsu.log
+
+# 기계가 남기는 실행 상태 — git 에 담지 않는다(상태 DB 안티패턴)
+.harness/last_skip_reason.txt

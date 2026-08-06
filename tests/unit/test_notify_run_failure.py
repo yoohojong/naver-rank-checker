@@ -67,13 +67,13 @@ class TestMain:
 
         captured_calls = []
 
-        def fake_send_report(text: str) -> int:
+        def fake_send_telegram(text: str, **kw) -> bool:
             captured_calls.append(text)
-            return 0
+            return True
 
         with mock.patch.dict(os.environ, base_env, clear=False):
             with mock.patch(
-                "scripts.notify_run_failure.send_report", side_effect=fake_send_report
+                "scripts.notify_run_failure.send_telegram", side_effect=fake_send_telegram
             ):
                 rc = main()
 
@@ -120,12 +120,25 @@ class TestMain:
         rc, _ = self._run_main({"RUN_ATTEMPT": "bad"})
         assert rc == 0
 
-    def test_send_report_exception_nonblocking(self):
-        """send_report 가 예외를 던져도 main() 은 0 반환(비차단)."""
+    def test_발송이_터지면_1을_반환한다(self):
+        """★예외를 삼켜 0 을 돌려주면 curl 최후수단이 안 돈다 = 완전 침묵(2026-08-07)."""
         with mock.patch.dict(os.environ, {"RUN_URL": "https://x", "RETRYING": "1"}):
             with mock.patch(
-                "scripts.notify_run_failure.send_report", side_effect=RuntimeError("boom")
+                "scripts.notify_run_failure.send_telegram", side_effect=RuntimeError("boom")
             ):
+                rc = main()
+        assert rc == 1, "발송이 터졌는데 성공으로 끝냈다 — 최후수단이 이어받지 못한다"
+
+    def test_한_통도_못_보내면_1을_반환한다(self):
+        """봇 토큰 회전·시크릿 삭제 — 이때 초록으로 끝나면 며칠을 모른다."""
+        with mock.patch.dict(os.environ, {"RUN_URL": "https://x", "RETRYING": "1"}):
+            with mock.patch("scripts.notify_run_failure.send_telegram", return_value=False):
+                rc = main()
+        assert rc == 1
+
+    def test_보냈으면_0을_반환한다(self):
+        with mock.patch.dict(os.environ, {"RUN_URL": "https://x", "RETRYING": "1"}):
+            with mock.patch("scripts.notify_run_failure.send_telegram", return_value=True):
                 rc = main()
         assert rc == 0
 
@@ -156,11 +169,16 @@ class Test실패_사유는_말투만_바꾼다:
         assert "기계를 못 붙임" in msg
         assert "우리 코드 문제 아님" in msg
 
-    def test_기계_미배정_1회는_조치가_필요없다고_말한다(self):
-        """다음 회차가 잇는다 — 사장님이 뭘 해야 하는 것처럼 읽히면 안 된다."""
+    def test_기계_미배정_1회는_사람을_부르지_않는다(self):
+        """다음 회차가 잇는 상황이다 — 지금 뭘 해야 하는 것처럼 읽히면 안 된다.
+
+        ★단 '조치는 필요 없다'고 단언하지도 않는다. 다음 회차가 실제로 돌았는지
+          확인하는 코드가 없어서, 확인 안 된 미래를 약속하면 잘못 안심시킨다.
+        """
         msg = build_failure_alert(run_url="u", attempt=1, retrying=False, streak=1, cause="runner")
-        assert "조치는 필요 없어요" in msg
         assert "사람 확인이 필요" not in msg
+        assert "조치는 필요 없" not in msg
+        assert "다시 알려드립니다" in msg
 
     def test_기계_미배정도_이어지면_톤이_올라간다(self):
         msg = build_failure_alert(run_url="u", attempt=1, retrying=False, streak=3, cause="runner")
@@ -205,12 +223,17 @@ class Test환경변수_배선이_살아있는가:
 
     def _send(self, env: dict) -> str:
         base = {"RUN_URL": "https://x/1", "RUN_ATTEMPT": "1", "RETRYING": "0",
-                "STREAK": "1", "CAUSE": "", "TELEGRAM_BOT_TOKEN": "", "TELEGRAM_CHAT_ID": ""}
+                "STREAK": "1", "CAUSE": "", "CONCLUSION": "failure",
+                "TELEGRAM_BOT_TOKEN": "", "TELEGRAM_CHAT_ID": ""}
         base.update(env)
         sent = []
+
+        def 받음(t, **kw):
+            sent.append(t)
+            return True
+
         with mock.patch.dict(os.environ, base, clear=False):
-            with mock.patch("scripts.notify_run_failure.send_report",
-                            side_effect=lambda t: sent.append(t)):
+            with mock.patch("scripts.notify_run_failure.send_telegram", side_effect=받음):
                 rc = main()
         assert rc == 0
         assert len(sent) == 1, f"발송이 1건이 아니다({len(sent)}건) — 침묵했거나 중복 발송"
@@ -238,3 +261,40 @@ class Test환경변수_배선이_살아있는가:
     def test_STREAK_를_못_재도_알린다(self):
         """연속 수 계산 스텝이 실패해 빈 값이 와도 침묵하면 안 된다."""
         assert self._send({"CAUSE": "runner", "STREAK": ""})
+
+    def test_CONCLUSION_이_failure_가_아니면_문구에_밝힌다(self):
+        """cancelled 로 끝난 점검도 이제 여기로 온다 — 뭉뚱그려 '실패'라 하면 안 된다."""
+        msg = self._send({"CONCLUSION": "cancelled"})
+        assert "중단됨" in msg
+
+    def test_CONCLUSION_이_failure_면_군더더기가_없다(self):
+        assert "중단됨" not in self._send({"CONCLUSION": "failure"})
+
+
+class Test하루치가_날아가는_지점에서는_사다리를_끝까지_올린다:
+    """★회귀 방지. cause=runner 를 넣으면서 기존 5연속 🔴 층이 사라져 있었다.
+
+    하루 8회 중 5회가 죽으면 그날 순위는 통째로 빈다. 순위는 그 시각에만 잴 수 있고
+    나중에 채워 넣지 못한다 — '이어지면 확인' 정도로 넘길 일이 아니다.
+    """
+
+    def test_5연속이면_runner_도_빨간불(self):
+        msg = build_failure_alert(run_url="u", attempt=1, retrying=False, streak=5, cause="runner")
+        assert "🔴" in msg
+        assert "수동 실행" in msg
+
+    def test_2연속은_아직_주황(self):
+        msg = build_failure_alert(run_url="u", attempt=1, retrying=False, streak=2, cause="runner")
+        assert "🟠" in msg
+
+    def test_1회는_노랑이고_미래를_단언하지_않는다(self):
+        """'조치는 필요 없어요' 는 확인 안 된 미래 약속이었다 — 잘못 안심시킨다."""
+        msg = build_failure_alert(run_url="u", attempt=1, retrying=False, streak=1, cause="runner")
+        assert "🟡" in msg
+        assert "조치는 필요 없" not in msg
+
+    def test_코드_실패_사다리는_그대로(self):
+        """cause 도입이 기존 층을 건드리지 않았는지."""
+        assert "🔴" in build_failure_alert(run_url="u", attempt=2, retrying=False, streak=5)
+        assert "🟠" in build_failure_alert(run_url="u", attempt=2, retrying=False, streak=3)
+        assert "🚨" in build_failure_alert(run_url="u", attempt=2, retrying=False, streak=1)
