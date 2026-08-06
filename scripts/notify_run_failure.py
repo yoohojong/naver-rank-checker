@@ -18,7 +18,8 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from src.notify import send_report  # noqa: E402
 
 
-def build_failure_alert(run_url: str, attempt: int, retrying: bool, streak: int = 0) -> str:
+def build_failure_alert(run_url: str, attempt: int, retrying: bool, streak: int = 0,
+                        infra: bool = False) -> str:
     """실패 알림 메시지 생성 (순수 함수 — 테스트 대상).
 
     P1a(2026-07-01) 연속실패 에스컬레이션: streak(최근 연속 실패 수)이 커질수록 심각도↑.
@@ -30,10 +31,22 @@ def build_failure_alert(run_url: str, attempt: int, retrying: bool, streak: int 
         attempt:  실패 run 의 run_attempt 번호.
         retrying: True → 자동 재시도 중 / False → 재시도도 실패, 사람 확인 필요.
         streak:   최근 연속 실패 run 수(워치독이 gh 이력으로 계산). 0=미상.
+        infra:    True → GitHub 이 러너를 못 붙여 '시작조차 못 한' 실패.
 
     Returns:
-        사장님용 한국어 텔레그램 메시지 문자열.
+        사장님용 한국어 텔레그램 메시지 문자열. 알릴 게 없으면 빈 문자열.
     """
+    # ★2026-08-06: GitHub 이 기계를 못 붙여 실패한 것은 **우리 코드 문제가 아니다.**
+    #   상노 점검은 하루 8회 도니 다음 회차가 알아서 잇는다(실측: 최근 20회 중 19회 성공).
+    #   그걸 코드 실패와 같은 톤으로 알리면, 사장님이 진짜 경보까지 무시하게 된다
+    #   — 이 파일이 이미 막으려던 '9일 침묵'과 같은 병이다.
+    #   그래서 한 번뿐이면 **알리지 않고**, 이어지면 그때 알린다(2연속부터).
+    if infra and streak < 2:
+        return ""
+    if infra:
+        return (f"🟠 상노 점검이 {streak}회 연속 시작조차 못 했습니다 "
+                f"(GitHub 이 실행할 기계를 못 붙임 — 우리 코드 문제 아님).\n"
+                f"이어지면 확인이 필요해요: {run_url}")
     if retrying:
         msg = (
             "⚠️ 상노 점검 실패 — 자동 재시도 중입니다.\n"
@@ -75,7 +88,14 @@ def main() -> int:
         if not run_url:
             run_url = "(링크 없음)"
 
-        msg = build_failure_alert(run_url=run_url, attempt=attempt, retrying=retrying, streak=streak)
+        infra = os.environ.get("INFRA", "0").strip() == "1"
+
+        msg = build_failure_alert(run_url=run_url, attempt=attempt, retrying=retrying,
+                                  streak=streak, infra=infra)
+        if not msg:
+            # 알릴 게 없다(1회짜리 인프라 실패). 침묵도 기록은 남긴다 — 조용히 넘기지 않는다.
+            print("[notify] GitHub 러너 미배정 1회 — 다음 회차가 잇는다. 경보 생략.")
+            return 0
         send_report(msg)
     except Exception as e:  # noqa: BLE001 — 토큰/URL 등 민감정보 로그 노출 금지
         print(f"[WATCHDOG-NOTIFY] 예외 — 비차단 반환(0): {type(e).__name__}")

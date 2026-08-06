@@ -32,6 +32,39 @@ jobs:
       RUN_ATTEMPT: ${{ github.event.workflow_run.run_attempt }}
 
     steps:
+      # ★2026-08-06: 재시도를 **맨 앞으로**. 예전엔 checkout+python+pip 뒤에 있어서,
+      #   러너를 늦게 잡거나 설치가 길어지면 timeout 10분에 걸려 'gh run rerun' 한 줄이
+      #   실행조차 안 됐다. gh 는 러너에 기본 설치돼 있어 준비가 필요 없다.
+      - name: 자동 재시도 (run_attempt == 1 일 때만)
+        id: rerun_step
+        if: ${{ github.event.workflow_run.run_attempt == 1 }}
+        continue-on-error: true
+        shell: bash
+        run: |
+          echo "[WATCHDOG] run_attempt=1 — 1회 자동 재시도 시작 (run_id=${RUN_ID})"
+          gh run rerun "${RUN_ID}" --repo "${GH_REPO}" --failed
+
+      # ★실패 사유 판별: 'GitHub 이 러너를 못 붙여서' 인가, 진짜 코드 실패인가.
+      #   전자는 우리 잘못이 아니고 다음 정기 회차(하루 8회)가 알아서 잇는다.
+      #   그걸 같은 톤으로 알리면 사장님이 진짜 경보까지 무시하게 된다
+      #   (2026-08-06: 러너 미배정으로 상노체크와 **워치독까지 같이** 죽었다).
+      - name: 실패 사유 판별
+        id: cause
+        continue-on-error: true
+        shell: bash
+        run: |
+          ann=$(gh api "repos/${GH_REPO}/actions/runs/${RUN_ID}/jobs" \
+                --jq '.jobs[].steps | length' 2>/dev/null | head -1 || echo "")
+          txt=$(gh run view "${RUN_ID}" --repo "${GH_REPO}" 2>/dev/null || echo "")
+          infra=0
+          case "$txt" in
+            *"not acquired by Runner"*|*"recent account payments"*|*"spending limit"*) infra=1 ;;
+          esac
+          # 스텝이 하나도 안 돈 것도 '시작조차 못 함' 신호
+          [ "$ann" = "0" ] && infra=1
+          echo "infra=$infra" >> "$GITHUB_OUTPUT"
+          echo "[WATCHDOG] 인프라성 실패=$infra (스텝수=$ann)"
+
       - name: Checkout
         uses: actions/checkout@v6.0.2
 
@@ -46,15 +79,6 @@ jobs:
           python -m venv .venv
           ./.venv/bin/python -m pip install --upgrade pip --quiet
           ./.venv/bin/python -m pip install -r requirements.txt --quiet
-
-      - name: 자동 재시도 (run_attempt == 1 일 때만)
-        id: rerun_step
-        if: ${{ github.event.workflow_run.run_attempt == 1 }}
-        continue-on-error: true
-        shell: bash
-        run: |
-          echo "[WATCHDOG] run_attempt=1 — 1회 자동 재시도 시작 (run_id=${RUN_ID})"
-          gh run rerun "${RUN_ID}" --repo "${GH_REPO}" --failed
 
       # P1a(2026-07-01): 최근 연속 실패 수 계산 → 알림 심각도 차등('9일 침묵' 방지).
       #   상태파일 없이 gh 실행이력으로 무상태 계산. 실패해도 streak=0(기존 문구) 폴백.
@@ -82,6 +106,8 @@ jobs:
           # 재시도가 '실제로' 성공했을 때만 '재시도 중' 알림 — rerun 실패/skip 시 '사람 확인'(code-reviewer CRITICAL fix)
           RETRYING: ${{ steps.rerun_step.outcome == 'success' && '1' || '0' }}
           STREAK: ${{ steps.streak.outputs.streak || '0' }}
+          # 'GitHub 이 기계를 못 붙인' 실패인가. 1이면 우리 코드 문제가 아니다.
+          INFRA: ${{ steps.cause.outputs.infra || '0' }}
           PYTHONIOENCODING: 'utf-8'
         run: |
           ./.venv/bin/python -u scripts/notify_run_failure.py || true

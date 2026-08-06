@@ -128,3 +128,41 @@ class TestMain:
             ):
                 rc = main()
         assert rc == 0
+
+
+class Test인프라성_실패는_다르게_알린다:
+    """GitHub 이 러너를 못 붙여 '시작조차 못 한' 실패 (2026-08-06).
+
+    그날 상노 점검이 실패했고, 그걸 고치려던 워치독까지 **같은 이유로** 죽었다.
+    자동 재시도는 불발되고 사장님께 경보만 갔다. 그런데 이건 우리 코드 문제가 아니고
+    점검은 하루 8회 도니 다음 회차가 알아서 잇는다(실측 최근 20회 중 19회 성공).
+
+    코드 실패와 같은 톤으로 알리면 사장님이 진짜 경보까지 무시하게 된다 —
+    이 파일이 이미 막으려던 '9일 침묵' 과 같은 병이다.
+    """
+
+    def test_한_번뿐이면_알리지_않는다(self):
+        msg = build_failure_alert(run_url="u", attempt=1, retrying=False, streak=1, infra=True)
+        assert msg == ""
+
+    def test_이어지면_알린다(self):
+        msg = build_failure_alert(run_url="u", attempt=1, retrying=False, streak=2, infra=True)
+        assert msg != ""
+        assert "기계를 못 붙임" in msg
+        assert "우리 코드 문제 아님" in msg
+
+    def test_진짜_코드_실패는_그대로_알린다(self):
+        """과잉 침묵 금지 — 인프라가 아니면 예전대로 경보가 나가야 한다."""
+        msg = build_failure_alert(run_url="u", attempt=2, retrying=False, streak=1, infra=False)
+        assert msg != ""
+        assert "사람 확인" in msg
+
+    def test_인프라여도_재시도중_문구를_덮어쓴다(self):
+        """시작조차 못 했으면 '재시도 중' 이 아니라 인프라 문구가 맞다."""
+        msg = build_failure_alert(run_url="u", attempt=1, retrying=True, streak=3, infra=True)
+        assert "기계를 못 붙임" in msg
+
+    def test_기본값은_기존_동작(self):
+        """infra 인자를 안 주면 예전과 똑같아야 한다(회귀 방지)."""
+        assert build_failure_alert(run_url="u", attempt=1, retrying=True) != ""
+        assert build_failure_alert(run_url="u", attempt=2, retrying=False) != ""
