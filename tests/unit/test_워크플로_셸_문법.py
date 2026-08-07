@@ -31,8 +31,37 @@ import yaml
 워크플로_폴더 = pathlib.Path(__file__).resolve().parents[2] / ".github/workflows"
 BASH = shutil.which("bash")
 
-대입 = re.compile(r"^\s*([^\s=;|&()<>#]+)=")
 비ASCII = re.compile(r"[^\x00-\x7f]")
+
+# ★줄 **어디서든** 대입을 찾는다. 처음엔 줄 시작만 봤는데, 그러면
+#   `...; 인자=""`, `then 인자=""`, `&& 인자=""`, `export 인자=`, `for 항목 in ...`
+#   이 전부 통과했다. 라이브 파일에 바로 그 모양(`then args="..."`)이 있어서,
+#   한 글자만 한글로 되돌리면 exit 127 로 죽는데 검사는 초록이었다.
+대입 = re.compile(
+    r'''(?:^|[;&|(){}]|\b(?:then|do|else|elif|export|local|declare|readonly|typeset)\s+|\s)'''
+    r'''([^\s=;|&()<>#"']+)=''')
+이름받는_명령 = re.compile(r'''\b(?:for|read|select)\s+([^\s;|&()<>#"']+)''')
+
+
+def _따옴표_주석_제거(line: str) -> str:
+    """따옴표 안 문자열과 주석을 지운다.
+
+    안 지우면 `--data-urlencode "text=상노 점검..."` 같은 정상 줄이 걸린다.
+    지우고 나면 남는 건 실제 셸 토큰뿐이다.
+    """
+    결과, i, n = [], 0, len(line)
+    while i < n:
+        c = line[i]
+        if c == "#":
+            break
+        if c in "\"'":
+            닫는 = line.find(c, i + 1)
+            i = n if 닫는 == -1 else 닫는 + 1
+            결과.append('""')
+            continue
+        결과.append(c)
+        i += 1
+    return "".join(결과)
 
 
 def _셸블록():
@@ -65,8 +94,10 @@ def test_셸_변수_이름은_ASCII다(파일, 스텝, run):
     """
     나쁜것 = []
     for i, line in enumerate(run.splitlines(), 1):
-        m = 대입.match(line)
-        if m and 비ASCII.search(m.group(1)):
+        벗긴것 = _따옴표_주석_제거(line)
+        이름들 = [m.group(1) for m in 대입.finditer(벗긴것)]
+        이름들 += [m.group(1) for m in 이름받는_명령.finditer(벗긴것)]
+        if any(비ASCII.search(x) for x in 이름들):
             나쁜것.append(f"{i}행: {line.strip()[:70]}")
     assert not 나쁜것, (
         f"{파일} / {스텝} 에 비ASCII 셸 변수 이름이 있다 — bash 가 명령으로 읽어 죽는다:\n"
@@ -84,3 +115,58 @@ def test_셸_문법이_성립한다(파일, 스텝, run):
     r = subprocess.run([BASH, "-n"], input=본문, capture_output=True,
                        text=True, encoding="utf-8", errors="replace")
     assert r.returncode == 0, f"{파일} / {스텝} 셸 문법 오류:\n{r.stderr}"
+
+
+# ── 관문 자체를 검사한다 ─────────────────────────────────────────────────────
+
+나쁜_줄 = [
+    '인자=""',
+    'echo hi; 인자=""',
+    'true && 인자=""',
+    'if true; then 인자=""; fi',
+    'if [ "$x" = "y" ]; then 링크="u"; fi',
+    'export 인자=""',
+    'local 인자=1',
+    'readonly 인자=1',
+    'read 값',
+    'export A=1 인자=2',
+    'for 항목 in a b; do echo x; done',
+    '인자=1 python x.py',
+]
+
+좋은_줄 = [
+    'args=""',
+    'if [ "${x}" = "true" ]; then args="--발송안함"; fi',
+    '--data-urlencode "text=상노 점검이 실패했습니다"',
+    'echo "가동확인=1"',
+    'link="https://x"',
+    "body=$(printf '%s' \"문구\")",
+    '# 인자= 는 주석이라 괜찮다',
+    'for jid in $ids; do echo $jid; done',
+    'python -u "scripts/가동확인.py" --모드 보고 $args',
+    'echo "[가동확인] 사유=$cause"',
+]
+
+
+def _걸리나(line: str) -> bool:
+    벗긴것 = _따옴표_주석_제거(line)
+    이름들 = [m.group(1) for m in 대입.finditer(벗긴것)]
+    이름들 += [m.group(1) for m in 이름받는_명령.finditer(벗긴것)]
+    return any(비ASCII.search(x) for x in 이름들)
+
+
+@pytest.mark.parametrize("line", 나쁜_줄)
+def test_관문이_죽는_줄을_잡는다(line):
+    """★1차 관문은 '줄 시작' 대입만 봐서 이 중 8종을 놓쳤다.
+
+    `; 인자=` `then 인자=` `&& 인자=` 는 전부 실제 bash 에서 exit 127 로 죽는다.
+    라이브 파일에 바로 그 모양(`then args="..."`)이 있어서, 한 글자만 한글로
+    되돌리면 워크플로가 죽는데 관문은 초록이었다.
+    """
+    assert _걸리나(line), f"bash 에서 죽는 줄을 놓쳤다: {line}"
+
+
+@pytest.mark.parametrize("line", 좋은_줄)
+def test_관문이_멀쩡한_줄을_안_잡는다(line):
+    """헛경보 금지 — 따옴표 안 한글과 주석은 정상이다."""
+    assert not _걸리나(line), f"멀쩡한 줄을 잡았다: {line}"

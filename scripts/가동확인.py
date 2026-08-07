@@ -43,12 +43,25 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from src.notify import send_telegram  # noqa: E402
 
+# ★화면 인코딩 때문에 경보가 죽지 않게. cp949 화면에서 print("🔴...") 가 터지면
+#   그 아래 send_telegram 까지 못 가서 **문자가 0통** 나간다(실측 재현).
+#   예약작업 인자의 -X utf8 에 기대면, 누가 예약작업을 다시 만드는 순간 조용히 사라진다.
+for _s in (sys.stdout, sys.stderr):
+    try:
+        _s.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+
 KST = timezone(timedelta(hours=9))
 회차_길이 = timedelta(hours=6)   # rank-check.yml cron '7,27 15,21,3,9 * * *' 과 한 몸
 기본_저장소 = "yoohojong/naver-rank-checker"
 점검_워크플로 = "rank-check.yml"
 보고_워크플로 = "가동확인.yml"
 조회_제한초 = 60   # gh 가 물려도 감시가 통째로 멈추지 않게
+# ★회차가 끝난 지 이만큼 지났는데 아직도 안 끝난 실행은 '안 돎'으로 본다.
+#   실측: run 31128005421 이 12시간 넘게 queued 였다. 보류로만 두면 판정 창이
+#   겹침 없이 지나가며 **영원히 사면**된다 — 하루 한 번만 판정하기 때문이다.
+보류_한계 = timedelta(hours=12)
 
 정상, 보류, 안돎 = "정상", "보류", "안돎"
 
@@ -82,8 +95,9 @@ def 최근_끝난_회차(지금: datetime, 개수: int = 4) -> list:
     return [현재 - 회차_길이 * (i + 1) for i in range(개수)][::-1]
 
 
-def 판정(실행들: list, 회차들: list) -> list:
+def 판정(실행들: list, 회차들: list, 지금: datetime = None) -> list:
     """회차마다 정상/보류/안돎. 실행들 = [{createdAt, conclusion, status}, ...]"""
+    지금 = 지금 or datetime.now(timezone.utc)
     결과 = []
     for 시작 in 회차들:
         끝 = 시작 + 회차_길이
@@ -99,7 +113,9 @@ def 판정(실행들: list, 회차들: list) -> list:
         # 08-07 06:00 실행이 9시간 넘게 queued 였다. 그걸 '안 돎'으로 읽으면 헛경보다.
         진행중 = [r for r in 속한것
                   if r.get("status") and r.get("status") != "completed"]
-        상태 = 정상 if 성공 else (보류 if 진행중 else 안돎)
+        # 아직 도는 중이어도 너무 오래됐으면 '안 돎'이다 — 무한 대기는 침묵과 같다.
+        너무_오래 = 지금.astimezone(KST) - 끝 > 보류_한계
+        상태 = 정상 if 성공 else (보류 if (진행중 and not 너무_오래) else 안돎)
         결과.append({
             "회차": 회차_라벨(시작), "시작": 시작,
             "성공": len(성공), "시도": len(속한것), "진행중": len(진행중),
@@ -121,7 +137,8 @@ def 최대_연속_결측(결과: list) -> int:
     """연속으로 몇 번 걸렀나 — 시트가 얼마나 옛것인지가 여기서 나온다."""
     최대 = 현재 = 0
     for r in 결과:
-        현재 = 현재 + 1 if r["상태"] == 안돎 else 0
+        # 보류도 '갱신 안 됨'이다 — 안돎만 세면 [안돎,보류,안돎] 을 12시간으로 낮잡는다.
+        현재 = 현재 + 1 if r["상태"] != 정상 else 0
         최대 = max(최대, 현재)
     return 최대
 
@@ -141,12 +158,13 @@ def _결측_설명(결과: list) -> str:
     if not 빠짐:
         return ""
     if len(빠짐) == len(결과):
-        return ("하루치가 통째로 걸렀습니다 — 그날 순위 기록이 안 남았습니다.\n"
+        return ("하루치를 통째로 걸렀습니다 — 그날 순위 기록이 안 남았을 수 있습니다.\n"
                 "→ 확인이 필요해요.")
     옛것 = (최대_연속_결측(결과) + 1) * 6
-    return (f"시트 숫자가 최대 {옛것}시간 옛것일 수 있습니다"
+    return (f"시트 숫자가 {옛것}시간 전 것일 수 있습니다"
             f"(원래는 6시간마다 갱신).\n"
-            "→ 그날 순위 기록 자체는 남아 있습니다. 다음 회차가 돌면 시트도 최신으로 돌아옵니다.")
+            "→ 그날 순위 기록은 남아 있을 가능성이 높습니다"
+            "(다른 회차가 그날 몫을 덮어씁니다). 다음 회차가 돌면 시트도 최신으로 돌아옵니다.")
 
 
 def build_report(결과: list) -> str:
@@ -154,12 +172,19 @@ def build_report(결과: list) -> str:
     산것 = [r for r in 결과 if r["상태"] == 정상]
     빠짐 = [r for r in 결과 if r["상태"] == 안돎]
     보류중 = [r for r in 결과 if r["상태"] == 보류]
-    머리 = "🟢" if not 빠짐 else ("🔴" if len(빠짐) >= 2 else "🟠")
+    # ★초록은 '네 번 다 정상'일 때만. 예전엔 빠짐만 봐서, 네 회차가 전부 큐에 갇히면
+    #   '0번 정상'인데도 🟢 가 나갔다(실측 재현). 아직 도는 중도 정상은 아니다.
+    if len(산것) == len(결과):
+        머리 = "🟢"
+    elif len(빠짐) >= 2 or not 산것:
+        머리 = "🔴"
+    else:
+        머리 = "🟠"
     줄 = f"{머리} 상노 점검 지난 하루: {len(결과)}번 중 {len(산것)}번 정상"
     if 보류중:
         줄 += f" (아직 도는 중 {len(보류중)}번)"
     if 빠짐:
-        줄 += "\n걸른 회차: " + ", ".join(r["회차"] for r in 빠짐)
+        줄 += "\n안 돈 점검: " + ", ".join(r["회차"] for r in 빠짐)
         줄 += "\n" + _결측_설명(결과)
     return 줄
 
@@ -171,7 +196,14 @@ def build_alert(결과: list, 보고통로: str = 정상) -> str:
     보고 통로(①)가 매일 한 줄을 보내 살아있음을 따로 증명하기 때문이다.
     """
     빠짐 = [r for r in 결과 if r["상태"] == 안돎]
+    산것 = [r for r in 결과 if r["상태"] == 정상]
     조각 = []
+    if not 산것 and not 빠짐:
+        # 전부 '아직 도는 중' — 정상이 하나도 없다. 조용히 넘기면 러너 기근 날 무음이 된다.
+        조각.append(
+            f"🔴 상노 점검이 {len(결과)}번 모두 시작만 하고 안 끝났습니다"
+            "(GitHub 이 실행할 기계를 못 붙이는 중일 수 있습니다).\n"
+            "→ 시트 숫자가 갱신되지 않고 있습니다. 확인이 필요해요.")
     if 빠짐:
         조각.append(
             f"🔴 상노 점검이 {len(빠짐)}번 안 돌았습니다 "
@@ -236,10 +268,12 @@ def 보고통로_상태(저장소: str, 지금: datetime) -> str:
         기록 = 실행이력(저장소, 보고_워크플로, 개수=5)
     except Exception:
         return "못읽음"
+    # ★'실행이 있었나'가 아니라 '성공했나'를 본다. 큐에 갇혔거나 실패한 보고는
+    #   문자를 한 통도 못 보낸다 — 그걸 '정상'이라 읽으면 보고·경보가 동시에 침묵한다.
     한계 = 지금 - timedelta(hours=26)
     for r in 기록:
         때 = _파싱(r.get("createdAt", ""))
-        if 때 and 때 >= 한계:
+        if 때 and 때 >= 한계 and r.get("conclusion") == "success":
             return 정상
     return 안돎
 
@@ -276,7 +310,7 @@ def main(argv=None) -> int:
             send_telegram(문구)
         return 1
 
-    결과 = 판정(실행, 회차들)
+    결과 = 판정(실행, 회차들, 지금)
     for r in 결과:
         print(f"[가동확인] {r['회차']} 시도={r['시도']} 성공={r['성공']} "
               f"진행중={r['진행중']} → {r['상태']}")

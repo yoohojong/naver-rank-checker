@@ -14,6 +14,7 @@
 ④ **배선**: 판정이 아무리 정확해도 문구까지·워크플로까지 이어지지 않으면 소용없다.
    ★1차 검증에서 배선 돌연변이 9종 중 8종이 통과했다 — 파이썬 배선 검사가 통째로 없었다.
 """
+import os
 import pathlib
 import re
 import subprocess
@@ -104,61 +105,65 @@ class Test세_가지_상태:
     def _회차4(self):
         return [_kst(8, 6, 6), _kst(8, 6, 12), _kst(8, 6, 18), _kst(8, 7, 0)]
 
+    # 마지막 회차가 끝난 직후. 시계를 안 주면 '지금'이 실제 현재라서
+    # 보류_한계(12시간)를 넘겨 전부 안돎이 된다 — 상태 구분 검사가 헛돈다.
+    지금 = _kst(8, 7, 7)
+
     def test_성공이_하나면_정상(self):
         실행 = [_실행(_kst(8, 6, 6, 7), "failure"), _실행(_kst(8, 6, 6, 27), "success")]
-        assert 판정(실행, self._회차4())[0]["상태"] == 정상
+        assert 판정(실행, self._회차4(), self.지금)[0]["상태"] == 정상
 
     def test_아직_도는_중이면_보류지_안돎이_아니다(self):
         """★실측: 08-07 06:00 실행이 9시간 넘게 queued 였다.
 
         그걸 '안 돎'으로 읽으면 헛경보가 나가고, 정작 그 실행은 나중에 성공한다.
         """
-        실행 = [_실행(_kst(8, 6, 6, 0), "", "queued")]
-        r = 판정(실행, self._회차4())[0]
+        실행 = [_실행(_kst(8, 7, 0, 5), "", "queued")]   # 방금 끝난 회차
+        r = 판정(실행, self._회차4(), self.지금)[3]
         assert r["상태"] == 보류, "큐에 갇힌 실행을 '안 돎'으로 읽었다 — 헛경보 난다"
         assert r["진행중"] == 1
 
     def test_실패했는데_다른_하나가_도는_중이면_보류(self):
-        실행 = [_실행(_kst(8, 6, 6, 7), "failure"), _실행(_kst(8, 6, 6, 27), "", "in_progress")]
-        assert 판정(실행, self._회차4())[0]["상태"] == 보류
+        실행 = [_실행(_kst(8, 7, 0, 7), "failure"), _실행(_kst(8, 7, 0, 27), "", "in_progress")]
+        assert 판정(실행, self._회차4(), self.지금)[3]["상태"] == 보류
 
     def test_다_끝났는데_성공이_없으면_안돎(self):
         실행 = [_실행(_kst(8, 6, 6, 7), "failure"), _실행(_kst(8, 6, 6, 27), "cancelled")]
-        assert 판정(실행, self._회차4())[0]["상태"] == 안돎
+        assert 판정(실행, self._회차4(), self.지금)[0]["상태"] == 안돎
 
     def test_기록이_아예_없으면_안돎(self):
         """★07-23·07-28 처럼 조용히 사라진 경우."""
-        결과 = 판정([], self._회차4())
+        결과 = 판정([], self._회차4(), self.지금)
         assert all(r["상태"] == 안돎 for r in 결과)
 
     def test_성공이_있으면_도는_게_있어도_정상(self):
         실행 = [_실행(_kst(8, 6, 6, 0)), _실행(_kst(8, 6, 6, 27), "", "queued")]
-        assert 판정(실행, self._회차4())[0]["상태"] == 정상
+        assert 판정(실행, self._회차4(), self.지금)[0]["상태"] == 정상
 
     def test_실행_건수로_세지_않는다(self):
         """★회차마다 1번씩만 돌아도 정상이다. 건수로 세면 헛경보가 난다."""
         실행 = [_실행(s + timedelta(minutes=7)) for s in self._회차4()]
-        assert all(r["상태"] == 정상 for r in 판정(실행, self._회차4()))
+        assert all(r["상태"] == 정상 for r in 판정(실행, self._회차4(), self.지금))
 
     def test_success_만_성공으로_친다(self):
         for 결론 in ("failure", "cancelled", "timed_out", "startup_failure", "skipped"):
             실행 = [_실행(_kst(8, 6, 6, 7), 결론)]
-            assert 판정(실행, self._회차4())[0]["상태"] == 안돎, f"{결론} 을 성공으로 읽었다"
+            assert 판정(실행, self._회차4(), self.지금)[0]["상태"] == 안돎, f"{결론} 을 성공으로 읽었다"
 
     def test_옆_회차_성공을_끌어오지_않는다(self):
         실행 = [_실행(_kst(8, 6, 6, 7))]
-        assert [r["상태"] for r in 판정(실행, self._회차4())] == [정상, 안돎, 안돎, 안돎]
+        assert [r["상태"] for r in 판정(실행, self._회차4(), self.지금)] == [정상, 안돎, 안돎, 안돎]
 
     def test_시간대_없는_기록도_안_터진다(self):
         결과 = 판정([{"createdAt": "", "conclusion": "success"}, {"conclusion": "success"}],
-                   self._회차4())
+                   self._회차4(), self.지금)
         assert all(r["상태"] == 안돎 for r in 결과)
 
     def test_created_at_스네이크도_읽는다(self):
         실행 = [{"created_at": _kst(8, 6, 6, 7).astimezone(timezone.utc)
                  .isoformat().replace("+00:00", "Z"),
                  "conclusion": "success", "status": "completed"}]
-        assert 판정(실행, self._회차4())[0]["상태"] == 정상
+        assert 판정(실행, self._회차4(), self.지금)[0]["상태"] == 정상
 
     def test_연속_결측을_센다(self):
         def 결과(상태들):
@@ -241,7 +246,8 @@ class Test보고통로_상태:
     def test_최근에_돌았으면_정상(self, monkeypatch):
         지금 = datetime(2026, 8, 7, 3, tzinfo=timezone.utc)
         monkeypatch.setattr(G, "실행이력", lambda *a, **k: [
-            {"createdAt": (지금 - timedelta(hours=2)).isoformat().replace("+00:00", "Z")}])
+            {"createdAt": (지금 - timedelta(hours=2)).isoformat().replace("+00:00", "Z"),
+             "conclusion": "success", "status": "completed"}])
         assert 보고통로_상태("o/r", 지금) == 정상
 
     def test_하루_넘게_안_돌았으면_안돎(self, monkeypatch):
@@ -296,23 +302,25 @@ class Test보고_문구:
     def test_보류는_따로_밝힌다(self):
         문구 = build_report(_결과([정상, 보류, 정상, 정상]))
         assert "아직 도는 중" in 문구
-        assert "🟢" in 문구, "아직 도는 중인 걸 실패로 물들이면 안 된다"
+        # 초록은 '전부 정상'일 때만. 아직 도는 중은 정상이 아니다(2026-08-07 정정).
+        assert "🟢" not in 문구
+        assert "🔴" not in 문구, "하나 도는 중인 걸 빨간불로 키우면 헛경보다"
 
     def test_일부_결측은_기록이_남아있다고_말한다(self):
         """★정정: 영구 기록은 하루 1벌이라(src/archive.py 날짜별 멱등)
         회차 하나 빠져도 그날 기록은 안 사라진다. '다시 못 잽니다'는 거짓말이었다."""
         문구 = build_report(_결과([정상, 안돎, 정상, 정상]))
-        assert "기록 자체는 남아 있습니다" in 문구
-        assert "안 남았습니다" not in 문구
-        assert "12시간 옛것" in 문구
+        assert "남아 있을 가능성이 높습니다" in 문구
+        assert "안 남았을 수 있습니다" not in 문구
+        assert "12시간 전 것" in 문구
 
     def test_연속으로_빠지면_더_옛것이라고_말한다(self):
         문구 = build_report(_결과([정상, 안돎, 안돎, 정상]))
-        assert "18시간 옛것" in 문구
+        assert "18시간 전 것" in 문구
 
     def test_하루가_통째로_빠져야_기록이_없다고_말한다(self):
         문구 = build_report(_결과([안돎] * 4))
-        assert "안 남았습니다" in 문구
+        assert "안 남았을 수 있습니다" in 문구
         assert "확인이 필요해요" in 문구
 
     def test_정상이면_군더더기가_없다(self):
@@ -457,3 +465,140 @@ class Test워크플로_배선:
     def _스텝(wf):
         (잡,) = wf["jobs"].values()
         return 잡["steps"]
+
+
+# ── ⑦ 2차 검증에서 새로 드러난 것 ────────────────────────────────────────────
+
+class Test보류가_면죄부가_되면_안된다:
+    """★2차 검증 CRITICAL. 이 장치가 존재하는 이유인 '러너 기근' 날에 무음이었다.
+
+    실측 재현: 네 회차가 전부 큐에 갇히면 → 상태 전부 보류 →
+      보고 '🟢 4번 중 0번 정상', 경보 '' (침묵).
+    판정 창은 24시간을 겹침 없이 자르므로 그 회차는 두 번 다시 안 본다 =
+    영원히 보류가 아니라 **영원히 사면**이다.
+    """
+
+    def _큐(self, 회차들):
+        return [{"createdAt": (c + timedelta(minutes=5)).astimezone(timezone.utc)
+                 .isoformat().replace("+00:00", "Z"),
+                 "conclusion": "", "status": "queued"} for c in 회차들]
+
+    def test_너무_오래_큐에_있으면_안돎으로_본다(self):
+        """실측: run 31128005421 이 12시간 넘게 queued 였다."""
+        회차들 = [_kst(8, 6, 6), _kst(8, 6, 12), _kst(8, 6, 18), _kst(8, 7, 0)]
+        지금 = _kst(8, 7, 23)   # 마지막 회차가 끝난 지 17시간
+        결과 = 판정(self._큐(회차들), 회차들, 지금)
+        assert 결과[0]["상태"] == 안돎, "무한 대기를 허용하면 침묵과 같다"
+
+    def test_아직_한계_안이면_보류_그대로(self):
+        회차들 = [_kst(8, 7, 0)]
+        지금 = _kst(8, 7, 8)   # 회차 끝난 지 2시간
+        assert 판정(self._큐(회차들), 회차들, 지금)[0]["상태"] == 보류
+
+    def test_전부_보류면_초록이_아니다(self):
+        문구 = build_report(_결과([보류] * 4))
+        assert "🟢" not in 문구, "0번 정상인데 초록불이 나갔다"
+        assert "🔴" in 문구
+
+    def test_전부_보류면_경보가_운다(self):
+        """★조용히 넘기면 러너 기근 날 보고도 경보도 무음이 된다."""
+        문구 = build_alert(_결과([보류] * 4), 보고통로=정상)
+        assert 문구, "정상이 하나도 없는데 침묵했다"
+        assert "안 끝났습니다" in 문구
+
+    def test_하나라도_정상이면_보류는_조용하다(self):
+        """과잉 경보 금지 — 하나라도 살아 있으면 시트는 갱신된다."""
+        assert build_alert(_결과([정상, 보류, 보류, 보류]), 보고통로=정상) == ""
+
+    def test_신선도는_보류도_갱신_안됨으로_센다(self):
+        문구 = build_report(_결과([정상, 안돎, 보류, 안돎]))
+        assert "24시간 전" in 문구, "보류를 건너뛰고 세면 실제보다 신선해 보인다"
+
+
+class Test보고통로는_성공만_정상이다:
+    """★2차 검증 CRITICAL. '실행이 있었나'만 봐서 큐에 갇히거나 실패한 보고를
+    정상으로 읽었다. 그러면 문자가 0통인데 PC 도 조용해진다 = 전면 무음."""
+
+    def _상태(self, monkeypatch, conclusion, status="completed", 시간전=1):
+        지금 = datetime(2026, 8, 7, 3, tzinfo=timezone.utc)
+        monkeypatch.setattr(G, "실행이력", lambda *a, **k: [{
+            "createdAt": (지금 - timedelta(hours=시간전)).isoformat().replace("+00:00", "Z"),
+            "conclusion": conclusion, "status": status}])
+        return 보고통로_상태("o/r", 지금)
+
+    def test_성공이면_정상(self, monkeypatch):
+        assert self._상태(monkeypatch, "success") == 정상
+
+    def test_큐에_갇혔으면_안돎(self, monkeypatch):
+        assert self._상태(monkeypatch, "", "queued") == 안돎, \
+            "보고가 시작만 하고 안 끝났는데 정상으로 읽었다 — 문자는 0통이다"
+
+    def test_실패했으면_안돎(self, monkeypatch):
+        assert self._상태(monkeypatch, "failure") == 안돎
+
+    def test_성공했어도_너무_오래됐으면_안돎(self, monkeypatch):
+        assert self._상태(monkeypatch, "success", 시간전=40) == 안돎
+
+
+class Testgh를_어떻게_부르는가:
+    """★2차 검증: gh argv 를 아무도 안 봐서, 감시 대상이 바뀌어도 전부 초록이었다.
+
+    파이썬 로직만 검사하면 '바깥과 맞닿는 줄'이 무방비다 — 1차 사고와 같은 모양.
+    """
+
+    def _argv(self, monkeypatch):
+        받은 = {}
+        class OK:
+            returncode, stdout, stderr = 0, "[]", ""
+        def 가로채기(cmd, **k):
+            받은["cmd"] = cmd
+            받은.update(k)
+            return OK()
+        monkeypatch.setattr(subprocess, "run", 가로채기)
+        return 받은
+
+    def test_점검_워크플로를_본다(self, monkeypatch):
+        받은 = self._argv(monkeypatch)
+        monkeypatch.setattr(G, "send_telegram", lambda t, **k: True)
+        G.main(["--모드", "보고", "--발송안함"])
+        assert G.점검_워크플로 in 받은["cmd"], \
+            f"감시 대상이 바뀌었다: {받은['cmd']}"
+
+    def test_필요한_필드를_다_요청한다(self, monkeypatch):
+        받은 = self._argv(monkeypatch)
+        실행이력("o/r", "rank-check.yml")
+        json인자 = 받은["cmd"][받은["cmd"].index("--json") + 1]
+        for 필드 in ("createdAt", "conclusion", "status"):
+            assert 필드 in json인자, f"{필드} 를 안 받아오면 판정이 무너진다"
+
+    def test_저장소와_한도를_넘긴다(self, monkeypatch):
+        받은 = self._argv(monkeypatch)
+        실행이력("o/r", "rank-check.yml", 개수=40)
+        assert "--repo" in 받은["cmd"] and "o/r" in 받은["cmd"]
+        assert "--limit" in 받은["cmd"] and "40" in 받은["cmd"]
+
+    def test_시간제한이_충분히_길다(self, monkeypatch):
+        받은 = self._argv(monkeypatch)
+        실행이력("o/r", "rank-check.yml")
+        assert 받은.get("timeout", 0) >= 30, "너무 짧으면 정상인데 조회 실패가 된다"
+
+
+class Test화면_인코딩이_경보를_죽이지_않는다:
+    """★cp949 화면에서 print("🔴...") 가 터지면 그 아래 발송까지 못 간다 = 문자 0통.
+
+    예약작업 인자의 `-X utf8` 에 기대면, 누가 예약작업을 다시 만드는 순간
+    조용히 모든 경보가 사라진다. 그래서 코드 안에서 스스로 막는다.
+    """
+
+    def test_cp949_화면에서도_이모지를_찍는다(self):
+        import subprocess as sp
+        import sys as _sys
+        코드 = ("import sys; sys.path.insert(0, r'%s'); "
+                "import scripts.가동확인; print('🔴 경보 문구')" % 저장소루트)
+        환경 = {**os.environ, "PYTHONIOENCODING": "cp949"}
+        환경.pop("PYTHONUTF8", None)
+        r = sp.run([_sys.executable, "-c", 코드], capture_output=True,
+                   cwd=str(저장소루트), env=환경)
+        assert r.returncode == 0, (
+            "cp949 화면에서 경보 문구를 찍다가 죽었다 — 그 아래 발송까지 못 간다:\n"
+            + r.stderr.decode("utf-8", "replace")[-400:])
