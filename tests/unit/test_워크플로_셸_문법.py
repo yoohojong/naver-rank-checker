@@ -40,7 +40,32 @@ BASH = shutil.which("bash")
 대입 = re.compile(
     r'''(?:^|[;&|(){}]|\b(?:then|do|else|elif|export|local|declare|readonly|typeset)\s+|\s)'''
     r'''([^\s=;|&()<>#"']+)=''')
-이름받는_명령 = re.compile(r'''\b(?:for|read|select)\s+([^\s;|&()<>#"']+)''')
+# ★대입(=) 없이 **이름만** 받는 명령들. 3차 검증에서 여기로 13종이 뚫렸다 —
+#   `export 인자`(= 없음), `read -r 값`(플래그 때문에 이름을 못 봄),
+#   `printf -v 인자`, `mapfile 배열`, `getopts "x" 인자` 등 전부 실제 bash 에서 죽는다.
+#   `read -r 값` 이 가장 흔한 모양인데 통과하고 있었다.
+선언명령 = re.compile(
+    r'''\b(?:export|local|declare|readonly|typeset|unset|mapfile|readarray|coproc)\s+'''
+    r'''((?:-\S+\s+)*[^\s;|&()<>#"'=]+)''')
+이름받는_명령 = re.compile(
+    r'''\b(?:for|select|read)\s+((?:-\S+\s+)*(?:[^\s;|&()<>#"'=]+\s*)+)''')
+printf_v = re.compile(r'''\bprintf\s+(?:-\S+\s+)*-v\s+([^\s;|&()<>#"'=]+)''')
+getopts = re.compile(r'''\bgetopts\s+\S+\s+([^\s;|&()<>#"'=]+)''')
+
+
+def _이름들(벗긴줄: str) -> list:
+    """이 줄이 만들어 내는 **셸 이름**을 전부 뽑는다.
+
+    대입(`x=1`)만 봐서는 부족하다 — `export 인자`, `read -r 값` 처럼
+    = 없이 이름을 받는 명령이 여럿이고, 거기에 한글을 쓰면 똑같이 죽는다.
+    """
+    이름 = [m.group(1) for m in 대입.finditer(벗긴줄)]
+    for 정규식 in (선언명령, 이름받는_명령):
+        for m in 정규식.finditer(벗긴줄):
+            이름 += [t for t in m.group(1).split() if not t.startswith("-")]
+    이름 += [m.group(1) for m in printf_v.finditer(벗긴줄)]
+    이름 += [m.group(1) for m in getopts.finditer(벗긴줄)]
+    return 이름
 
 
 def _따옴표_주석_제거(line: str) -> str:
@@ -95,9 +120,7 @@ def test_셸_변수_이름은_ASCII다(파일, 스텝, run):
     나쁜것 = []
     for i, line in enumerate(run.splitlines(), 1):
         벗긴것 = _따옴표_주석_제거(line)
-        이름들 = [m.group(1) for m in 대입.finditer(벗긴것)]
-        이름들 += [m.group(1) for m in 이름받는_명령.finditer(벗긴것)]
-        if any(비ASCII.search(x) for x in 이름들):
+        if any(비ASCII.search(x) for x in _이름들(벗긴것)):
             나쁜것.append(f"{i}행: {line.strip()[:70]}")
     assert not 나쁜것, (
         f"{파일} / {스텝} 에 비ASCII 셸 변수 이름이 있다 — bash 가 명령으로 읽어 죽는다:\n"
@@ -132,6 +155,20 @@ def test_셸_문법이_성립한다(파일, 스텝, run):
     'export A=1 인자=2',
     'for 항목 in a b; do echo x; done',
     '인자=1 python x.py',
+    # ★3차 검증에서 새로 뚫린 것들 — 전부 실제 bash 에서 죽는다
+    'read -r 값',
+    'read -r 가 나',
+    'export 인자',
+    'local 인자',
+    'declare 인자',
+    'readonly 인자',
+    'unset 인자',
+    'printf -v 인자 "%s" x',
+    'mapfile 배열 < f',
+    'readarray 배열 < f',
+    'getopts "x" 인자',
+    'for 항목 in $list; do :; done',
+    'select 항목 in a b; do :; done',
 ]
 
 좋은_줄 = [
@@ -145,14 +182,16 @@ def test_셸_문법이_성립한다(파일, 스텝, run):
     'for jid in $ids; do echo $jid; done',
     'python -u "scripts/가동확인.py" --모드 보고 $args',
     'echo "[가동확인] 사유=$cause"',
+    'read -r line',
+    'export GH_TOKEN',
+    'for jid in $ids; do gh api "repos/$repo/x" --jq ".[].id"; done',
+    'printf -v out "%s" "문구"',
+    'echo "for 항목 in a b" # 따옴표 안이라 괜찮다',
 ]
 
 
 def _걸리나(line: str) -> bool:
-    벗긴것 = _따옴표_주석_제거(line)
-    이름들 = [m.group(1) for m in 대입.finditer(벗긴것)]
-    이름들 += [m.group(1) for m in 이름받는_명령.finditer(벗긴것)]
-    return any(비ASCII.search(x) for x in 이름들)
+    return any(비ASCII.search(x) for x in _이름들(_따옴표_주석_제거(line)))
 
 
 @pytest.mark.parametrize("line", 나쁜_줄)

@@ -602,3 +602,63 @@ class Test화면_인코딩이_경보를_죽이지_않는다:
         assert r.returncode == 0, (
             "cp949 화면에서 경보 문구를 찍다가 죽었다 — 그 아래 발송까지 못 간다:\n"
             + r.stderr.decode("utf-8", "replace")[-400:])
+
+
+class Test보류_한계가_네_회차를_다_덮는가:
+    """★3차 검증 MAJOR. 12시간으로 뒀더니 뒤쪽 두 회차가 **영원히 사면**됐다.
+
+    판정 시각(09:00)에서 네 회차의 '끝난 뒤 경과'는 21h / 15h / 9h / 3h 다.
+    한계가 3h 보다 크면 마지막 회차는 절대 승격되지 않고, 판정 창은 24시간을
+    겹침 없이 자르므로 그 회차를 두 번 다시 안 본다.
+    하필 그 구간(KST 18~06시 = UTC 09~21시)이 러너가 가장 붐비는 시간대다.
+    """
+
+    def _경과시간(self, 판정시각):
+        회차들 = 최근_끝난_회차(판정시각)
+        return [(판정시각 - (c + G.회차_길이)).total_seconds() / 3600 for c in 회차들]
+
+    def test_가장_늦게_끝난_회차도_승격_가능하다(self):
+        for 시각 in (_kst(8, 7, 9), _kst(8, 7, 9, 30)):   # GitHub 09:00 / PC 09:30
+            최소경과 = min(self._경과시간(시각))
+            assert G.보류_한계.total_seconds() / 3600 < 최소경과, (
+                f"보류_한계({G.보류_한계})가 가장 짧은 경과({최소경과:.1f}h)보다 크다 — "
+                "그 회차는 영원히 승격 못 하고 판정 창은 다시 안 온다")
+
+    @pytest.mark.parametrize("판정시각", [_kst(8, 7, 9), _kst(8, 7, 9, 30)])
+    def test_전부_큐면_네_회차_모두_안돎으로_승격된다(self, 판정시각):
+        """end-to-end: 승격이 실제로 경보까지 이어지는지."""
+        회차들 = 최근_끝난_회차(판정시각)
+        큐 = [{"createdAt": (c + timedelta(minutes=5)).astimezone(timezone.utc)
+               .isoformat().replace("+00:00", "Z"),
+               "conclusion": "", "status": "queued"} for c in 회차들]
+        결과 = 판정(큐, 회차들, 판정시각)
+        assert all(r["상태"] == 안돎 for r in 결과), \
+            f"승격 안 된 회차가 있다: {[(r['회차'], r['상태']) for r in 결과]}"
+        assert "🔴" in build_report(결과)
+        assert build_alert(결과, 보고통로=정상), "경보까지 안 이어졌다"
+
+    def test_실측_지연은_헛승격되지_않는다(self):
+        """실측(완료 198건): 회차 종료를 넘겨 생성된 실행 0건. 여유가 충분한지."""
+        회차들 = [_kst(8, 7, 0)]
+        # 회차 끝나고 1시간 뒤에 아직 도는 중 — 정상 범위다
+        assert 판정([{"createdAt": _kst(8, 7, 5, 50).astimezone(timezone.utc)
+                     .isoformat().replace("+00:00", "Z"),
+                     "conclusion": "", "status": "in_progress"}],
+                   회차들, _kst(8, 7, 7))[0]["상태"] == 보류
+
+
+class Test문구의_숫자가_서로_맞는가:
+    """★사장님이 목록과 숫자를 맞춰볼 수 있어야 한다.
+
+    예전엔 목록은 '안 돈' 것만, 시간 숫자는 보류까지 세서 안 맞았다.
+    """
+
+    def test_목록_개수와_시간_계산이_같은_것을_센다(self):
+        문구 = build_report(_결과([정상, 안돎, 보류, 안돎]))
+        갱신안됨 = [x for x in 문구.splitlines() if "갱신 안 된 점검" in x][0]
+        assert 갱신안됨.count(",") + 1 == 3, f"목록 개수가 안 맞는다: {갱신안됨}"
+        assert "24시간 전 것" in 문구   # (연속 3 + 1) * 6
+
+    def test_도는_중인_것은_그렇게_표시한다(self):
+        문구 = build_report(_결과([정상, 안돎, 보류, 정상]))
+        assert "(아직 도는 중)" in 문구
