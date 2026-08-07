@@ -1,0 +1,92 @@
+name: 가동확인
+# 상노 점검이 **실제로 돌았는지** 하루 한 번 회차 단위로 확인하고 한 줄 보고한다.
+#
+# 왜 필요한가 (2026-08-07 신설):
+#   기존 감시(워치독)는 전부 '실패했을 때' 울린다. 그런데 실측된 사고는 실패가 아니었다 —
+#   07-23·07-28 점검이 cancelled 로 끝나자 워치독 job 이 통째로 skipped 되어 **알림 0건**,
+#   08-06 은 러너 미배정으로 점검도 워치독도 같이 죽었다.
+#   '실패'가 아니라 '안 돌았다'는 아무도 안 알려줬다. 여기가 그걸 본다.
+#
+# 이건 **보고 통로**다 — 잘 돌았어도 한 줄 보낸다. 그 한 줄이 '감시가 살아있다'는 유일한 증거다.
+# 짝이 되는 **경보 통로**는 사장님 PC 예약작업(가동확인.py --모드 경보)이고,
+# 그쪽은 평소 조용하다가 회차가 비거나 이 워크플로가 오늘 안 돌았을 때만 운다.
+# 두 다리로 서는 이유: 이것도 GitHub 러너를 쓰므로, GitHub 이 통째로 멈추면 이것도 못 돈다.
+#
+# 끄는 법: 아래 schedule 두 줄을 주석 처리(수동 점검은 workflow_dispatch 로 계속 가능).
+
+on:
+  schedule:
+    - cron: '0 0 * * *'   # 매일 KST 09:00 — 직전 24시간(4회차)을 판정
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "'true' 면 문구만 로그에 출력하고 텔레그램은 안 보냄"
+        default: 'false'
+        type: choice
+        options: ['false', 'true']
+
+permissions:
+  actions: read     # 점검 실행 이력 조회 (gh run list)
+  contents: read
+
+concurrency:
+  group: heartbeat-check
+  cancel-in-progress: false
+
+jobs:
+  # ⚠️ job id·input id 는 반드시 ASCII. GitHub 스키마가 ^[_a-zA-Z][a-zA-Z0-9_-]*$ 만 받는다.
+  #    한글로 두면 워크플로가 아예 안 뜬다 — 감시를 걸었다고 보고한 뒤 아무 일도 안 일어난다.
+  #    (검사 test_가동확인.py 의 Test워크플로_배선 이 이걸 못 박는다.)
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6.0.2
+
+      # pip install 이 없다. 이 스크립트는 파이썬 기본 기능만 쓴다 —
+      # 설치 단계가 없으면 그 단계가 깨져서 보고가 안 나가는 일도 없다.
+      - name: Setup Python 3.13
+        uses: actions/setup-python@v6.2.0
+        with:
+          python-version: '3.13'
+
+      - name: 가동확인 + 보고
+        id: report
+        continue-on-error: true
+        shell: bash
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          PYTHONIOENCODING: 'utf-8'
+        run: |
+          인자=""
+          if [ "${{ inputs.dry_run }}" = "true" ]; then 인자="--발송안함"; fi
+          python -u "scripts/가동확인.py" --모드 보고 $인자
+
+      # 보고가 못 나갔으면 그 사실 자체가 소식이다 — 준비 없는 통로로 한 번 더 시도한다.
+      - name: 보고 실패 시 최후수단
+        if: ${{ always() && steps.report.outcome != 'success' }}
+        continue-on-error: true
+        shell: bash
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          set -uo pipefail
+          if [ -z "${TELEGRAM_BOT_TOKEN}" ] || [ -z "${TELEGRAM_CHAT_ID}" ]; then
+            echo "[가동확인] 텔레그램 secret 없음 — 최후수단 건너뜀"
+            exit 0
+          fi
+          링크="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          문구=$(printf '%s\n%s' \
+            "⚠️ 상노 점검 가동확인이 실패했습니다. 점검이 돌고 있는지 확인이 필요해요." "$링크")
+          curl -sS -m 15 --fail-with-body -X POST \
+            "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+            -d chat_id="${TELEGRAM_CHAT_ID}" \
+            --data-urlencode "text=${문구}" >/dev/null
+          echo "[가동확인] 최후수단 통로로 발송함"
