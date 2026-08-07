@@ -64,9 +64,11 @@ jobs:
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           PYTHONIOENCODING: 'utf-8'
         run: |
-          인자=""
-          if [ "${{ inputs.dry_run }}" = "true" ]; then 인자="--발송안함"; fi
-          python -u "scripts/가동확인.py" --모드 보고 $인자
+          # ⚠️ 셸 변수 이름은 ASCII 만. 한글로 쓰면 bash 가 명령으로 읽어 exit 127 로 죽는다
+          #    (2026-08-07 실측: `인자=: command not found`).
+          args=""
+          if [ "${{ inputs.dry_run }}" = "true" ]; then args="--발송안함"; fi
+          python -u "scripts/가동확인.py" --모드 보고 $args
 
       # 보고가 못 나갔으면 그 사실 자체가 소식이다 — 준비 없는 통로로 한 번 더 시도한다.
       - name: 보고 실패 시 최후수단
@@ -82,11 +84,11 @@ jobs:
             echo "[가동확인] 텔레그램 secret 없음 — 최후수단 건너뜀"
             exit 0
           fi
-          링크="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
-          문구=$(printf '%s\n%s' \
-            "⚠️ 상노 점검 가동확인이 실패했습니다. 점검이 돌고 있는지 확인이 필요해요." "$링크")
+          link="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          body=$(printf '%s\n%s' \
+            "⚠️ 상노 점검 가동확인이 실패했습니다. 점검이 돌고 있는지 확인이 필요해요." "$link")
           curl -sS -m 15 --fail-with-body -X POST \
             "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
             -d chat_id="${TELEGRAM_CHAT_ID}" \
-            --data-urlencode "text=${문구}" >/dev/null
+            --data-urlencode "text=${body}" >/dev/null
           echo "[가동확인] 최후수단 통로로 발송함"
