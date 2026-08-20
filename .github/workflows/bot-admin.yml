@@ -1,0 +1,32 @@
+name: bot-admin
+
+# 봇 계정 관리 — 이름 확인·변경 (2026-08-20 R76: 상노체크봇 → "시스템 알림 봇").
+# 토큰은 GitHub 비밀함 안에서만 쓰고 값은 절대 출력하지 않는다.
+
+on:
+  workflow_dispatch:
+    inputs:
+      rename_to:
+        description: 봇 표시 이름을 이 값으로 변경 (비우면 확인만)
+        default: ''
+
+permissions: {}
+
+jobs:
+  admin:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: 지금 이름 확인
+        env:
+          TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+        run: |
+          curl -s "https://api.telegram.org/bot${TOKEN}/getMe" | python3 -c "import json,sys; b=json.load(sys.stdin)['result']; print('bot:', b['username'], '/ 표시 이름:', b.get('first_name'))"
+      - name: 이름 변경
+        if: inputs.rename_to != ''
+        env:
+          TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          NEW_NAME: ${{ inputs.rename_to }}
+        run: |
+          curl -s -X POST "https://api.telegram.org/bot${TOKEN}/setMyName" --data-urlencode "name=${NEW_NAME}" | python3 -c "import json,sys; r=json.load(sys.stdin); print('변경 ok:', r.get('ok'), r.get('description',''))"
+          curl -s "https://api.telegram.org/bot${TOKEN}/getMe" | python3 -c "import json,sys; b=json.load(sys.stdin)['result']; print('변경 후:', b.get('first_name'), '/', b['username'])"
