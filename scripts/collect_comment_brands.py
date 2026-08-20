@@ -39,6 +39,7 @@ from src.comment_brand import (extract_candidates, is_asking, normalize_name,  #
                                strip_generic_tail, tally)
 from src import brand_verdicts  # noqa: E402
 from src import brand_from_comments  # noqa: E402
+from src import comment_reads  # noqa: E402
 from src import comment_brand_llm  # noqa: E402
 from src import shop_probe  # noqa: E402
 from src.crawler import Crawler  # noqa: E402
@@ -221,13 +222,18 @@ def candidates_from_title(title: str) -> list:
 
 
 def extract_brands(mentions: list, *, verdict_path: str = brand_verdicts.DEFAULT_PATH,
-                   today: str = "") -> tuple:
+                   today: str = "", reads_path: str = comment_reads.DEFAULT_PATH,
+                   max_batches: int | None = None) -> tuple:
     """★새 구조(2026-07-24) — 댓글 원문을 AI 가 읽어 이름을 뽑고, 검색으로 확인한다.
 
     (브랜드가 붙은 mentions, 판정표, 통계) 를 돌려준다.
 
     전 구조는 글자 규칙이 후보를 뽑고 AI 는 O/X 만 해서, '안티트로' 가 지워지고
     '터그루트' 같은 잘린 이름이 표에 올랐다. 지금은 두 관문이 서로를 메운다.
+
+    ★읽기 캐시(2026-08-20) — 한 번 읽은 댓글은 comment_reads 에 남겨 다시 보내지
+    않는다. 키워드 1,240개 시대에 매일 2.6만 건을 처음부터 읽다가 무료 한도·시간을
+    다 태운 것(7/29~8/16 매일 밤 시간 초과)의 근본 수술. 실패한 읽기는 안 남긴다.
     """
     # 같은 댓글이 여러 번 들어와 있으므로 원문 기준으로 한 번만 읽는다.
     자리, 원문들 = {}, []
@@ -237,8 +243,36 @@ def extract_brands(mentions: list, *, verdict_path: str = brand_verdicts.DEFAULT
             자리[t] = len(원문들)
             원문들.append(t)
 
-    뽑힘, stat = brand_from_comments.read_all(원문들)
+    if not today:
+        from datetime import datetime, timedelta, timezone
+        today = datetime.now(timezone(timedelta(hours=9))).strftime("%Y-%m-%d")
+
+    reads = comment_reads.load(reads_path)
+    캐시뽑힘: dict = {}
+    안읽은: list = []                       # [(원문들 index, 원문)]
+    for i, t in enumerate(원문들):
+        기억 = comment_reads.get(reads, t)
+        if 기억 is None:
+            안읽은.append((i, t))
+        else:
+            if 기억:
+                캐시뽑힘[i] = 기억
+            comment_reads.touch(reads, t, today)   # 오늘도 보였다 — 청소에서 살린다
+
+    새뽑힘, stat = brand_from_comments.read_all(
+        [t for _, t in 안읽은], max_batches=max_batches)
+    읽은자리 = stat.pop("읽은자리", set())
+    뽑힘 = dict(캐시뽑힘)
+    for j, names in (새뽑힘 or {}).items():
+        뽑힘[안읽은[j][0]] = names
+    for j in 읽은자리:                      # 성공한 자리만 남긴다(빈 결과 포함) — 실패는 내일 다시
+        _, t = 안읽은[j]
+        comment_reads.put(reads, t, 새뽑힘.get(j) or [], today)
+    comment_reads.save(comment_reads.prune(reads, today), reads_path)
+    stat["캐시읽음"] = len(원문들) - len(안읽은)
+
     이름들 = sorted({n for names in 뽑힘.values() for n in names})
+    stat["뽑은이름"] = len(이름들)          # 캐시로 되살린 이름까지 합친 수
 
     # 한 번 확인한 이름은 다시 검색하지 않는다(파일에 쌓인다).
     cached = brand_verdicts.load(verdict_path)
@@ -584,15 +618,24 @@ def run_from_sheet(args) -> int:
     # ★제품군별로 판정한다 — extract_brands 가 브랜드를 붙인 mention 을 돌려주므로
     #   그 결과를 confirmed_rows 에 넘겨야 한다. 원문 mention(키 없음)을 넘기면 죽는다
     #   (2026-07-24 독립검토 BLOCKING). 판정 캐시는 파일 공유라 같은 이름은 한 번만 검색한다.
+    # 읽기 예산 — 한 회차가 AI 에 보낼 묶음 수 상한(제품군 셋이 나눠 쓴다).
+    # 유료 보험이 있어도 한 번에 다 태우지 않고, 무료만 있어도 한도 안에서
+    # 밀린 몫(캐시에 없는 옛 댓글)을 며칠에 걸쳐 소화한다.
+    읽기예산 = int(os.environ.get("READ_BATCH_BUDGET", "").strip() or 0)
+    남은예산 = 읽기예산 if 읽기예산 > 0 else None
+
     verdicts: dict = {}
-    jstat = {"댓글": 0, "묶음": 0, "못읽은묶음": 0, "뽑은이름": 0,
+    jstat = {"댓글": 0, "묶음": 0, "못읽은묶음": 0, "뽑은이름": 0, "캐시읽음": 0,
              "검색확인": 0, "검색통과": 0, "검색막힘": 0, "탈": []}
     branded: dict = {}
     for product, mentions in by_product.items():
-        ms2, v, stat = extract_brands(mentions, today=today)
+        ms2, v, stat = extract_brands(mentions, today=today, max_batches=남은예산)
+        if 남은예산 is not None:
+            남은예산 = max(0, 남은예산 - int(stat.get("예산사용", 0) or 0))
         branded[product] = ms2
         verdicts.update(v)
-        for k in ("댓글", "묶음", "못읽은묶음", "뽑은이름", "검색확인", "검색통과", "검색막힘"):
+        for k in ("댓글", "묶음", "못읽은묶음", "뽑은이름", "캐시읽음",
+                  "검색확인", "검색통과", "검색막힘"):
             jstat[k] = jstat.get(k, 0) + int(stat.get(k, 0) or 0)
         jstat["탈"] = sorted(set(jstat["탈"]) | set(stat.get("탈", [])))
     all_mentions = [m for ms in branded.values() for m in ms]
@@ -619,8 +662,9 @@ def run_from_sheet(args) -> int:
 
     print(f"\n댓글 연 글 {fetcher.stat['열림']}개 · 못 연 글 {fetcher.stat['막힘']}개 "
           f"· 댓글 {fetcher.stat.get('댓글', 0)}건(뒷장 {fetcher.stat.get('뒷장', 0)}장 포함)")
-    print(f"댓글 {jstat.get('댓글', 0)}건을 {jstat.get('묶음', 0)}묶음으로 읽음 "
-          f"(못 읽은 묶음 {jstat.get('못읽은묶음', 0)}) · AI 가 뽑은 이름 {jstat.get('뽑은이름', 0)}종 "
+    print(f"새 댓글 {jstat.get('댓글', 0)}건을 {jstat.get('묶음', 0)}묶음으로 읽음 "
+          f"(캐시 재사용 {jstat.get('캐시읽음', 0)}건 · 못 읽은 묶음 {jstat.get('못읽은묶음', 0)}) "
+          f"· AI 가 뽑은 이름 {jstat.get('뽑은이름', 0)}종 "
           f"· 검색 확인 {jstat.get('검색확인', 0)}종 중 통과 {jstat.get('검색통과', 0)}종"
           + (f" · 탈: {', '.join(jstat['탈'])}" if jstat.get("탈") else ""))
     for row in out_rows[:30]:

@@ -44,11 +44,13 @@ import time
 import urllib.error
 import urllib.request
 
+from . import llm_pick
+
 _BASE_URL = os.environ.get(
     "GROQ_BASE_URL", "https://api.groq.com/openai/v1/chat/completions")
-_MODEL = os.environ.get("GROQ_MODEL", "llama-3.3-70b-versatile")
 # 유료 판정기 — 무료가 막힌 날에만 나서는 보험.
-_ANTHROPIC_MODEL = os.environ.get("ANTHROPIC_MODEL", "claude-opus-4-8")
+# (secret 이 비어 있으면 GitHub env 가 "" 를 넣으므로 or 로 기본값을 지킨다)
+_ANTHROPIC_MODEL = os.environ.get("ANTHROPIC_MODEL") or "claude-opus-4-8"
 # 무료(30초)와 같은 시한을 쓰면 답이 다 나오기도 전에 끊긴다 — 한국어 묶음 판정은 더 걸린다.
 _ANTHROPIC_TIMEOUT = float(os.environ.get("ANTHROPIC_TIMEOUT_SEC", "180"))
 _ANTHROPIC_CLIENTS: dict = {}
@@ -147,6 +149,15 @@ def _groq_key() -> str:
     return os.environ.get("GROQ_API_KEY", "").strip()
 
 
+def _groq_model() -> str:
+    """무료 판정기 모델 — 이름을 박아두지 않고 계정에 물어본다(llm_pick).
+
+    2026-08-16 llama-3.3-70b-versatile 퇴역으로 1,304묶음 전부 404 난 자리.
+    GROQ_MODEL 을 secret 으로 주면 그게 위다(묻지 않는다).
+    """
+    return os.environ.get("GROQ_MODEL", "").strip() or llm_pick.pick(_BASE_URL, _groq_key())
+
+
 def _anthropic_key() -> str:
     return os.environ.get("ANTHROPIC_API_KEY", "").strip()
 
@@ -230,6 +241,16 @@ def _post(payload: dict, *, timeout: int, tries: int = 3, sleep=time.sleep,
                 return json.loads(resp.read().decode("utf-8"))
         except urllib.error.HTTPError as e:
             note(f"HTTP {e.code}")
+            if e.code == 404 and attempt < tries - 1:
+                # 모델이 방금 퇴역했을 수 있다(2026-08-16 실사고) —
+                # 목록을 다시 물어 갈아타고 그 자리에서 한 번 더.
+                llm_pick.forget(_BASE_URL)
+                새모델 = _groq_model()
+                if 새모델 and 새모델 != payload.get("model"):
+                    payload["model"] = 새모델
+                    body = json.dumps(payload).encode("utf-8")
+                    continue
+                return None
             if e.code == 429 and attempt < tries - 1:
                 wait = 5.0
                 try:                       # 얼마나 기다리라고 알려준다
@@ -347,7 +368,7 @@ def _groq_call(system: str, user: str, *, max_tokens: int, timeout: int,
     if not _groq_key():
         return None, False
     payload = {
-        "model": _MODEL,
+        "model": _groq_model(),
         "messages": [
             {"role": "system", "content": system},
             {"role": "user", "content": user},

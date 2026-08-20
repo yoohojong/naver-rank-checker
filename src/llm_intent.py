@@ -11,7 +11,8 @@
 
 설정(secret 으로 override 가능 — 모델 deprecate/엔드포인트 변경 대비):
 - GROQ_API_KEY  : Groq 무료 API 키 (필수, 없으면 LLM 분류 skip)
-- GROQ_MODEL    : 기본 'llama-3.3-70b-versatile' (Groq 프로덕션·한국어 양호, 2026-06 확인)
+- GROQ_MODEL    : 지정하면 그대로 따름. 비우면 계정에 물어 자동 선택(src/llm_pick).
+                  ★이름을 박아두던 옛 방식은 2026-08-16 llama-3.3 퇴역 때 404 로 죽었다.
 - GROQ_BASE_URL : 기본 OpenAI 호환 chat completions 엔드포인트
 """
 from __future__ import annotations
@@ -22,9 +23,10 @@ import time
 import urllib.error
 import urllib.request
 
+from . import llm_pick
+
 # Groq OpenAI 호환 엔드포인트 (console.groq.com, 2026-06 확인)
 _DEFAULT_BASE_URL = "https://api.groq.com/openai/v1/chat/completions"
-_DEFAULT_MODEL = "llama-3.3-70b-versatile"
 
 # Groq API 앞단 Cloudflare 가 기본 urllib 시그니처를 403/error 1010 으로 차단 →
 # 브라우저 User-Agent 필수(실측 2026-06-20). 빠지면 모든 호출 403 → None 폴백(자연어 OFF).
@@ -148,13 +150,14 @@ def groq_chat(messages, *, max_tokens=60, temperature=0, timeout=8):
     key = _api_key()
     if not key:
         return None
+    url = os.environ.get("GROQ_BASE_URL", _DEFAULT_BASE_URL)
     body = {
-        "model": os.environ.get("GROQ_MODEL", _DEFAULT_MODEL),
+        # 이름을 박아두지 않는다 — 계정에 물어 고른다(llm_pick). GROQ_MODEL 지정이 위.
+        "model": os.environ.get("GROQ_MODEL", "").strip() or llm_pick.pick(url, key),
         "messages": messages,
         "temperature": temperature,
         "max_tokens": max_tokens,
     }
-    url = os.environ.get("GROQ_BASE_URL", _DEFAULT_BASE_URL)
     data = json.dumps(body).encode("utf-8")
     headers = {
         "Content-Type": "application/json",
@@ -169,6 +172,13 @@ def groq_chat(messages, *, max_tokens=60, temperature=0, timeout=8):
                 payload = json.loads(r.read())
             return payload["choices"][0]["message"]["content"]
         except urllib.error.HTTPError as e:
+            if e.code == 404 and attempt == 0:
+                # 모델이 방금 퇴역했을 수 있다(2026-08-16 실사고) — 다시 골라 한 번 더.
+                llm_pick.forget(url)
+                body["model"] = (os.environ.get("GROQ_MODEL", "").strip()
+                                 or llm_pick.pick(url, key))
+                data = json.dumps(body).encode("utf-8")
+                continue
             if e.code in (429, 500, 502, 503) and attempt == 0:
                 time.sleep(2)  # TPM/순간한도 회복 대기 후 재시도
                 continue

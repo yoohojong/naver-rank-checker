@@ -42,8 +42,10 @@ jobs:
       contents: write        # 판정 결과(data/brand_verdicts.json)를 되돌려 저장한다
       actions: read          # 자가치유: 최근 run·실패 로그 조회
       issues: write          # 자가치유: 3회 연속 실패 시 확인용 이슈
-    # 전체 키워드(약 400개) × 글 4개 = 90분 안팎. 넉넉히 잡되 무한정 돌지는 않게.
-    timeout-minutes: 180
+    # 키워드가 1,240개(2026-08-12 확장)라 댓글 훑기만 130분 안팎이다. 읽기(AI)는
+    # comment_reads 캐시 + 회차 예산(READ_BATCH_BUDGET)으로 묶여 수십 분을 넘지 않는다.
+    # 180분이던 시절 7/29~8/16 매일 밤 시간 초과로 취소됐다(공개 repo — 분당 과금 없음).
+    timeout-minutes: 300
     steps:
       - uses: actions/checkout@v6.0.2
       - uses: actions/setup-python@v5
@@ -60,10 +62,18 @@ jobs:
           SPREADSHEET_ID: ${{ secrets.SPREADSHEET_ID }}
           SERVICE_ACCOUNT_JSON: ${{ secrets.SERVICE_ACCOUNT_JSON }}
           CAFE_WHITELIST_SLUGS: ${{ secrets.CAFE_WHITELIST_SLUGS }}
-          # 제품명 판정. 유료(ANTHROPIC) 먼저, 없거나 못 하면 무료(GROQ).
-          # 무료 하루 한도가 짧아 7-23 실행 4번 중 2번이 시트를 못 채웠다 → 유료를 앞에 둔다.
+          # 제품명 읽기·판정. **무료(GROQ) 먼저, 무료가 막힌 몫만 유료(ANTHROPIC) 보험**
+          # (2026-07-24 뒤집음 — 순서가 곧 돈이다. 옛 주석이 반대로 남아 있었음).
+          # ANTHROPIC_API_KEY 는 아직 미설정(2026-08-20) — 넣는 순간 보험이 켜진다.
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          # 모델 이름은 코드에 없다 — 계정에 물어 자동 선택(src/llm_pick).
+          # 2026-08-16 llama-3.3 퇴역 404 사흘의 재발 방지. secret 으로 주면 그게 위다.
+          GROQ_MODEL: ${{ secrets.GROQ_MODEL }}
+          ANTHROPIC_MODEL: ${{ secrets.ANTHROPIC_MODEL }}
+          # 한 회차가 AI 에 보낼 댓글 묶음 상한 — 밀린 몫은 다음 회차가 이어 읽는다
+          # (comment_reads 캐시). 유료 보험이 있어도 한 회차 비용이 이걸 못 넘는다.
+          READ_BATCH_BUDGET: '500'
           NAVER_SLOWDOWN_BASE_SEC: '4.0'
           PYTHONIOENCODING: 'utf-8'
         run: |
@@ -85,16 +95,18 @@ jobs:
           retention-days: 3
           if-no-files-found: ignore
 
-      # 한 번 내린 제품 판정은 남긴다 — 다음 run 은 새로 나온 이름만 물어본다.
-      # (Groq 무료 하루치를 아끼는 핵심. 사장님이 파일에서 직접 고칠 수도 있다.)
-      - name: 제품 판정 저장
+      # 한 번 내린 제품 판정 + 한 번 읽은 댓글(comment_reads)은 남긴다 —
+      # 다음 run 은 새 것만 물어본다. (Groq 무료 하루치를 아끼는 핵심이자,
+      # 키워드 1,240개 시대에 시간 초과를 막는 몸통. 시트를 못 쓴 날(exit 3)에도
+      # 여기가 always 로 저장돼 다음 회차가 이어 읽는다.)
+      - name: 판정·읽기 기억 저장
         if: always()
         run: |
-          if [ -n "$(git status --porcelain data/brand_verdicts.json)" ]; then
+          if [ -n "$(git status --porcelain data/brand_verdicts.json data/comment_reads.json)" ]; then
             git config user.name  "github-actions[bot]"
             git config user.email "github-actions[bot]@users.noreply.github.com"
-            git add data/brand_verdicts.json
-            git commit -m "chore(경쟁사): 제품명 판정 갱신 [skip ci]"
+            git add data/brand_verdicts.json data/comment_reads.json
+            git commit -m "chore(경쟁사): 판정·읽기 기억 갱신 [skip ci]"
             git pull --rebase --autostash origin main || true
             git push origin HEAD:main || true
           fi

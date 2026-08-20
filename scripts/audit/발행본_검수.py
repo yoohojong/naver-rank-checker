@@ -635,9 +635,14 @@ def _키(env: str, 파일: str) -> str:
 _UA = "cafe-external-audit/1.0"     # 기본 파이썬 UA 는 Cloudflare 가 막는다(403 code 1010)
 _모델캐시: dict[str, str] = {}
 
-# 품질 순(큰 모델부터). 목록에 있는 첫 번째를 쓴다.
-_모델선호 = ("gpt-oss-120b", "llama-3.3-70b-versatile", "llama-3.3-70b", "zai-glm-4.7",
+# 품질 순(큰 모델부터). 목록에 있는 첫 번째를 쓴다. 꼬리 이름만 적는다 —
+# 제공사 경로('openai/gpt-oss-120b')가 붙어도 꼬리로 맞춘다(아래 _모델).
+_모델선호 = ("gpt-oss-120b", "qwen3.6-27b", "gpt-oss-20b",
+             "llama-3.3-70b-versatile", "llama-3.3-70b", "zai-glm-4.7",
              "llama-4-scout-17b-16e-instruct", "qwen-3-32b", "gemma-4-31b")
+# 대화가 안 되는 모델 — '아무거나 첫 번째' 폴백이 이런 걸 집으면 400 만 난다.
+_대화아님 = ("whisper", "tts", "guard", "orpheus", "embed", "moderation",
+          "compound", "allam", "prompt")
 
 
 def _모델(chat_url: str, key: str, 기본: str) -> str:
@@ -655,7 +660,17 @@ def _모델(chat_url: str, key: str, 기본: str) -> str:
                          headers={"Authorization": f"Bearer {key}", "User-Agent": _UA}, timeout=15)
         if r.status_code == 200:
             있는것 = [m.get("id") for m in r.json().get("data", []) if m.get("id")]
-            골라진 = next((p for p in _모델선호 if p in 있는것), 있는것[0] if 있는것 else 기본)
+            # ★정확 일치가 아니라 꼬리로 맞춘다(2026-08-20) — Groq 목록이
+            #   'openai/gpt-oss-120b' 처럼 제공사 경로를 달고 오면서 정확 일치가
+            #   전부 빗나가, '아무거나 첫 번째' 가 음성 모델(whisper)을 집을 뻔했다.
+            def _꼬리(mid):
+                return str(mid).rsplit("/", 1)[-1].strip().lower()
+            대화되는 = [m for m in 있는것 if not any(x in _꼬리(m) for x in _대화아님)]
+            꼬리표 = {}
+            for m in 대화되는:
+                꼬리표.setdefault(_꼬리(m), m)
+            골라진 = next((꼬리표[_꼬리(p)] for p in _모델선호 if _꼬리(p) in 꼬리표),
+                       대화되는[0] if 대화되는 else 기본)
     except Exception:
         pass
     _모델캐시[chat_url] = 골라진

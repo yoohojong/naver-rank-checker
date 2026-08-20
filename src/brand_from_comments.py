@@ -61,6 +61,8 @@ def grounded(name: str, text: str, *, min_ratio: float = 0.6) -> bool:
     return 맞음 / len(n) >= min_ratio
 
 # 판정기는 OpenAI 규격이면 무엇이든 꽂힌다(Groq·OpenAI 둘 다 이 규격).
+# ★라이브 경로는 comment_brand_llm._call 을 쓴다(2026-07-30 통일) — 모델 선택도
+#   src/llm_pick 하나로 간다. 아래 _MODEL·_post 는 옛 직접 호출 잔재로, 새로 쓰지 말 것.
 _BASE_URL = os.environ.get(
     "GROQ_BASE_URL", "https://api.groq.com/openai/v1/chat/completions")
 _MODEL = os.environ.get("GROQ_MODEL", "llama-3.3-70b-versatile")
@@ -209,21 +211,53 @@ def read_batch(texts: list, *, timeout: int = 60, sleep=time.sleep,
 
 
 def read_all(texts: list, *, batch: int = BATCH, timeout: int = 60,
-             sleep=time.sleep) -> tuple:
-    """댓글 전체 → ({댓글 index: [브랜드명]}, 통계). 못 읽은 묶음은 통계에 남긴다."""
+             sleep=time.sleep, max_batches: int | None = None,
+             max_consecutive_fail: int = 5) -> tuple:
+    """댓글 전체 → ({댓글 index: [브랜드명]}, 통계). 못 읽은 묶음은 통계에 남긴다.
+
+    ★멈출 줄 안다 (2026-08-20):
+      · max_batches — 한 회차가 부를 수 있는 묶음 수. 넘치면 멈춘다.
+        (남은 몫은 comment_reads 캐시 덕에 다음 회차가 이어 읽는다)
+      · 연속 실패 차단 — 8/19 실사고: 퇴역 모델 404 로 1,304묶음을 전부
+        헛호출하며 2시간을 태웠다. 연속 5묶음 실패면 그날은 접는다.
+    안 부른 몫도 '못 읽은 묶음'에 넣는다 — should_skip_write 가
+    반쪽 표를 막는 잣대가 이 수라서, 정직하게 세야 시트가 안전하다.
+    통계에 '읽은자리'(성공한 댓글 index 집합)를 얹는다 — 빈 결과와 실패를
+    가르는 유일한 근거라, 캐시가 이걸 보고 '읽음'만 남긴다.
+    """
     texts = list(texts or [])
-    stat = {"댓글": len(texts), "묶음": 0, "못읽은묶음": 0, "탈": []}
+    stat = {"댓글": len(texts), "묶음": 0, "못읽은묶음": 0, "탈": [], "예산사용": 0}
+    전체묶음 = (len(texts) + batch - 1) // batch if batch else 0
     out: dict = {}
+    읽은자리: set = set()
     errors: list = []
+    연속실패 = 0
+    중단 = ""
     for start in range(0, len(texts), batch):
+        if max_batches is not None and stat["예산사용"] >= max_batches:
+            중단 = "회차 예산 소진"
+            break
+        if 연속실패 >= max_consecutive_fail:
+            중단 = f"연속 {max_consecutive_fail}묶음 실패"
+            break
         chunk = texts[start:start + batch]
         stat["묶음"] += 1
+        stat["예산사용"] += 1
         got = read_batch(chunk, timeout=timeout, sleep=sleep, errors=errors)
         if got is None:
             stat["못읽은묶음"] += 1
+            연속실패 += 1
             continue
+        연속실패 = 0
+        읽은자리.update(range(start, start + len(chunk)))   # 빈 결과도 '읽은 자리'다
         for i, names in got.items():
             out[start + i] = names
+    if 중단:
+        남은 = 전체묶음 - stat["묶음"]
+        stat["묶음"] += 남은
+        stat["못읽은묶음"] += 남은
+        errors.append(f"{중단} — 남은 {남은}묶음은 다음 회차에")
     stat["탈"] = sorted(set(errors))
     stat["뽑은이름"] = len({n for names in out.values() for n in names})
+    stat["읽은자리"] = 읽은자리
     return out, stat
