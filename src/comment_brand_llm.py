@@ -50,7 +50,11 @@ _BASE_URL = os.environ.get(
     "GROQ_BASE_URL", "https://api.groq.com/openai/v1/chat/completions")
 # 유료 판정기 — 무료가 막힌 날에만 나서는 보험.
 # (secret 이 비어 있으면 GitHub env 가 "" 를 넣으므로 or 로 기본값을 지킨다)
-_ANTHROPIC_MODEL = os.environ.get("ANTHROPIC_MODEL") or "claude-opus-4-8"
+# ★기본 = 작은 모델(2026-08-20 사장님 결정 "비용을 5분의1로 낮출 수 있으면 왜 안 하냐").
+#   이 작업은 이름 뽑기일 뿐이고 뒤에 쇼핑 검색 재검증(shop_probe)·원문 대조(grounded)·
+#   사장님 판정 우선(brand_verdicts)이 삼중으로 받치므로 작은 모델로 충분하다.
+#   품질이 모자라 보이면 secret ANTHROPIC_MODEL=claude-opus-4-8 로 언제든 올린다.
+_ANTHROPIC_MODEL = os.environ.get("ANTHROPIC_MODEL") or "claude-haiku-4-5"
 # 무료(30초)와 같은 시한을 쓰면 답이 다 나오기도 전에 끊긴다 — 한국어 묶음 판정은 더 걸린다.
 _ANTHROPIC_TIMEOUT = float(os.environ.get("ANTHROPIC_TIMEOUT_SEC", "180"))
 _ANTHROPIC_CLIENTS: dict = {}
