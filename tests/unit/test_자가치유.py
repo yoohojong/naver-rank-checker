@@ -140,10 +140,36 @@ class Test전체_흐름:
         assert len(보낸것) == 1 and "복구" in 보낸것[0]
         assert 닫힌것, "나은 이슈를 계속 띄워두면 아무도 안 본다"
 
-    def test_취소된_run_은_알리지_않는다(self, H, monkeypatch):
+    def test_취소인데_시간한계가_없으면_알리지_않는다(self, H, monkeypatch):
+        # telegram-qa 처럼 새 run 이 옛 run 을 밀어내는 취소가 일상인 워크플로 보호.
         보낸것 = self._스파이(H, monkeypatch)
+        monkeypatch.delenv("TIMEOUT_MIN", raising=False)
         H.main(["--이름", "상위노출 순위검사", "--결과", "cancelled"])
         assert 보낸것 == []
+
+    def test_시간한계를_다_채운_취소는_시간초과로_알린다(self, H, monkeypatch):
+        # ★2026-08-20 교훈: 경쟁사-댓글이 7/29~8/16 매일 밤 180분을 채우고 잘렸는데
+        #   '취소'라는 이름 때문에 알림 0통 — 침묵이 기본값이 되면 고장이 숨는다.
+        보낸것 = self._스파이(H, monkeypatch)
+        monkeypatch.setenv("TIMEOUT_MIN", "180")
+        monkeypatch.setattr(H, "_경과분", lambda *a: 179.7)
+        H.main(["--이름", "댓글 경쟁제품 수집", "--결과", "cancelled"])
+        assert len(보낸것) == 1 and "시간 초과" in 보낸것[0]
+
+    def test_일찍_잘린_취소는_사람취소로_보고_조용히_둔다(self, H, monkeypatch):
+        보낸것 = self._스파이(H, monkeypatch)
+        monkeypatch.setenv("TIMEOUT_MIN", "180")
+        monkeypatch.setattr(H, "_경과분", lambda *a: 12.0)
+        H.main(["--이름", "댓글 경쟁제품 수집", "--결과", "cancelled"])
+        assert 보낸것 == []
+
+    def test_경과를_못_재면_한계가_밝혀진_워크플로는_알린다(self, H, monkeypatch):
+        # 조회 실패까지 침묵으로 접으면 '경보를 조건부로 삼키는' 병이 재발한다 — 알리는 쪽으로.
+        보낸것 = self._스파이(H, monkeypatch)
+        monkeypatch.setenv("TIMEOUT_MIN", "180")
+        monkeypatch.setattr(H, "_경과분", lambda *a: None)
+        H.main(["--이름", "댓글 경쟁제품 수집", "--결과", "cancelled"])
+        assert len(보낸것) == 1 and "시간 초과" in 보낸것[0]
 
     def test_임계_넘으면_이슈를_연다(self, H, monkeypatch):
         보낸것 = self._스파이(H, monkeypatch)

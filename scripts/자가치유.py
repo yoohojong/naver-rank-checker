@@ -97,7 +97,7 @@ _API = "https://api.github.com"
 
 # 두 저장소에 같은 파일을 복사해 쓴다. 한쪽만 고치면 조용히 갈라지므로
 # 양쪽 테스트가 이 값을 대조한다(독립검토 L-4).
-버전 = "2026-07-24.2"
+버전 = "2026-08-20.1"
 
 
 # ── GitHub 조회 (읽기 전용) ──────────────────────────────────────────────
@@ -312,6 +312,28 @@ def 다음_재시도(크론: str) -> str:
     return ""
 
 
+def _시간한계분() -> int:
+    """워크플로가 밝힌 timeout-minutes(env TIMEOUT_MIN). 없으면 0 = 취소를 조용히 둔다."""
+    try:
+        return int(os.environ.get("TIMEOUT_MIN", "").strip() or 0)
+    except ValueError:
+        return 0
+
+
+def _경과분(저장소: str, run: str):
+    """이 run 이 몇 분 돌았나. 못 재면 None — 한계가 밝혀진 워크플로에선 알리는 쪽으로 기운다."""
+    데이터 = _api(f"/repos/{저장소}/actions/runs/{run}") if 저장소 and run else None
+    if not isinstance(데이터, dict):
+        return None
+    from datetime import datetime, timezone
+    try:
+        시작 = datetime.strptime(str(데이터.get("run_started_at")),
+                               "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+    except (ValueError, TypeError):
+        return None
+    return (datetime.now(timezone.utc) - 시작).total_seconds() / 60.0
+
+
 def 알릴차례인가(연속: int) -> bool:
     """지속 실패 때 알림이 폭주하지 않게 (독립검토 H-3).
 
@@ -418,9 +440,6 @@ def _본체(argv=None) -> int:
     a = p.parse_args(argv)
 
     결과 = (a.결과 or "").strip().lower()
-    if 결과 == "cancelled":
-        print("[자가치유] 취소된 run — 알리지 않음")
-        return 0
 
     저장소 = os.environ.get("GITHUB_REPOSITORY", "")
     run = os.environ.get("GITHUB_RUN_ID", "")
@@ -429,6 +448,28 @@ def _본체(argv=None) -> int:
         워크플로 = 워크플로.split("@")[0].split("/")[-1]
     링크 = (f"{os.environ.get('GITHUB_SERVER_URL', 'https://github.com')}/"
           f"{저장소}/actions/runs/{run}") if 저장소 and run else ""
+
+    if 결과 == "cancelled":
+        # ★'취소'에는 두 얼굴이 있다(2026-08-20 실사고 교훈):
+        #   사람이 누른 취소·새 run 이 옛 run 을 밀어낸 취소(telegram-qa)는 조용한 게 맞지만,
+        #   **시간 한계를 다 채우고 잘린 취소는 고장**이다. GitHub 이 둘 다 'cancelled' 로
+        #   적는 바람에 경쟁사-댓글 수집이 7/29~8/16 매일 밤 시간 초과로 죽는데 알림이
+        #   0통이었다. 침묵 조건을 넓히지 않는다 — 워크플로가 TIMEOUT_MIN 을 밝힌 경우,
+        #   경과가 한계에 닿았으면(또는 경과를 못 쟀으면) 시간 초과로 알린다.
+        분한계 = _시간한계분()
+        if 분한계 <= 0:
+            print("[자가치유] 취소된 run — 시간 한계 미지정(TIMEOUT_MIN 없음), 알리지 않음")
+            return 0
+        경과 = _경과분(저장소, run)
+        if 경과 is not None and 경과 < 분한계 - 2:
+            print(f"[자가치유] 취소된 run(경과 {경과:.0f}분 < 한계 {분한계}분) "
+                  f"— 사람 취소로 보고 알리지 않음")
+            return 0
+        텔레그램(f"⏱ {a.이름} 시간 초과로 강제 종료"
+              f"\n예정 한계({분한계}분)를 채우고 잘렸습니다 — 오늘치가 다 처리되지 못했습니다."
+              f"\n양이 늘었는지 확인이 필요합니다. 다음 예정 회차에 자동으로 다시 시도합니다."
+              + (f"\n로그: {링크}" if 링크 else ""))
+        return 0
 
     if 결과 == "failure":
         연속 = 연속실패_횟수(저장소, 워크플로, run, 결과)
