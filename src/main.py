@@ -578,7 +578,8 @@ def run_cycle() -> dict:
     #   그날 기록이 남게 하는 안전망일 뿐이고, 진짜 그날 값은 4.7(사이클 끝)에서 덮어쓴다.
     if _env_truthy("ARCHIVE_ENABLED"):
         try:
-            from src.archive import build_archive_rows, append_daily_archive
+            from src.archive import (build_archive_rows, append_daily_archive,
+                                     post_daily_archive)
             archive_date = archive_date_started
             archive_rows = build_archive_rows(data, archive_date)
             archive_result = append_daily_archive(client, archive_rows, archive_date)
@@ -589,6 +590,12 @@ def run_cycle() -> dict:
                     f"[아카이브] {archive_result['rows_written']} 행 기록 "
                     f"(date={archive_result['date']}, 탭생성={archive_result['created_tab']})"
                 )
+            # 시트 탈출 1단계(2026-08-21): 시트와 **같이** DB(홈페이지)에도 쌓는다.
+            # GOYU_* 가 없으면 조용히 건너뛴다 — 이 줄이 기존 동작을 안 바꾸는 이유다.
+            _db = post_daily_archive(archive_rows, archive_date)
+            print(f"[아카이브-DB] {_db.get('posted', 0)} 행"
+                  + (f" — {_db['skipped']}" if _db.get("skipped") else "")
+                  + (f" — 실패 {_db['error']} (cron 진행)" if _db.get("error") else ""))
         except Exception as e:
             print(f"[아카이브] 실패 = {e} (cron 진행)")
 

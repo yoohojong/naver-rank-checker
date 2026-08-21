@@ -250,3 +250,93 @@ def append_daily_archive(
                 "replaced_rows": len(old_rows)}
     except Exception as e:  # noqa: BLE001 — 아카이브 실패가 cron 죽이면 안 됨
         return {"rows_written": 0, "date": date_str, "created_tab": False, "error": str(e)}
+
+
+# ---------- 홈페이지(DB) 동시 적재 — 시트 탈출 1단계 (2026-08-21) ----------
+# 왜: 이 아카이브는 **로그**다(기계가 쌓기만 하고 사람이 안 만진다). 그런데 구글시트 탭에
+#     쌓여 카페외부 시트를 계속 무겁게 했다 — 2026-08-21 실측 4만 행·24만 칸 =
+#     문서 격자의 23.9%, 그리고 매 cron 자란다. 로그를 스프레드시트에 두는 건 그릇이 틀렸다.
+#
+# 이행 방식(되돌릴 수 있게): 지금은 **시트와 DB 에 같이** 쓴다. 화면이 DB 를 보게 되고
+#     대조가 0오차로 붙은 뒤에 시트 쓰기를 끈다. 그 전까지 시트가 진실원이다.
+#
+# 켜지는 조건: GOYU_BASE_URL / GOYU_USER / GOYU_PASS 세 개가 다 있을 때만.
+#     하나라도 없으면 **아무 일도 안 하고 조용히 건너뛴다**(기존 동작 그대로).
+#     → 이 코드를 넣는 것만으로는 아무것도 안 바뀐다. 사장님이 계정을 넣으면 켜진다.
+#
+# 실패해도 절대 cron 을 죽이지 않는다 — append_daily_archive 와 같은 원칙.
+_POST_PATH = "/admin/exposure-archive"
+_LOGIN_PATH = "/login"
+
+
+def _goyu_config():
+    """(주소, 아이디, 비번). 하나라도 비면 None — 그러면 DB 적재는 건너뛴다."""
+    import os
+
+    base = (os.environ.get("GOYU_BASE_URL") or "").strip().rstrip("/")
+    user = (os.environ.get("GOYU_USER") or "").strip()
+    pw = os.environ.get("GOYU_PASS") or ""
+    return (base, user, pw) if (base and user and pw) else None
+
+
+def _csrf_token(html: str) -> str:
+    """로그인 폼의 csrf_token. 못 찾으면 빈 문자열(그대로 보내보고 서버가 판단)."""
+    import re as _re
+
+    m = _re.search(r'name="csrf_token"\s+value="([^"]+)"', html or "")
+    return m.group(1) if m else ""
+
+
+def post_daily_archive(rows: list[list], date_str: str, *, timeout: int = 60) -> dict:
+    """하루치 아카이브를 홈페이지 DB 에 올린다(날짜 단위 멱등 — 서버가 그날만 교체).
+
+    Returns:
+        {"posted": n, "date": ...} / 건너뜀이면 {"posted": 0, "skipped": 사유}
+        / 실패면 {"posted": 0, "error": ...}. **예외를 위로 던지지 않는다.**
+    """
+    cfg = _goyu_config()
+    if cfg is None:
+        return {"posted": 0, "date": date_str, "skipped": "GOYU_* 미설정 — DB 적재 건너뜀"}
+    base, user, pw = cfg
+
+    # ★행 0 이면 보내지 않는다. 서버도 막지만 여기서도 막는다 — 읽기가 반쯤 실패해
+    #   rows=[] 가 된 채 올라가면 '그날 기록이 통째로 비는' 사고가 된다(시트에서 겪은 것).
+    if not rows:
+        return {"posted": 0, "date": date_str, "skipped": "행 0 — 보내지 않음"}
+
+    try:
+        import requests
+    except ImportError:
+        return {"posted": 0, "date": date_str, "error": "requests 없음"}
+
+    try:
+        with requests.Session() as s:
+            r = s.get(f"{base}{_LOGIN_PATH}", timeout=timeout)
+            r.raise_for_status()
+            r = s.post(
+                f"{base}{_LOGIN_PATH}",
+                data={"username": user, "password": pw, "csrf_token": _csrf_token(r.text)},
+                timeout=timeout,
+                allow_redirects=True,
+            )
+            r.raise_for_status()
+
+            r = s.post(
+                f"{base}{_POST_PATH}",
+                json={"date": date_str, "rows": rows},
+                timeout=timeout,
+                allow_redirects=False,          # 로그인 실패 시 302 를 성공으로 오인하지 않게
+            )
+            if r.status_code in (301, 302, 303, 307, 308):
+                return {"posted": 0, "date": date_str,
+                        "error": "로그인 안 됨(적재가 로그인 화면으로 넘어감) — 계정 확인"}
+            if r.status_code != 200:
+                return {"posted": 0, "date": date_str,
+                        "error": f"HTTP {r.status_code}: {r.text[:200]}"}
+            body = r.json()
+            if body.get("skipped"):
+                return {"posted": 0, "date": date_str, "skipped": body["skipped"]}
+            return {"posted": int(body.get("written") or 0), "date": date_str,
+                    "total": body.get("total")}
+    except Exception as e:  # noqa: BLE001 — DB 적재 실패가 cron 을 죽이면 안 된다
+        return {"posted": 0, "date": date_str, "error": str(e)}

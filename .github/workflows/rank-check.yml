@@ -126,6 +126,11 @@ jobs:
           SPREADSHEET_ID: ${{ secrets.SPREADSHEET_ID }}
           SERVICE_ACCOUNT_JSON: ${{ secrets.SERVICE_ACCOUNT_JSON }}
           CAFE_WHITELIST_SLUGS: ${{ secrets.CAFE_WHITELIST_SLUGS }}  # T-M90 (2026-05-17): 사장님 운영 카페 slug 콤마 구분
+          # 상위노출_이력 시트 탈출 1단계(2026-08-21): 시트와 **같이** 홈페이지 DB 에도 쌓는다.
+          # 이 셋이 다 있을 때만 켜진다 — 없으면 조용히 건너뛰고 예전과 똑같이 시트에만 쓴다.
+          GOYU_BASE_URL: ${{ secrets.GOYU_BASE_URL }}
+          GOYU_USER: ${{ secrets.GOYU_USER }}
+          GOYU_PASS: ${{ secrets.GOYU_PASS }}
           NAVER_SLOWDOWN_BASE_SEC: '5.0'
           NAVER_SLOWDOWN_MAX_SEC: '120'
           TYPE_PREVIEW_WRITE_CONFIRMED: ${{ github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.apply_type_preview != 'false') }}
