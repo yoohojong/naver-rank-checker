@@ -1,0 +1,66 @@
+name: cafe-datalab-demographics
+# 데이터랩 성비·연령대 — 기존 NAVER_OPENAPI_CLIENT_ID/SECRET(지식인용) 재사용 프로브 + 본실행.
+# team-project 사장님 지시(2026-08-26) "네이버 데이터랩에서 성비, 연령대 비율을 찾아서
+# 자료로 달라" 를 위해, team-project 쪽엔 없는 데이터랩 키 대신 이 저장소에 이미 살아있는
+# 지식인용 키가 데이터랩 권한도 갖고 있는지 확인하고, 있으면 top-30 키워드로 바로 돈다.
+# (수동 전용 — 이 앱이 데이터랩 권한을 실제로 가졌는지 아직 미확인이라 자동 스케줄 없음.)
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: cafe-datalab-demographics
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6.0.2
+        with:
+          token: ${{ github.token }}
+
+      - name: Setup Python 3.13
+        uses: actions/setup-python@v6.2.0
+        with:
+          python-version: '3.13'
+
+      - name: Setup venv + install deps (curl_cffi만 필요)
+        shell: bash
+        run: |
+          python -m venv .venv
+          ./.venv/bin/python -m pip install --upgrade pip
+          ./.venv/bin/python -m pip install curl_cffi==0.15.0
+
+      - name: 데이터랩 성비·연령대 프로브 + 본실행
+        id: run
+        shell: bash
+        env:
+          NAVER_OPENAPI_CLIENT_ID: ${{ secrets.NAVER_OPENAPI_CLIENT_ID }}
+          NAVER_OPENAPI_CLIENT_SECRET: ${{ secrets.NAVER_OPENAPI_CLIENT_SECRET }}
+          PYTHONIOENCODING: 'utf-8'
+        run: |
+          ./.venv/bin/python scripts/datalab_demographics_probe.py
+
+      - name: 결과 업로드 (성공/실패 모두 — 실패면 원본 오류가 들어있음)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: datalab-demographics-result
+          path: data/datalab_demographics_result.json
+          if-no-files-found: warn
+
+      - name: 결과를 로그에도 그대로 출력 (아티팩트 안 열어도 보이게)
+        if: always()
+        shell: bash
+        run: |
+          if [ -f data/datalab_demographics_result.json ]; then
+            echo "===== data/datalab_demographics_result.json ====="
+            cat data/datalab_demographics_result.json
+          else
+            echo "결과 파일이 없습니다 (프로브 이전 단계에서 중단됨)"
+          fi
