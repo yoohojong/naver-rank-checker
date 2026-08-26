@@ -4,8 +4,16 @@ name: cafe-datalab-demographics
 # 자료로 달라" 를 위해, team-project 쪽엔 없는 데이터랩 키 대신 이 저장소에 이미 살아있는
 # 지식인용 키가 데이터랩 권한도 갖고 있는지 확인하고, 있으면 top-30 키워드로 바로 돈다.
 # (수동 전용 — 이 앱이 데이터랩 권한을 실제로 가졌는지 아직 미확인이라 자동 스케줄 없음.)
+#
+# 발동: 수동(workflow_dispatch) + 이 브랜치에 요청 파일 push.
+#   (클라우드 세션 토큰으로는 수동 발동이 403 날 수 있어, team-project 의
+#    cafe-target-live-check.yml 과 같은 '요청 파일 push 발동' 을 함께 둔다.)
 on:
-  workflow_dispatch:
+  workflow_dispatch: {}
+  push:
+    branches: [claude/cafe-datalab-demographics-probe]
+    paths:
+      - ".github/cafe-datalab-demographics-request.txt"
 
 concurrency:
   group: cafe-datalab-demographics
