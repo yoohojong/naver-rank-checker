@@ -1163,6 +1163,10 @@ def _parse_bootstrap_json_fallback(
                 # JSON 대체 경로는 화면 칸 개념이 없다(링크 순서로 셈) — 정직하게 표시한다.
                 result.rank_from_dom_cards = False
                 result.matched_url = target_url
+                # ★조용히 넘기지 않는다 (2026-09-03 감사): 나머지 두 폴백 경로는
+                #   이미 로그를 남기는데 이 target_url 정확매치만 조용했다. 옛 방식(링크 순서)
+                #   으로 순위를 잡은 회차를 사람이 로그에서 구별할 수 있어야 한다.
+                print(f"    [JSON_FALLBACK_MATCH] idx={idx} kind={kind} matched_url={target_url[:90]}")
                 return True
             continue
 
