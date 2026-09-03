@@ -54,6 +54,24 @@ def _실행(때: datetime, 결론="success", 상태="completed") -> dict:
             "conclusion": 결론, "status": 상태}
 
 
+def _판정시각들(날=None) -> list:
+    """라이브 워크플로의 cron 을 그날의 **KST 판정 시각**으로 편다.
+
+    ★검사가 시각을 따로 적어 두면 라이브와 갈라진다 — 실제로 갈라져 있었다.
+      검사는 '지금'을 07:00·08:00 으로 넣어 통과했는데 라이브 판정은 09:00 하나뿐이라,
+      **검사가 통과하는 상태를 라이브가 한 번도 안 만들었다.** 그래서 파일에서 읽는다.
+    """
+    날 = 날 or datetime(2026, 8, 7, tzinfo=timezone.utc)
+    d = yaml.safe_load(WF.read_text(encoding="utf-8"))
+    트리거 = d.get("on") or d.get(True)
+    시각 = []
+    for c in 트리거["schedule"]:
+        분, 시들 = c["cron"].split()[0], c["cron"].split()[1]
+        for h in 시들.split(","):
+            시각.append(날.replace(hour=int(h), minute=int(분)).astimezone(KST))
+    return sorted(시각)
+
+
 # ── ① 회차 경계 ──────────────────────────────────────────────────────────────
 
 class Test회차_경계:
@@ -287,24 +305,45 @@ def _결과(상태들):
 
 
 class Test보고_문구:
-    def test_다_돌면_초록이고_그래도_보낸다(self):
-        """★잘 돌아도 보내는 게 핵심 — 이 한 줄이 감시가 살아있다는 유일한 증거다."""
-        문구 = build_report(_결과([정상] * 4))
-        assert 문구 and "🟢" in 문구 and "4번 정상" in 문구
+    """★2026-09-03 계약이 바뀌었다 (사장님 확정).
 
-    def test_하나_빠지면_주황(self):
+    원문: "몇번 정상이 아니라 비정상 뜨는 즉시 알려달라고."
+    · 세는 문구('4번 중 3번 정상')를 없앤다.
+    · 정상이면 **한 통도 안 보낸다** — 빈 문자열이 정답이다.
+    · 매일 오는 살아있음 한 줄은 팀프로젝트 쪽이 맡는다. 여기서 만들지 않는다.
+    """
+
+    def test_다_돌면_아무_말도_안_한다(self):
+        assert build_report(_결과([정상] * 4)) == "", \
+            "정상인데 문자를 보냈다 — 사장님이 없애라고 하신 그 문구다"
+
+    def test_세는_문구가_어디에도_없다(self):
+        """'4번 중 3번 정상' 류가 살아 있으면 사장님 지시를 어긴 것이다."""
+        for 상태들 in ([정상] * 4, [정상, 안돎, 정상, 정상], [안돎] * 4, [보류] * 4):
+            문구 = build_report(_결과(상태들))
+            assert "번 정상" not in 문구, f"세는 문구가 남았다: {문구}"
+
+    def test_아직_도는_중이면_조용하다(self):
+        """사장님 원문: '실행중이라면 문제가 없음.' — 지연은 실패가 아니다."""
+        assert build_report(_결과([정상, 보류, 정상, 정상])) == ""
+
+    def test_안_돈_회차가_있으면_빨강으로_바로_말한다(self):
         문구 = build_report(_결과([정상, 안돎, 정상, 정상]))
-        assert "🟠" in 문구 and "12~18시" in 문구
+        assert "🔴" in 문구 and "12~18시" in 문구
 
     def test_둘_이상_빠지면_빨강(self):
         assert "🔴" in build_report(_결과([정상, 안돎, 안돎, 정상]))
 
-    def test_보류는_따로_밝힌다(self):
-        문구 = build_report(_결과([정상, 보류, 정상, 정상]))
-        assert "아직 도는 중" in 문구
-        # 초록은 '전부 정상'일 때만. 아직 도는 중은 정상이 아니다(2026-08-07 정정).
-        assert "🟢" not in 문구
-        assert "🔴" not in 문구, "하나 도는 중인 걸 빨간불로 키우면 헛경보다"
+    def test_이미_알린_회차는_다시_안_알린다(self):
+        """★6시간마다 판정하니 같은 회차를 네 번 본다. 그대로면 문자가 서너 통 간다."""
+        결과 = _결과([정상, 안돎, 정상, 정상])
+        assert build_report(결과, 새것=set()) == ""
+        assert "🔴" in build_report(결과, 새것={"12~18시"})
+
+    def test_전부_보류면_그건_조용히_넘기지_않는다(self):
+        """정상이 하나도 없는데 침묵하면 러너 기근 날 무음이 된다(2026-08-07 실측)."""
+        문구 = build_report(_결과([보류] * 4))
+        assert "🔴" in 문구 and "안 끝나고" in 문구
 
     def test_일부_결측은_기록이_남아있다고_말한다(self):
         """★정정: 영구 기록은 하루 1벌이라(src/archive.py 날짜별 멱등)
@@ -326,6 +365,12 @@ class Test보고_문구:
     def test_정상이면_군더더기가_없다(self):
         문구 = build_report(_결과([정상] * 4))
         assert "걸른" not in 문구 and "옛것" not in 문구
+
+    def test_판정_값은_문자와_따로_남는다(self):
+        """★살아있음 한 줄은 팀프로젝트가 만든다 — 여기서는 값만 넘긴다."""
+        from scripts.가동확인 import 결과_한줄
+        한줄 = 결과_한줄(_결과([정상, 안돎, 보류, 정상]))
+        assert "12~18시" in 한줄 and 안돎 in 한줄
 
 
 class Test경보_문구:
@@ -387,7 +432,13 @@ class Test경보_배선:
         rc, 보낸것 = self._돌린다(monkeypatch, 실행, 정상)
         assert rc == 0 and 보낸것 == []
 
-    def test_보고모드는_정상이어도_보낸다(self, monkeypatch):
+    def test_보고모드는_정상이면_한_통도_안_보낸다(self, monkeypatch):
+        """★2026-09-03 사장님 확정으로 뒤집힌 계약.
+
+        원문: "몇번 정상이 아니라 비정상 뜨는 즉시 알려달라고."
+        판정은 6시간마다 하지만 정상일 땐 조용하다 — 그래서 문자가 늘지 않는다.
+        살아있음 한 줄은 팀프로젝트 쪽이 맡는다.
+        """
         지금 = datetime.now(timezone.utc)
         실행 = [_실행(회차_시작(지금) - timedelta(hours=6 * i) + timedelta(hours=1))
                 for i in range(1, 5)]
@@ -395,7 +446,19 @@ class Test경보_배선:
         monkeypatch.setattr(G, "실행이력", lambda *a, **k: 실행)
         monkeypatch.setattr(G, "send_telegram", lambda t, **k: 보낸것.append(t) or True)
         assert G.main(["--모드", "보고"]) == 0
-        assert len(보낸것) == 1 and "🟢" in 보낸것[0]
+        assert 보낸것 == [], f"정상인데 문자가 나갔다: {보낸것}"
+
+    def test_보고모드도_판정_값은_남긴다(self, monkeypatch, tmp_path):
+        """조용해도 **아무것도 안 남기면** 팀프로젝트가 읽을 게 없다."""
+        지금 = datetime.now(timezone.utc)
+        실행 = [_실행(회차_시작(지금) - timedelta(hours=6 * i) + timedelta(hours=1))
+                for i in range(1, 5)]
+        요약 = tmp_path / "summary.md"
+        monkeypatch.setenv("GITHUB_STEP_SUMMARY", str(요약))
+        monkeypatch.setattr(G, "실행이력", lambda *a, **k: 실행)
+        monkeypatch.setattr(G, "send_telegram", lambda t, **k: True)
+        assert G.main(["--모드", "보고"]) == 0
+        assert "[가동확인-결과]" in 요약.read_text(encoding="utf-8")
 
     def test_발송_실패하면_1로_끝낸다(self, monkeypatch):
         monkeypatch.setattr(G, "실행이력", lambda *a, **k: [])
@@ -428,10 +491,13 @@ class Test워크플로_배선:
         for iid in (트리거.get("workflow_dispatch") or {}).get("inputs", {}):
             assert 규칙.match(iid), f"input id 가 규칙 위반: {iid!r}"
 
-    def test_매일_돈다(self, wf):
-        트리거 = wf.get("on") or wf.get(True)
-        크론 = [c["cron"] for c in 트리거["schedule"]]
-        assert "0 0 * * *" in 크론, f"일일 스케줄(KST 09:00)이 꺼졌다: {크론}"
+    def test_여섯시간마다_돈다(self, wf):
+        """★하루 한 번이면 '안 돈 것'을 최대 21시간 뒤에 안다(2026-09-03 사장님 지적).
+
+        회차가 6시간이므로 판정도 6시간마다여야 회차 하나에 판정 한 번이 맞물린다.
+        """
+        assert len(_판정시각들()) == 4, \
+            f"하루 판정 횟수가 4번이 아니다: {[str(t) for t in _판정시각들()]}"
 
     def test_수동_실행도_된다(self, wf):
         트리거 = wf.get("on") or wf.get(True)
@@ -446,7 +512,12 @@ class Test워크플로_배선:
         assert "pip install" not in 본문
 
     def test_보고_모드로_부른다(self, wf):
-        """--모드 경보 로 잘못 부르면 정상일 때 아무 말도 안 한다 = 살아있는지 모른다."""
+        """--모드 경보 로 잘못 부르면 자기가 살아있는지를 자기한테 묻게 된다.
+
+        경보 모드는 '이 워크플로가 오늘 돌았나'(보고통로_상태)를 같이 보는데,
+        그건 사장님 PC 쪽 다리가 할 일이다 — 여기서 부르면 늘 '나는 지금 돌고 있다'다.
+        (정상일 때 조용한 것은 이제 두 모드가 같다 — 2026-09-03 사장님 확정.)
+        """
         스텝 = [s for s in self._스텝(wf) if s.get("id") == "report"][0]
         assert "--모드 보고" in 스텝["run"]
 
@@ -604,61 +675,112 @@ class Test화면_인코딩이_경보를_죽이지_않는다:
             + r.stderr.decode("utf-8", "replace")[-400:])
 
 
-class Test보류_한계가_네_회차를_다_덮는가:
-    """★3차 검증 MAJOR. 12시간으로 뒀더니 뒤쪽 두 회차가 **영원히 사면**됐다.
+class Test보류_한계가_라이브_판정시각과_맞는가:
+    """★검사와 라이브가 갈라져 있던 자리다 (2026-09-03).
 
-    판정 시각(09:00)에서 네 회차의 '끝난 뒤 경과'는 21h / 15h / 9h / 3h 다.
-    한계가 3h 보다 크면 마지막 회차는 절대 승격되지 않고, 판정 창은 24시간을
-    겹침 없이 자르므로 그 회차를 두 번 다시 안 본다.
-    하필 그 구간(KST 18~06시 = UTC 09~21시)이 러너가 가장 붐비는 시간대다.
+    예전 검사는 '지금'을 07:00·08:00 으로 넣어 보류를 만들어 냈는데, **라이브 판정은
+    09:00 하나뿐**이었다. 그 시각에서 네 회차의 '끝난 뒤 경과'는 21h/15h/9h/3h 라
+    가장 짧은 3h 도 옛 한계(2h)를 넘겼다 — 즉 라이브에서는 '보류'가 **한 번도**
+    만들어질 수 없었고, 8/7 에 9시간 기다렸다 성공한 회차가 '안 돌았음'으로 찍혔다.
+    검사는 초록인데 라이브는 늘 틀린 상태였다.
+
+    그래서 이제 시각을 검사에 적어 두지 않는다 — **워크플로 cron 에서 직접 계산한다.**
+    한쪽만 바꾸면 여기가 빨개진다.
     """
 
-    def _경과시간(self, 판정시각):
-        회차들 = 최근_끝난_회차(판정시각)
-        return [(판정시각 - (c + G.회차_길이)).total_seconds() / 3600 for c in 회차들]
+    def _경과시간들(self):
+        """판정 시각마다, 그때 판정하는 네 회차의 '끝난 뒤 경과'(시간)."""
+        값 = set()
+        for t in _판정시각들():
+            for c in 최근_끝난_회차(t):
+                값.add(round((t - (c + G.회차_길이)).total_seconds() / 3600, 2))
+        return sorted(값)
 
-    def test_가장_늦게_끝난_회차도_승격_가능하다(self):
-        for 시각 in (_kst(8, 7, 9), _kst(8, 7, 9, 30)):   # GitHub 09:00 / PC 09:30
-            최소경과 = min(self._경과시간(시각))
-            assert G.보류_한계.total_seconds() / 3600 < 최소경과, (
-                f"보류_한계({G.보류_한계})가 가장 짧은 경과({최소경과:.1f}h)보다 크다 — "
-                "그 회차는 영원히 승격 못 하고 판정 창은 다시 안 온다")
+    def test_첫_판정은_봐주고_다음_판정이_잡는다(self):
+        경과 = self._경과시간들()
+        한계 = G.보류_한계.total_seconds() / 3600
+        assert 경과[0] < 한계 < 경과[1], (
+            f"보류_한계({한계}h)가 판정 시각과 안 맞는다. 경과={경과}\n"
+            f"· {한계} <= {경과[0]} 이면 큐에 갇힌 실행이 첫 판정부터 '안 돎'이 된다 "
+            "= 멀쩡한데 경보(8/7 사고 재발)\n"
+            f"· {한계} >= {경과[1]} 이면 다음 판정에서도 안 잡혀 늦게 안다")
 
-    @pytest.mark.parametrize("판정시각", [_kst(8, 7, 9), _kst(8, 7, 9, 30)])
-    def test_전부_큐면_네_회차_모두_안돎으로_승격된다(self, 판정시각):
-        """end-to-end: 승격이 실제로 경보까지 이어지는지."""
-        회차들 = 최근_끝난_회차(판정시각)
-        큐 = [{"createdAt": (c + timedelta(minutes=5)).astimezone(timezone.utc)
-               .isoformat().replace("+00:00", "Z"),
-               "conclusion": "", "status": "queued"} for c in 회차들]
-        결과 = 판정(큐, 회차들, 판정시각)
-        assert all(r["상태"] == 안돎 for r in 결과), \
-            f"승격 안 된 회차가 있다: {[(r['회차'], r['상태']) for r in 결과]}"
-        assert "🔴" in build_report(결과)
-        assert build_alert(결과, 보고통로=정상), "경보까지 안 이어졌다"
+    def test_아직_도는_중이면_첫_판정에서_봐준다(self):
+        """8/7 사고 재현: 회차 직후에 만들어져 아직 큐에 있는 실행."""
+        첫판정 = _판정시각들()[0]
+        회차들 = 최근_끝난_회차(첫판정)
+        표적 = 회차들[-1]                       # 가장 최근에 끝난 회차
+        큐 = [_실행(표적 + timedelta(minutes=5), "", "queued")]
+        assert 판정(큐, [표적], 첫판정)[0]["상태"] == 보류, \
+            "아직 도는 중인데 '안 돌았다'로 읽었다 — 헛경보가 나간다"
 
-    def test_실측_지연은_헛승격되지_않는다(self):
-        """실측(완료 198건): 회차 종료를 넘겨 생성된 실행 0건. 여유가 충분한지."""
-        회차들 = [_kst(8, 7, 0)]
-        # 회차 끝나고 1시간 뒤에 아직 도는 중 — 정상 범위다
-        assert 판정([{"createdAt": _kst(8, 7, 5, 50).astimezone(timezone.utc)
-                     .isoformat().replace("+00:00", "Z"),
-                     "conclusion": "", "status": "in_progress"}],
-                   회차들, _kst(8, 7, 7))[0]["상태"] == 보류
+    def test_계속_안_끝나면_다음_판정에서_잡는다(self):
+        표적 = _kst(8, 7, 0)
+        큐 = [_실행(표적 + timedelta(minutes=5), "", "queued")]
+        다음 = 표적 + G.회차_길이 + G.보류_한계 + timedelta(minutes=1)
+        assert 판정(큐, [표적], 다음)[0]["상태"] == 안돎, \
+            "무한 대기를 허용하면 침묵과 같다"
 
 
-class Test문구의_숫자가_서로_맞는가:
-    """★사장님이 목록과 숫자를 맞춰볼 수 있어야 한다.
+class Test안_돈_회차는_딱_한_번_문자로_나간다:
+    """★6시간마다 판정하면서 문자가 늘지 않는지를 **라이브 cron 으로** 확인한다.
 
-    예전엔 목록은 '안 돈' 것만, 시간 숫자는 보류까지 세서 안 맞았다.
+    사장님 지시 두 개가 여기서 만난다:
+      · "비정상 뜨는 즉시 알려달라고" → 한 번도 안 나가면 안 된다.
+      · 문자를 하루 4통으로 늘리지 말 것 → 같은 회차로 두 번 나가도 안 된다.
     """
 
-    def test_목록_개수와_시간_계산이_같은_것을_센다(self):
-        문구 = build_report(_결과([정상, 안돎, 보류, 안돎]))
-        갱신안됨 = [x for x in 문구.splitlines() if "갱신 안 된 점검" in x][0]
-        assert 갱신안됨.count(",") + 1 == 3, f"목록 개수가 안 맞는다: {갱신안됨}"
-        assert "24시간 전 것" in 문구   # (연속 3 + 1) * 6
+    def _하루치_판정시각(self, 표적):
+        """표적 회차가 끝난 뒤 24시간 안에 오는 판정 시각들."""
+        끝 = 표적 + G.회차_길이
+        시각 = []
+        for 날 in (0, 1, 2):
+            기준 = datetime(2026, 8, 6, tzinfo=timezone.utc) + timedelta(days=날)
+            시각 += [t for t in _판정시각들(기준) if 끝 < t <= 끝 + timedelta(hours=24)]
+        return sorted(시각)
 
-    def test_도는_중인_것은_그렇게_표시한다(self):
-        문구 = build_report(_결과([정상, 안돎, 보류, 정상]))
-        assert "(아직 도는 중)" in 문구
+    def _문자들(self, 실행만들기, 표적=None):
+        표적 = 표적 or _kst(8, 7, 0)
+        나온것 = []
+        for t in self._하루치_판정시각(표적):
+            회차들 = 최근_끝난_회차(t)
+            실행 = 실행만들기(회차들, 표적, t)
+            문구 = build_report(판정(실행, 회차들, t), G.새로_안돎(실행, 회차들, t))
+            if 문구:
+                나온것.append((t, 문구))
+        return 나온것
+
+    def test_아예_안_돈_회차는_한_통만_나간다(self):
+        def 실행(회차들, 표적, t):
+            return [_실행(c + timedelta(minutes=7)) for c in 회차들 if c != 표적]
+        문자 = self._문자들(실행)
+        assert len(문자) == 1, \
+            f"문자가 {len(문자)}통 나갔다: {[str(t) for t, _ in 문자]}"
+        assert 회차_라벨(_kst(8, 7, 0)) in 문자[0][1]
+
+    def test_실패로_끝난_회차도_한_통만_나간다(self):
+        def 실행(회차들, 표적, t):
+            return [_실행(c + timedelta(minutes=7),
+                          "failure" if c == 표적 else "success") for c in 회차들]
+        assert len(self._문자들(실행)) == 1
+
+    def test_늦게라도_성공하면_한_통도_안_나간다(self):
+        """★8/7 사고. 9시간 기다렸다 성공한 회차에 경보가 나가면 안 된다."""
+        표적 = _kst(8, 7, 0)
+        성공시각 = 표적 + timedelta(hours=9)
+
+        def 실행(회차들, _표적, t):
+            목록 = [_실행(c + timedelta(minutes=7)) for c in 회차들 if c != 표적]
+            # 판정하는 그 시점에 GitHub 이 돌려줄 모습 그대로
+            목록.append(_실행(표적 + timedelta(minutes=5), "success", "completed")
+                       if t >= 성공시각
+                       else _실행(표적 + timedelta(minutes=5), "", "queued"))
+            return 목록
+        문자 = self._문자들(실행, 표적)
+        assert 문자 == [], f"멀쩡한데 경보가 나갔다: {[m for _, m in 문자]}"
+
+    def test_하루가_통째로_비면_판정할_때마다_알린다(self):
+        """가장 나쁜 경우다 — 이건 한 번 알리고 마는 게 아니다."""
+        문자 = self._문자들(lambda 회차들, 표적, t: [])
+        assert len(문자) >= 2, "하루치가 통째로 비었는데 한 번만 말하고 말았다"
+        assert all("통째로" in m for _, m in 문자)

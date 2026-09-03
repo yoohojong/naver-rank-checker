@@ -131,9 +131,20 @@ jobs:
                  --json conclusion,status,databaseId \
                  -q ".[] | select(.status==\"completed\") | select(.databaseId != ${RUN_ID}) | .conclusion" \
                  2>/dev/null || echo "")
+          # ★2026-09-03: 'failure' 만 세던 것을 고친다. 위 job 게이트(26행)는
+          #   cancelled·timed_out·startup_failure 에도 워치독을 깨우는데, 여기서는
+          #   그 셋을 만나면 세기가 끊겼다. 러너를 못 받아 하루 8회가 전부 cancelled 로
+          #   끝나면 매번 streak=1 이라, notify_run_failure.py 의 '5회 연속 = 하루치가
+          #   통째로 빕니다' 빨간불이 **영원히 안 떴다.**
+          #   → 끊는 조건은 'success' 하나. 워치독이 깨어나는 네 결론은 전부 센다.
+          #   skipped·neutral 같은 나머지는 세지도, 끊지도 않는다(빈 회차 취급).
           streak=1
           while IFS= read -r c; do
-            [ "$c" = "failure" ] && streak=$((streak+1)) || break
+            [ -z "$c" ] && continue
+            [ "$c" = "success" ] && break
+            case "$c" in
+              failure|cancelled|timed_out|startup_failure) streak=$((streak+1)) ;;
+            esac
           done <<< "$runs"
           echo "streak=$streak" >> "$GITHUB_OUTPUT"
           echo "[WATCHDOG] 최근 연속 실패=$streak"

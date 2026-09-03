@@ -14,6 +14,7 @@ import sys
 import pytest
 
 HERE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "scripts")
+저장소루트 = pathlib.Path(__file__).resolve().parents[2]
 
 
 def _load():
@@ -140,12 +141,51 @@ class Test전체_흐름:
         assert len(보낸것) == 1 and "복구" in 보낸것[0]
         assert 닫힌것, "나은 이슈를 계속 띄워두면 아무도 안 본다"
 
-    def test_취소인데_시간한계가_없으면_알리지_않는다(self, H, monkeypatch):
-        # telegram-qa 처럼 새 run 이 옛 run 을 밀어내는 취소가 일상인 워크플로 보호.
+    def test_한계를_아예_못_알아내면_알리지_않는다(self, H, monkeypatch):
+        # 한계를 모르면 고장인지 사람이 누른 취소인지 가릴 근거가 없다 — 그때만 조용하다.
+        # (2026-09-03 개정: 예전엔 TIMEOUT_MIN 만 봤다. 이제 워크플로 파일도 보므로
+        #  '못 알아내는' 상황을 만들려면 그런 워크플로가 없어야 한다.)
         보낸것 = self._스파이(H, monkeypatch)
         monkeypatch.delenv("TIMEOUT_MIN", raising=False)
+        monkeypatch.setenv("WORKFLOW_FILE", "있지도-않은-워크플로.yml")
         H.main(["--이름", "상위노출 순위검사", "--결과", "cancelled"])
         assert 보낸것 == []
+
+    def test_TIMEOUT_MIN_이_없어도_워크플로_파일에서_한계를_읽는다(self, H, monkeypatch):
+        """★2026-09-03. 이게 그 구멍이었다.
+
+        발행검수(balhaeng-geomsu.yml)는 timeout-minutes: 120 을 적어 놓고도
+        env TIMEOUT_MIN 이 없어서, 120분을 다 채우고 잘려도 **문자가 0통**이었다.
+        값을 두 벌 적게 하는 구조 자체를 없앤다 — 선언한 자리에서 읽는다.
+        """
+        보낸것 = self._스파이(H, monkeypatch)
+        monkeypatch.delenv("TIMEOUT_MIN", raising=False)
+        monkeypatch.setenv("WORKFLOW_FILE", "balhaeng-geomsu.yml")
+        monkeypatch.setenv("GITHUB_WORKSPACE", str(저장소루트))
+        monkeypatch.setattr(H, "_경과분", lambda *a: 119.5)
+        H.main(["--이름", "발행본 검수", "--결과", "cancelled"])
+        assert len(보낸것) == 1 and "시간 초과" in 보낸것[0]
+        assert "120분" in 보낸것[0], f"한계를 잘못 읽었다: {보낸것[0]}"
+
+    def test_주석에_적힌_숫자가_실제_한계를_이기지_않는다(self, H, tmp_path, monkeypatch):
+        """설명글이 검사를 대신 통과시켜 주는 일은 없어야 한다."""
+        폴더 = tmp_path / ".github" / "workflows"
+        폴더.mkdir(parents=True)
+        (폴더 / "x.yml").write_text(
+            "jobs:\n  a:\n    # timeout-minutes: 999\n    timeout-minutes: 30\n",
+            encoding="utf-8")
+        monkeypatch.setenv("GITHUB_WORKSPACE", str(tmp_path))
+        assert H._워크플로가_밝힌_한계분("x.yml") == 30
+
+    def test_job_이_여럿이면_가장_짧은_한계를_쓴다(self, H, tmp_path, monkeypatch):
+        """크게 잡으면 짧은 job 이 잘렸을 때 '아직 멀었다'로 읽어 침묵한다."""
+        폴더 = tmp_path / ".github" / "workflows"
+        폴더.mkdir(parents=True)
+        (폴더 / "y.yml").write_text(
+            "jobs:\n  a:\n    timeout-minutes: 300\n  b:\n    timeout-minutes: '45'\n",
+            encoding="utf-8")
+        monkeypatch.setenv("GITHUB_WORKSPACE", str(tmp_path))
+        assert H._워크플로가_밝힌_한계분("y.yml") == 45
 
     def test_시간한계를_다_채운_취소는_시간초과로_알린다(self, H, monkeypatch):
         # ★2026-08-20 교훈: 경쟁사-댓글이 7/29~8/16 매일 밤 180분을 채우고 잘렸는데
@@ -323,6 +363,36 @@ class Test알림_폭주_방지:
     def test_그_뒤로는_띄엄띄엄(self, H):
         보냄 = [n for n in range(4, 40) if H.알릴차례인가(n)]
         assert 보냄 == [12, 24, 36], f"너무 자주 보낸다: {보냄}"
+
+
+class Test시간한계를_모든_워크플로에서_알아내는가:
+    """★자가치유를 붙여 놓고 시간 한계를 못 알아내면, 그 워크플로는 시간을 다 채우고
+    잘리는 날 **문자가 0통**이다. 발행검수가 정확히 그 상태였다(2026-09-03).
+
+    워크플로마다 손으로 적게 하는 규칙은 이미 실패했다 — 여덟 곳 중 한 곳만 적혀 있었다.
+    그래서 '적었나'가 아니라 **'알아낼 수 있나'** 를 센다.
+    """
+
+    def _자가치유_쓰는_워크플로(self):
+        폴더 = 저장소루트 / ".github" / "workflows"
+        return sorted(p for p in 폴더.glob("*.yml")
+                      if "자가치유.py" in p.read_text(encoding="utf-8"))
+
+    def test_자가치유를_쓰는_워크플로가_실제로_있다(self):
+        """목록이 비면 아래 검사가 아무것도 안 세고 초록이 된다."""
+        assert len(self._자가치유_쓰는_워크플로()) >= 3
+
+    def test_한_곳도_빠짐없이_한계를_알아낼_수_있다(self, H, monkeypatch):
+        monkeypatch.delenv("TIMEOUT_MIN", raising=False)
+        monkeypatch.setenv("GITHUB_WORKSPACE", str(저장소루트))
+        빠진것 = []
+        for p in self._자가치유_쓰는_워크플로():
+            monkeypatch.setenv("WORKFLOW_FILE", p.name)
+            if H._시간한계분() <= 0:
+                빠진것.append(p.name)
+        assert not 빠진것, (
+            f"시간 한계를 못 알아내는 워크플로: {빠진것} — 시간을 다 채우고 잘리면 "
+            "'취소'로 끝나고 문자가 한 통도 안 나간다")
 
 
 def test_두_저장소_사본이_안_갈라졌다():

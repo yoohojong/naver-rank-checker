@@ -28,6 +28,12 @@ concurrency:
 jobs:
   digest:
     runs-on: ubuntu-latest
+    # ★2026-09-03: 시간 한계가 아예 없었다. 없으면 GitHub 기본 6시간까지 매달려
+    #   있다가 잘리고, 잘린 run 은 'cancelled' 로 끝나 자가치유가 조용히 넘어간다
+    #   — 주간 보고가 안 나가도 아무도 모른다.
+    #   새 검사가 이 자리를 잡아냈다(test_자가치유.py 의
+    #   Test시간한계를_모든_워크플로에서_알아내는가). 실측 소요는 몇 분이다.
+    timeout-minutes: 30
     steps:
       - name: Checkout
         uses: actions/checkout@v6.0.2

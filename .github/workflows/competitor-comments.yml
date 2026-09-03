@@ -142,9 +142,11 @@ jobs:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # ★2026-09-03: TIMEOUT_MIN: '300' 을 지웠다. 위 timeout-minutes 와 같은 값을
+          #   여기 또 적는 구조였고, 발행검수는 그걸 빠뜨려 120분을 다 채우고 잘려도
+          #   문자가 0통이었다. 이제 자가치유가 이 파일의 timeout-minutes 를 직접 읽는다
+          #   — 적는 자리가 하나뿐이라 다음에 빠뜨릴 자리가 없다.
+          #   (WORKFLOW_FILE 이 그 파일을 가리키므로 이 줄은 계속 필요하다.)
           WORKFLOW_FILE: competitor-comments.yml
-          # 위 timeout-minutes 와 같은 값 — 시간을 다 채우고 잘린 '취소'를 고장으로 알린다
-          # (7/29~8/16 매일 밤 시간 초과가 알림 0통이던 구멍의 마개).
-          TIMEOUT_MIN: '300'
           PYTHONIOENCODING: utf-8
         run: python scripts/자가치유.py --이름 "댓글 경쟁제품 수집" --결과 ${{ job.status }} --크론 "0 20 * * *"

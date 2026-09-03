@@ -97,7 +97,7 @@ _API = "https://api.github.com"
 
 # 두 저장소에 같은 파일을 복사해 쓴다. 한쪽만 고치면 조용히 갈라지므로
 # 양쪽 테스트가 이 값을 대조한다(독립검토 L-4).
-버전 = "2026-08-20.1"
+버전 = "2026-09-03.1"
 
 
 # ── GitHub 조회 (읽기 전용) ──────────────────────────────────────────────
@@ -312,12 +312,67 @@ def 다음_재시도(크론: str) -> str:
     return ""
 
 
-def _시간한계분() -> int:
-    """워크플로가 밝힌 timeout-minutes(env TIMEOUT_MIN). 없으면 0 = 취소를 조용히 둔다."""
-    try:
-        return int(os.environ.get("TIMEOUT_MIN", "").strip() or 0)
-    except ValueError:
+def _워크플로_파일() -> str:
+    """이 실행이 어느 워크플로 파일인가. 없으면 빈 문자열."""
+    wf = os.environ.get("WORKFLOW_FILE", "") or os.environ.get("GITHUB_WORKFLOW_REF", "")
+    if "/" in wf:                       # 'owner/repo/.github/workflows/x.yml@refs/…'
+        wf = wf.split("@")[0].split("/")[-1]
+    return wf.strip()
+
+
+def _워크플로가_밝힌_한계분(파일이름: str = "") -> int:
+    """워크플로 파일에서 `timeout-minutes:` 를 **직접 읽는다**. 못 읽으면 0.
+
+    ★왜 파일을 직접 읽나 (2026-09-03)
+      전에는 워크플로가 `TIMEOUT_MIN` 을 env 로 **한 번 더 적어 줘야만** 했다.
+      이 저장소에서 그 값을 적어 둔 곳은 competitor-comments 하나뿐이었고,
+      정작 120분짜리 `balhaeng-geomsu` 와 180분짜리 `rank-check` 에는 없었다.
+      한계를 다 채우고 잘리면 아래 취소 갈래가 '한계 미지정'으로 **조용히 넘어간다**
+      — 시간 초과로 죽는 날이 바로 알아야 하는 날인데 문자가 0통이었다.
+      값을 두 벌 적게 하면 다음에 또 빠뜨린다. 선언한 자리에서 읽는다.
+
+    ★여러 job 이 각각 한계를 적었으면 **가장 작은 값**을 쓴다. 크게 잡으면
+      '경과가 한계에 못 미친다 → 사람 취소로 보고 침묵' 쪽으로 기운다 —
+      이 저장소에서 침묵은 헛울림보다 나쁘다.
+
+    ※ 주석 줄은 걷어내고 읽는다. 설명글에 적힌 숫자가 실제 한계를 이기면 안 된다.
+    """
+    파일이름 = 파일이름 or _워크플로_파일()
+    if not 파일이름:
         return 0
+    후보 = []
+    여기 = os.path.dirname(os.path.abspath(__file__))
+    for 뿌리 in (os.environ.get("GITHUB_WORKSPACE", ""), os.path.dirname(여기),
+                여기, os.getcwd(), os.path.dirname(os.getcwd())):
+        if 뿌리:
+            후보.append(os.path.join(뿌리, ".github", "workflows", 파일이름))
+    for p in 후보:
+        try:
+            raw = open(p, encoding="utf-8").read()
+        except Exception:      # noqa: BLE001 — 못 읽으면 다음 후보로
+            continue
+        본문 = "\n".join(줄 for 줄 in raw.splitlines()
+                       if not 줄.lstrip().startswith("#"))
+        값들 = [int(x) for x in
+               re.findall(r"^\s*timeout-minutes:\s*['\"]?(\d+)", 본문, re.M)]
+        if 값들:
+            return min(값들)
+    return 0
+
+
+def _시간한계분() -> int:
+    """이 워크플로의 시간 한계(분). 없으면 0 = 취소를 조용히 둔다.
+
+    env `TIMEOUT_MIN` 을 먼저 본다(옛 워크플로가 적어 둔 것을 그대로 인정한다).
+    없으면 워크플로 파일의 `timeout-minutes:` 를 직접 읽는다.
+    """
+    try:
+        env값 = int(os.environ.get("TIMEOUT_MIN", "").strip() or 0)
+    except ValueError:
+        env값 = 0
+    if env값 > 0:
+        return env값
+    return _워크플로가_밝힌_한계분()
 
 
 def _경과분(저장소: str, run: str):
@@ -443,9 +498,7 @@ def _본체(argv=None) -> int:
 
     저장소 = os.environ.get("GITHUB_REPOSITORY", "")
     run = os.environ.get("GITHUB_RUN_ID", "")
-    워크플로 = os.environ.get("WORKFLOW_FILE", "") or os.environ.get("GITHUB_WORKFLOW_REF", "")
-    if "/" in 워크플로:                     # 'owner/repo/.github/workflows/x.yml@refs/…'
-        워크플로 = 워크플로.split("@")[0].split("/")[-1]
+    워크플로 = _워크플로_파일()
     링크 = (f"{os.environ.get('GITHUB_SERVER_URL', 'https://github.com')}/"
           f"{저장소}/actions/runs/{run}") if 저장소 and run else ""
 
@@ -454,11 +507,14 @@ def _본체(argv=None) -> int:
         #   사람이 누른 취소·새 run 이 옛 run 을 밀어낸 취소(telegram-qa)는 조용한 게 맞지만,
         #   **시간 한계를 다 채우고 잘린 취소는 고장**이다. GitHub 이 둘 다 'cancelled' 로
         #   적는 바람에 경쟁사-댓글 수집이 7/29~8/16 매일 밤 시간 초과로 죽는데 알림이
-        #   0통이었다. 침묵 조건을 넓히지 않는다 — 워크플로가 TIMEOUT_MIN 을 밝힌 경우,
+        #   0통이었다. 침묵 조건을 넓히지 않는다 — 시간 한계를 알아낼 수 있으면,
         #   경과가 한계에 닿았으면(또는 경과를 못 쟀으면) 시간 초과로 알린다.
+        #   ★2026-09-03: 한계를 워크플로 파일에서 직접 읽는다. 예전엔 워크플로마다
+        #     TIMEOUT_MIN 을 또 적어야 해서, 안 적힌 워크플로는 전부 조용했다.
         분한계 = _시간한계분()
         if 분한계 <= 0:
-            print("[자가치유] 취소된 run — 시간 한계 미지정(TIMEOUT_MIN 없음), 알리지 않음")
+            print("[자가치유] 취소된 run — 시간 한계를 못 알아냄"
+                  "(워크플로에 timeout-minutes 가 없고 TIMEOUT_MIN 도 없음), 알리지 않음")
             return 0
         경과 = _경과분(저장소, run)
         if 경과 is not None and 경과 < 분한계 - 2:
