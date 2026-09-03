@@ -9,7 +9,7 @@ from typing import Optional
 
 import gspread
 
-from src.transitions import parse_K_with_stamp, cafe_slot_qualifies
+from src.transitions import parse_K_with_stamp, cafe_slot_qualifies, cafe_slot_band
 
 
 # 2026-05-12 T-M11: Google Sheets API 503 retry (document-specialist 외부 사실).
@@ -191,8 +191,11 @@ def _build_input_key_for_sheet(row: dict) -> str:
 
 
 COLOR_NONE = {"red": 1.0, "green": 1.0, "blue": 1.0}
-COLOR_EXPOSED = {"red": 0.8, "green": 1.0, "blue": 0.8}
-COLOR_NEGATIVE = {"red": 1.0, "green": 0.8, "blue": 0.8}
+COLOR_EXPOSED = {"red": 0.8, "green": 1.0, "blue": 0.8}    # 초록 — 카페 구좌 1위
+# 노랑 — 카페 구좌 2~3위 (사장님 2026-09-03 신설). 안 세지만 한 칸만 올리면 세어지는 자리.
+# 옆 칸(키워드 셀)의 연노랑 {1,0.94,0.6}·주황 {1,0.7,0.4} 과 눈으로 구별되게 더 옅고 노랗게 잡았다.
+COLOR_SLOT_NEAR = {"red": 1.0, "green": 1.0, "blue": 0.6}
+COLOR_NEGATIVE = {"red": 1.0, "green": 0.8, "blue": 0.8}   # 빨강 — 4위 이하·누락·미노출·삭제
 COLOR_RECHECK = {"red": 1.0, "green": 0.85, "blue": 0.4}
 EXPOSED_COLOR_PREFIXES = ("AB", "스마트블록", "인기글", "중복노출")
 NEGATIVE_COLOR_PREFIXES = ("미노출", "누락", "삭제")
@@ -205,9 +208,14 @@ def _background_color_for_k(k_value: str, cafe_slot_rank: object = None) -> dict
         return COLOR_NONE
     s = str(k_value or "").strip()
     if s.startswith(EXPOSED_COLOR_PREFIXES):
-        # 사장님 2026-07-28: 카페 구좌 4위 이하는 노출 블록(인기글/AB)에 있어도
-        # '재작업' 대상 = 빨강. 1~3위만 진짜 상위노출 = 초록.
-        if not cafe_slot_qualifies(cafe_slot_rank):
+        # 사장님 2026-09-03: 색은 세 단계다.
+        #   1위 = 초록(세는 자리) / 2~3위 = 노랑 / 그 밖 = 빨강
+        #   "그래 누락. 미노출. 4위 이하 전부 빨강이야" — 그래서 4위 이하는 아래 빨강과 같은 칸.
+        # 구좌를 못 잰 것(빈칸)은 초록을 유지한다 — 못 잰 것을 밀린 것으로 보이게 하면 안 된다.
+        band = cafe_slot_band(cafe_slot_rank)
+        if band == "2~3위":
+            return COLOR_SLOT_NEAR
+        if band == "그 밖":
             return COLOR_NEGATIVE
         return COLOR_EXPOSED
     if s.startswith(NEGATIVE_COLOR_PREFIXES):
@@ -740,7 +748,7 @@ class SheetsClient:
             if HEADER_AREA in mapping:
                 color_formats.append({
                     "range": gspread.utils.rowcol_to_a1(target_row, mapping[HEADER_AREA] + 1),
-                    # 사장님 2026-07-28: 구좌 4위 이하는 노출 블록이라도 빨강 — raw_카페순위 반영.
+                    # 사장님 2026-09-03: 1위 초록 / 2~3위 노랑 / 그 밖 빨강 — raw_카페순위 반영.
                     "format": {"backgroundColor": _background_color_for_k(
                         payload.get(HEADER_RAW_AREA, ""), payload.get(HEADER_RAW_M, ""))},
                 })

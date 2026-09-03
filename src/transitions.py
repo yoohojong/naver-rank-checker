@@ -37,9 +37,20 @@ EXPOSED_VALUES = {
     "중복노출(AB)", "중복노출(스마트블록)", "중복노출(인기글)",  # D-029 (2026-05-18)
 }
 
-# 사장님 2026-07-28: 카페 구좌 1~3위만 '진짜 상위노출'. 4위 이하는 노출 블록에 있어도
-# 재작업 대상(시트 빨강 + 리포트 상위노출 카운트 제외). 색칠(sheets)·집계(리포트) 공용 기준.
-CAFE_SLOT_EXPOSED_MAX = 3
+# 세는 잣대가 언제 무엇으로 바뀌었나 (이력 — 지우지 말 것)
+#   2026-07-28  카페 구좌 1~3위를 '진짜 상위노출'로 셈.
+#   2026-09-03  카페 구좌 **1위만** 셈. 사장님 원문:
+#               "이거 기준을 아예 카페구좌에서 1위 - 초록색 / 2~3위 - 노란색 /
+#                그 밖 - 빨간색 이렇게 변경 부탁할게."
+#               "그리고 상위노출 키워드 추적하는것도 카페구좌 1위만 세줘."
+#               "그래 누락. 미노출. 4위 이하 전부 빨강이야"
+# 색칠(sheets)·집계(리포트) 공용 기준. team project 저장소의
+# cafe-external/reports/exposure_rule.py 와 뜻이 같아야 한다(저장소가 달라 코드는 따로 산다).
+CAFE_SLOT_COUNTED = 1      # 세는 자리 = 초록
+CAFE_SLOT_NEAR_MAX = 3     # 노랑 구간의 끝(2~3위). 안 세지만 한 칸만 올리면 되는 자리
+
+# 옛 이름 — 2026-09-03 이전 기준. 쓰는 곳은 없다. 이 값이 3이었다는 사실이 위 이력과 짝이다.
+CAFE_SLOT_EXPOSED_MAX_구기준_20260728 = 3
 
 
 def cafe_slot_rank_value(raw: object) -> Optional[int]:
@@ -49,17 +60,36 @@ def cafe_slot_rank_value(raw: object) -> Optional[int]:
 
 
 def cafe_slot_qualifies(raw: object) -> bool:
-    """카페 구좌 순위가 '진짜 상위노출' 자격(1~3위)인가.
+    """카페 구좌 순위가 '세는 자격'인가 = 1위인가 (사장님 2026-09-03).
 
     빈칸/미상(None) = True(배제하지 않음) — 구좌를 못 읽었다고 노출에서 빼면
-    조용한 과소집계가 됨. 실측(2026-07-28) 노출행의 구좌순위 빈칸은 0건.
+    조용한 과소집계가 됨. 실측: 2026-07-28 이후 노출행의 구좌순위 빈칸은 0건이고,
+    그 전 날짜는 M열 자체가 없었다.
     """
     n = cafe_slot_rank_value(raw)
-    return n is None or n <= CAFE_SLOT_EXPOSED_MAX
+    return n is None or n <= CAFE_SLOT_COUNTED
+
+
+def cafe_slot_band(raw: object) -> str:
+    """그 칸을 무슨 색으로 칠할지 — 판정은 여기 한 곳에서만 한다.
+
+      "1위"        초록 — 상위노출로 센다
+      "2~3위"      노랑 — 안 세지만 한 칸만 올리면 되는 자리
+      "그 밖"      빨강 — 구좌 4위 이하
+      "구좌 못 잼" 구좌를 잰 기록이 없다(빈칸). 세는 쪽에서는 자격을 유지한다
+    """
+    n = cafe_slot_rank_value(raw)
+    if n is None:
+        return "구좌 못 잼"
+    if n <= CAFE_SLOT_COUNTED:
+        return "1위"
+    if n <= CAFE_SLOT_NEAR_MAX:
+        return "2~3위"
+    return "그 밖"
 
 
 def is_real_exposure(k_base: str, cafe_slot_raw: object = None) -> bool:
-    """진짜 상위노출 = 노출 블록(EXPOSED_VALUES) AND 카페 구좌 1~3위 (사장님 2026-07-28)."""
+    """진짜 상위노출 = 노출 블록(EXPOSED_VALUES) AND 카페 구좌 1위 (사장님 2026-09-03)."""
     return k_base in EXPOSED_VALUES and cafe_slot_qualifies(cafe_slot_raw)
 
 # 우리 시스템이 K 컬럼에 쓰는 값 (D-029 사장님 컨벤션). 이 외 값은 사장님 수동 편집으로 간주 → 보존.

@@ -11,8 +11,9 @@ from src.sheets import (
     HEADER_LAST_CHECKED_INPUT_KEY,
 )
 
-COLOR_EXPOSED = {"red": 0.8, "green": 1.0, "blue": 0.8}
-COLOR_NEGATIVE = {"red": 1.0, "green": 0.8, "blue": 0.8}
+COLOR_EXPOSED = {"red": 0.8, "green": 1.0, "blue": 0.8}      # 초록 — 카페 구좌 1위
+COLOR_SLOT_NEAR = {"red": 1.0, "green": 1.0, "blue": 0.6}    # 노랑 — 카페 구좌 2~3위
+COLOR_NEGATIVE = {"red": 1.0, "green": 0.8, "blue": 0.8}     # 빨강 — 그 밖
 COLOR_NONE = {"red": 1.0, "green": 1.0, "blue": 1.0}
 ALIGNMENT_CENTER_MIDDLE = {"horizontalAlignment": "CENTER", "verticalAlignment": "MIDDLE"}
 
@@ -757,8 +758,8 @@ class TestStaleFormulaMode:
         formats = ws.batch_format.call_args.args[0]
         assert {"range": "K2", "format": {"backgroundColor": COLOR_NEGATIVE}} in formats
 
-    def test_write_stale_formula_results_slot_1to3_exposed_is_green(self):
-        """구좌 1~3위 노출은 stale 경로에서도 초록 유지."""
+    def test_write_stale_formula_results_구좌_2위는_노랑(self):
+        """색 3단계(사장님 2026-09-03)는 stale 경로에서도 같아야 한다 — 2위는 노랑."""
         headers = self._stale_headers()
         client, ws, _spreadsheet = self._make_client_with_ws(headers, col_count=len(headers))
         row = {"_row": 2, "키워드": "지루성두피염원인",
@@ -766,7 +767,24 @@ class TestStaleFormulaMode:
         update = RowUpdate(row=2, columns={
             "노출영역": "인기글 (5/21 20:00~)",
             "노출여부(통합탭 순위)": "3",
-            "노출여부(카페구좌순위)": "2",   # 구좌 2위 → 초록(진짜 상위노출)
+            "노출여부(카페구좌순위)": "2",   # 구좌 2위 → 노랑(안 세지만 한 칸 남음)
+            "지식인탭": "",
+        })
+        client.write_stale_formula_results(
+            "샴푸 카외", [update], row_context={2: row}, checked_at="2026-05-21 20:00 KST")
+        formats = ws.batch_format.call_args.args[0]
+        assert {"range": "K2", "format": {"backgroundColor": COLOR_SLOT_NEAR}} in formats
+
+    def test_write_stale_formula_results_구좌_1위는_초록(self):
+        """1위만 초록이다 — 색 판정이 stale 경로에서 갈리면 시트가 두 잣대를 갖게 된다."""
+        headers = self._stale_headers()
+        client, ws, _spreadsheet = self._make_client_with_ws(headers, col_count=len(headers))
+        row = {"_row": 2, "키워드": "지루성두피염원인",
+               "링크": "https://cafe.naver.com/workee/1325909"}
+        update = RowUpdate(row=2, columns={
+            "노출영역": "인기글 (5/21 20:00~)",
+            "노출여부(통합탭 순위)": "1",
+            "노출여부(카페구좌순위)": "1",
             "지식인탭": "",
         })
         client.write_stale_formula_results(
@@ -2010,3 +2028,13 @@ class TestStaleFormulaRelocation:
         # row 2 = identity 그대로 → 기록. row 3 = 재read 에서 키워드 바뀜 → skip (동시편집 면역).
         assert 2 in last_keys and last_keys[2]
         assert 3 not in last_keys
+
+
+def test_검사가_쓰는_색값이_본체와_같다():
+    """여기 색값은 본체와 따로 적어 둔 사본이다 — 어긋나면 검사가 헛것을 지키게 된다."""
+    from src import sheets as S
+    assert COLOR_EXPOSED == S.COLOR_EXPOSED
+    assert COLOR_SLOT_NEAR == S.COLOR_SLOT_NEAR
+    assert COLOR_NEGATIVE == S.COLOR_NEGATIVE
+    # 세 색이 서로 달라야 화면에서 구별된다.
+    assert len({str(COLOR_EXPOSED), str(COLOR_SLOT_NEAR), str(COLOR_NEGATIVE)}) == 3

@@ -1,20 +1,26 @@
-"""카페 구좌 4위 이하 = '진짜 상위노출' 아님 (사장님 2026-07-28).
+"""카페 구좌 **1위만** '진짜 상위노출' (사장님 2026-09-03. 그 전엔 1~3위였다).
 
-한 규칙(구좌 1~3위만 상위노출)이 4개 층에서 일관되게 적용되는지 잠근다:
+한 규칙이 4개 층에서 일관되게 적용되는지 잠근다:
   1) transitions: 구좌순위 판정 헬퍼 (색칠·집계 공용 진실원)
-  2) sheets: K열 색 — 구좌 4위 이하는 노출 블록이라도 빨강
-  3) snapshot_diff: 리포트 exposed_now 가 구좌 4위 이하를 제외
+  2) sheets: K열 색 — 1위 초록 / 2~3위 노랑 / 그 밖 빨강
+  3) snapshot_diff: 리포트 exposed_now 가 구좌 2위 이하를 제외
   4) exposure_history: 일별 트렌드도 같은 기준(옛 4-tuple 아카이브 호환)
 """
 from collections import Counter
 
 from src.transitions import (
-    CAFE_SLOT_EXPOSED_MAX,
+    CAFE_SLOT_COUNTED,
+    CAFE_SLOT_NEAR_MAX,
     cafe_slot_qualifies,
     cafe_slot_rank_value,
     is_real_exposure,
 )
-from src.sheets import _background_color_for_k, COLOR_EXPOSED, COLOR_NEGATIVE
+from src.sheets import (
+    _background_color_for_k,
+    COLOR_EXPOSED,
+    COLOR_SLOT_NEAR,
+    COLOR_NEGATIVE,
+)
 from src.snapshot_diff import diff_backups, is_exposed_row
 from src.exposure_history import daily_trend
 
@@ -27,31 +33,42 @@ def test_cafe_slot_rank_value_extracts_int():
     assert cafe_slot_rank_value(None) is None
 
 
-def test_cafe_slot_qualifies_1to3_only():
-    assert CAFE_SLOT_EXPOSED_MAX == 3
-    assert cafe_slot_qualifies("1") and cafe_slot_qualifies("3")
+def test_cafe_slot_qualifies_1위만():
+    """사장님 2026-09-03: 1~3위 → 1위만 센다. 옛 기준으로 되돌아가면 여기서 걸린다."""
+    assert CAFE_SLOT_COUNTED == 1 and CAFE_SLOT_NEAR_MAX == 3
+    assert cafe_slot_qualifies("1")
+    assert not cafe_slot_qualifies("2") and not cafe_slot_qualifies("3")
     assert not cafe_slot_qualifies("4") and not cafe_slot_qualifies("10")
     # 미상(빈칸/None) = 자격 있음 (구좌 못 읽었다고 노출에서 빼지 않음 = 과소집계 방지)
     assert cafe_slot_qualifies("") and cafe_slot_qualifies(None)
 
 
 def test_is_real_exposure_needs_block_and_slot():
-    assert is_real_exposure("인기글", "3")
-    assert is_real_exposure("AB", None)          # 슬롯 미상 = 노출 인정
-    assert not is_real_exposure("인기글", "4")   # 구좌 4위 이하 = 제외
+    assert is_real_exposure("인기글", "1")
+    assert is_real_exposure("AB", None)          # 구좌 못 잼 = 노출 인정
+    assert not is_real_exposure("인기글", "2")   # 2위부터 안 센다 (2026-09-03)
+    assert not is_real_exposure("인기글", "4")
     assert not is_real_exposure("미노출", "1")   # 노출 블록 아님
 
 
-# ── 2) sheets: K열 색 (구좌 4위 이하는 노출 블록이라도 빨강) ──────────────────
+# ── 2) sheets: K열 색 — 1위 초록 / 2~3위 노랑 / 그 밖 빨강 (사장님 2026-09-03) ──
 def test_color_slot_4plus_exposed_is_red():
     assert _background_color_for_k("인기글", "4") == COLOR_NEGATIVE
     assert _background_color_for_k("AB (5/10 03:00~)", "7") == COLOR_NEGATIVE
     assert _background_color_for_k("중복노출(AB)", "9") == COLOR_NEGATIVE
 
 
-def test_color_slot_1to3_exposed_is_green():
-    assert _background_color_for_k("인기글", "3") == COLOR_EXPOSED
+def test_color_slot_1위만_초록():
     assert _background_color_for_k("AB", "1") == COLOR_EXPOSED
+
+
+def test_color_slot_2와3은_노랑():
+    """2~3위는 안 세지만 한 칸만 올리면 세어지는 자리라 눈에 보여야 한다."""
+    assert _background_color_for_k("인기글", "2") == COLOR_SLOT_NEAR
+    assert _background_color_for_k("AB", "3") == COLOR_SLOT_NEAR
+    assert _background_color_for_k("중복노출(AB)", "3") == COLOR_SLOT_NEAR
+    # 세 색이 서로 달라야 화면에서 구별된다.
+    assert len({str(COLOR_EXPOSED), str(COLOR_SLOT_NEAR), str(COLOR_NEGATIVE)}) == 3
 
 
 def test_color_slot_blank_exposed_is_green():
@@ -76,30 +93,32 @@ def _r(kw, area, slot, rownum):
 
 
 def test_is_exposed_row_respects_slot():
-    assert is_exposed_row(_r("a", "인기글", "3", 2))
-    assert not is_exposed_row(_r("b", "인기글", "4", 3))
-    assert is_exposed_row(_r("c", "AB", "", 4))       # 슬롯 미상 = 인정
+    assert is_exposed_row(_r("a", "인기글", "1", 2))
+    assert not is_exposed_row(_r("b", "인기글", "3", 3))   # 2~3위는 안 센다(2026-09-03)
+    assert not is_exposed_row(_r("b2", "인기글", "4", 5))
+    assert is_exposed_row(_r("c", "AB", "", 4))            # 구좌 못 잼 = 인정
 
 
-def test_exposed_now_excludes_slot_4plus():
+def test_exposed_now_은_구좌_1위만_센다():
     curr = {"tabs": {"샴푸 카외": [
         _r("a", "인기글", "1", 2),
         _r("b", "인기글", "4", 3),   # 구좌 4위 → 제외
-        _r("c", "AB", "3", 4),
+        _r("c", "AB", "3", 4),       # 구좌 3위 → 2026-09-03 부터 제외
         _r("d", "AB", "5", 5),       # 구좌 5위 → 제외
         _r("e", "미노출", "", 6),
     ]}}
     tr = diff_backups(None, curr)[0]
     assert tr.total == 5
-    assert tr.exposed_now == 2   # a(1)·c(3) 만. b(4)·d(5)·미노출 제외
+    assert tr.exposed_now == 1   # a(1위) 만
 
 
 # ── 4) exposure_history: 일별 트렌드도 같은 기준 ─────────────────────────────
-def test_daily_trend_excludes_slot_4plus():
+def test_daily_trend_도_구좌_1위만_센다():
     rows = [
-        ("2026-07-06", "샴푸 카외", "k1", "AB", "2"),      # 구좌 2위 → 포함
+        ("2026-07-06", "샴푸 카외", "k0", "AB", "1"),      # 구좌 1위 → 포함
+        ("2026-07-06", "샴푸 카외", "k1", "AB", "2"),      # 구좌 2위 → 2026-09-03 부터 제외
         ("2026-07-06", "샴푸 카외", "k2", "인기글", "4"),  # 구좌 4위 → 제외
-        ("2026-07-06", "샴푸 카외", "k3", "인기글", ""),   # 미상 → 포함
+        ("2026-07-06", "샴푸 카외", "k3", "인기글", ""),   # 구좌 못 잼 → 포함
     ]
     tr = daily_trend(rows, days=6)
     assert tr["2026-07-06"]["합계"] == 2
@@ -117,7 +136,7 @@ def test_exposed_deleted_gating_keeps_identity_balanced():
     """구좌 4위/미노출 행이 삭제돼도 정합식(어제+들어옴−나감=오늘)이 음수로 안 깨진다.
     (2026-07-28 독립검토 HIGH: 전체 삭제를 나감에 넣으면 노출 아니던 삭제까지 차감)."""
     prev = {"tabs": {"샴푸 카외": [
-        _r("a", "AB", "2", 2),      # 어제 진짜 노출(구좌2)
+        _r("a", "AB", "1", 2),      # 어제 진짜 노출(구좌 1위)
         _r("b", "인기글", "4", 3),  # 어제 구좌4 = 노출 아님
         _r("c", "미노출", "", 4),   # 어제 미노출
     ]}}
