@@ -79,20 +79,21 @@ jobs:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           run-id: ${{ inputs.reuse_run_id }}
 
-      - name: Collect competitor products from comments
+      # ★열쇠가 실제로 이 자리까지 닿았는지 **길이만** 찍는다 (값은 절대 안 찍는다).
+      #   2026-09-05: 무료 문이 닫힌 뒤 유료가 한 번도 안 나섰는데, 배선은 돼
+      #   있어서 코드만 보고는 알 수 없었다. 0 이면 열쇠 자체가 비어 있다는 뜻이다.
+      - name: 열쇠가 닿았나 (길이만)
         env:
-          SPREADSHEET_ID: ${{ secrets.SPREADSHEET_ID }}
-          SERVICE_ACCOUNT_JSON: ${{ secrets.SERVICE_ACCOUNT_JSON }}
-          CAFE_WHITELIST_SLUGS: ${{ secrets.CAFE_WHITELIST_SLUGS }}
-          # 제품명 읽기·판정. **무료(GROQ) 먼저, 무료가 막힌 몫만 유료(ANTHROPIC) 보험**
-          # (2026-07-24 뒤집음 — 순서가 곧 돈이다. 옛 주석이 반대로 남아 있었음).
-          # ANTHROPIC_API_KEY 는 아직 미설정(2026-08-20) — 넣는 순간 보험이 켜진다.
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
-          # ★유료 보험 ① (2026-09-04). Anthropic 하나만 두었다가 그 계정 잔액이
-          #   0원이라 보험이 통째로 죽어 있었고, 무료는 한도에 걸려 댓글
-          #   16,379건 중 810/820 묶음을 못 읽었다. 보험은 둘이어야 한다.
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          python - <<'PY'
+          import os
+          for 이름 in ("GROQ_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY"):
+              값 = (os.environ.get(이름) or "").strip()
+              print(f"{이름}: {'비어 있음' if not 값 else str(len(값)) + '글자'}")
+          PY
           # 모델 이름은 코드에 없다 — 계정에 물어 자동 선택(src/llm_pick).
           # 2026-08-16 llama-3.3 퇴역 404 사흘의 재발 방지. secret 으로 주면 그게 위다.
           GROQ_MODEL: ${{ secrets.GROQ_MODEL }}
@@ -113,6 +114,20 @@ jobs:
             ${{ (inputs.write_sheet == 'false') && ' ' || '--write-sheet' }}
 
       # 댓글 훑기가 이 작업의 45분이다. 판정만 실패했을 때 다시 훑지 않도록 남겨둔다.
+      - name: Collect competitor products from comments
+        env:
+          SPREADSHEET_ID: ${{ secrets.SPREADSHEET_ID }}
+          SERVICE_ACCOUNT_JSON: ${{ secrets.SERVICE_ACCOUNT_JSON }}
+          CAFE_WHITELIST_SLUGS: ${{ secrets.CAFE_WHITELIST_SLUGS }}
+          # 제품명 읽기·판정. **무료(GROQ) 먼저, 무료가 막힌 몫만 유료(ANTHROPIC) 보험**
+          # (2026-07-24 뒤집음 — 순서가 곧 돈이다. 옛 주석이 반대로 남아 있었음).
+          # ANTHROPIC_API_KEY 는 아직 미설정(2026-08-20) — 넣는 순간 보험이 켜진다.
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          # ★유료 보험 ① (2026-09-04). Anthropic 하나만 두었다가 그 계정 잔액이
+          #   0원이라 보험이 통째로 죽어 있었고, 무료는 한도에 걸려 댓글
+          #   16,379건 중 810/820 묶음을 못 읽었다. 보험은 둘이어야 한다.
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
       - name: 모아둔 댓글 보관
         if: always()
         uses: actions/upload-artifact@v4

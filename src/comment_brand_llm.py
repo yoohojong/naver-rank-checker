@@ -430,6 +430,7 @@ def _anthropic_call(system: str, user: str, *, max_tokens: int,
 
     key = _anthropic_key()
     if not key:
+        note("앤트로픽 열쇠가 비어 있습니다")
         return None, False
     try:
         import anthropic
@@ -517,8 +518,16 @@ def _openai_post(payload: dict, *, timeout: int, tries: int = 3, sleep=time.slee
 
 def _openai_call(system: str, user: str, *, max_tokens: int, timeout: int,
                  sleep=time.sleep, errors: list | None = None):
-    """유료 보험 ①. 열쇠가 없으면 조용히 물러난다 — 호출부가 다음 보험으로 넘긴다."""
+    """유료 보험 ①. 열쇠가 없으면 **그 사실을 남기고** 물러난다.
+
+    ★2026-09-05: 전에는 조용히 물러났다. 그래서 무료 문이 닫힌 뒤 유료가
+    한 번도 안 나섰는데도 사유에 `유료:` 가 한 줄도 안 남아, 회차 기록만
+    봐서는 "열쇠가 비었나 · 열쇠는 있는데 거절당했나" 를 가를 수 없었다.
+    조용한 폴백은 그 자체가 사고다.
+    """
     if not _openai_key():
+        if errors is not None:
+            errors.append("유료:오픈에이아이 열쇠가 비어 있습니다")
         return None, False
     data = _openai_post({
         "model": _OPENAI_MODEL,
