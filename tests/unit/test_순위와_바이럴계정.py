@@ -134,16 +134,16 @@ def _오늘줄(**kw):
 def test_표에_순위_칸이_생긴다():
     t = C.build_table([], [_오늘줄()], "2026-09-04")
     head, row = t[0], t[1]
-    for 칸 in ("최고순위", "평균순위", "키워드별 순위", "검색량"):
+    for 칸 in ("최고순위", "평균순위", "어느 키워드 몇 위", "검색량"):
         assert 칸 in head, f"{칸} 칸이 있어야 한다"
     assert row[head.index("최고순위")] == 2
     assert row[head.index("평균순위")] == 3.0
-    assert "지루성두피염샴푸 AB 2위" in row[head.index("키워드별 순위")]
+    assert "지루성두피염샴푸 AB 2위" in row[head.index("어느 키워드 몇 위")]
 
 
 def test_키워드별_순위는_좋은_자리부터_적는다():
     t = C.build_table([], [_오늘줄()], "2026-09-04")
-    글 = t[1][t[0].index("키워드별 순위")]
+    글 = t[1][t[0].index("어느 키워드 몇 위")]
     assert 글.index("지루성두피염샴푸") < 글.index("비듬샴푸")
 
 
@@ -166,7 +166,7 @@ def test_순위를_모르면_그_칸은_빈칸이다():
                                  키워드별순위="")], "2026-09-04")
     head, row = t[0], t[1]
     assert row[head.index("최고순위")] == ""
-    assert row[head.index("키워드별 순위")] == ""
+    assert row[head.index("어느 키워드 몇 위")] == ""
 
 
 # ── 바이럴계정 탭 ────────────────────────────────────────────

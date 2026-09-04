@@ -200,12 +200,19 @@ def _today_row(brand="안티트로", n=12, product="샴푸"):
 def test_한_탭에_경쟁사_한_줄로_담긴다():
     table = build_table([], [_today_row()], "2026-07-24")
     head, row = table[0], table[1]
-    assert head[:4] == ["제품군", "경쟁사", "최근7일 합계", "추세"]
+    # ★2026-09-04 사장님 지적으로 칸 순서를 다시 짰다 — 읽는 순서대로,
+    #   날짜는 맨 뒤 사흘만. 행을 키우던 '댓글 예시'·여러 줄 링크는 없앴다.
+    assert head[:2] == ["제품군", "경쟁사"]
+    assert "검색량" in head[:7] and "뜬 키워드 수" in head[:7]
     assert "2026-07-24" in head                      # 날짜가 열로 펼쳐진다
-    assert head[-4:] == ["나온 키워드 수", "나온 키워드", "글 링크", "댓글 예시"]
-    assert row[1] == "안티트로" and row[2] == 12 and row[3] == "신규"
-    assert "두피각질" in row[head.index("나온 키워드")]
-    assert row[head.index("글 링크")].count("http") == 2
+    import re as _re
+    assert all(_re.fullmatch(r"\d{4}-\d{2}-\d{2}", c) for c in head[-3:]), head[-3:]
+    assert "댓글 예시" not in head and "나온 키워드" not in head
+    assert row[1] == "안티트로"
+    assert row[head.index("7일 댓글 수")] == 12
+    assert row[head.index("추세")] == "신규"
+    # 링크는 대표 하나만 — 여러 개면 줄바꿈으로 행이 커진다(2026-09-04).
+    assert row[head.index("글 링크")].count("http") == 1
 
 
 def test_어제_기록_위에_오늘을_얹는다():
@@ -214,8 +221,8 @@ def test_어제_기록_위에_오늘을_얹는다():
     head, row = 오늘표[0], 오늘표[1]
     assert row[head.index("2026-07-24")] == 12
     assert row[head.index("2026-07-23")] == 8        # 어제 값이 살아 있다
-    assert row[2] == 20                              # 합계
-    assert row[3] == "▲ +4"                          # 늘었다
+    assert row[head.index("7일 댓글 수")] == 20
+    assert row[head.index("추세")] == "▲ +4"          # 늘었다
 
 
 def test_줄었으면_내림표시_안나오면_표에서_내린다():
@@ -223,7 +230,7 @@ def test_줄었으면_내림표시_안나오면_표에서_내린다():
     오늘표 = build_table(어제표, [_today_row(n=3)], "2026-07-24")
     head = 오늘표[0]
     brands = {r[1]: r for r in 오늘표[1:]}
-    assert brands["안티트로"][3] == "▼ -7"
+    assert brands["안티트로"][head.index("추세")] == "▼ -7"
     assert brands["맥단비"][head.index("2026-07-24")] == 0   # 오늘은 0, 기록은 남는다
 
 

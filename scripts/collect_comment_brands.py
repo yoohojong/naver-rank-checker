@@ -724,15 +724,23 @@ def scan_keyword(crawler: CommentFetcher, kw: str, *, our_links: set, our_slugs:
 
 # 한 탭에 다 담는다 — 사장님 지시(2026-07-24): "여러개로 나누지 말고 아예 한 시트에 모아줘".
 # 한 줄 = 경쟁사 하나. 얼마나 나오나 · 늘고 있나 · 어느 키워드·어느 글에서 나왔나가 한눈에.
-FIXED_HEAD = ["제품군", "경쟁사", "최근7일 합계", "추세"]
+# ★2026-09-04 사장님 지적으로 다시 짬 — "무슨 행 길이가 이렇게 길어? … 날짜를 왜
+#   저렇게 해둬?" 실제 시트를 열어 보니(그 전까지 한 번도 안 봤다) 날짜 7칸이
+#   표 한가운데 있어 정작 볼 숫자를 오른쪽 밖으로 밀어냈고, '댓글 예시' 가 통째로
+#   한 칸에 들어가 행 높이를 키우고 있었다.
+#   → 읽는 순서대로: 누구인가 · 얼마나 큰가 · 얼마나 넓게 · 얼마나 잘 · 어디서.
+FIXED_HEAD = ["제품군", "경쟁사", "검색량", "뜬 키워드 수", "최고순위", "평균순위",
+              "어느 키워드 몇 위", "7일 댓글 수", "추세", "우리가 놓친", "글 링크"]
 # ★2026-09-04 사장님 프로세스 — 순위·검색량 칸 신설.
 #   "어떤 키워드에 몇위에 상위노출되어있는지" / "그 경쟁사의 검색량도 알 수 있지"
 #   검색량은 집 PC 도구가 채운다 — 이 배치는 지키기만 한다.
 # ★'상위노출 차지' 는 폐기(2026-09-04 검수 지적 #6) — 상위 구좌 글만 훑으므로
 #   '나온 키워드 수' 와 언제나 같은 값이었다.
-FIXED_TAIL = ["우리가 놓친", "최고순위", "평균순위", "키워드별 순위",
-              "검색량", "나온 키워드 수", "나온 키워드", "글 링크", "댓글 예시"]
-HISTORY_DAYS = 7                 # 날짜 열로 펼칠 날 수
+# 꼬리는 비운다 — 날짜 칸이 곧 꼬리다(맨 뒤).
+FIXED_TAIL: list = []
+# 날짜 칸은 사흘만. 일곱 칸은 표를 넓게만 만들었다(2026-09-04 사장님 지적).
+# 더 긴 흐름은 화면(/competitors)이 본다 — 시트는 '지금 어떤가' 를 적는 자리다.
+HISTORY_DAYS = 3
 MAX_KEYWORDS_SHOWN, MAX_LINKS_SHOWN = 8, 3
 
 # 옛 표(제품군·경쟁 제품·횟수·나온 키워드 수·확인일·댓글 예시) — 이력 없이 그날치만 있던 시절.
@@ -808,7 +816,7 @@ def build_table(prev_values: list, today_rows: list, today: str,
     base = date.fromisoformat(today)
     dates = [(base - timedelta(days=i)).isoformat() for i in range(days)]
 
-    header = FIXED_HEAD + dates + FIXED_TAIL
+    header = FIXED_HEAD + dates
     rows = []
     for (product, brand), per in merged.items():
         counts = [per.get(d, 0) for d in dates]
@@ -832,16 +840,24 @@ def build_table(prev_values: list, today_rows: list, today: str,
         kw_text = ", ".join(kws[:MAX_KEYWORDS_SHOWN])
         if len(kws) > MAX_KEYWORDS_SHOWN:
             kw_text += f" 외 {len(kws) - MAX_KEYWORDS_SHOWN}개"
-        rows.append([product, brand, total, trend] + counts +
-                    [r.get("놓친", ""),
+        # ★행 높이를 키우던 두 칸을 없앴다 — '댓글 예시'(통째로 들어감)와
+        #   여러 줄짜리 '글 링크'. 링크는 대표 하나만 둔다.
+        rows.append([product, brand,
+                     검색량.get((product, brand), ""),
+                     r.get("키워드수", ""),
                      r.get("최고순위", ""), r.get("평균순위", ""),
                      r.get("키워드별순위", ""),
-                     검색량.get((product, brand), ""),
-                     r.get("키워드수", ""), kw_text,
-                     "\n".join((r.get("글들") or [])[:MAX_LINKS_SHOWN]),
-                     str(r.get("댓글 예시") or "")[:120]])
+                     total, trend, r.get("놓친", ""),
+                     (r.get("글들") or [""])[0]] + counts)
 
-    rows.sort(key=lambda x: (x[0], -int(x[2]), x[1]))   # 제품군 묶고, 많이 나온 순
+    # 제품군으로 묶고, 넓게 퍼진 경쟁사부터(뜬 키워드 수 → 7일 댓글 수).
+    def _수(v):
+        try:
+            return int(v or 0)
+        except (TypeError, ValueError):
+            return 0
+
+    rows.sort(key=lambda x: (x[0], -_수(x[3]), -_수(x[7]), x[1]))
     return [header] + rows
 
 # 판정을 못 받은 몫이 이만큼을 넘으면 시트를 덮지 않는다.
