@@ -202,8 +202,13 @@ def _anthropic_key() -> str:
 
 
 def _api_key() -> str:
-    """판정에 쓸 열쇠가 하나라도 있나 — 무료(Groq) 우선, 없으면 유료(Anthropic)."""
-    return _groq_key() or _anthropic_key()
+    """판정에 쓸 열쇠가 하나라도 있나 — 무료(Groq) 먼저, 없으면 유료.
+
+    ★2026-09-05: 여기에 OpenAI 가 빠져 있었다. 보험 ① 을 붙이면서 이 문지기를
+    안 고쳐, **살아 있는 유료 열쇠를 손에 들고도 '열쇠 없음' 으로 물러났다.**
+    보험을 늘릴 때 문지기를 같이 안 고치면 그 보험은 없는 것과 같다.
+    """
+    return _groq_key() or _openai_key() or _anthropic_key()
 
 
 def available() -> bool:
