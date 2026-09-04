@@ -805,6 +805,27 @@ def _prev_volumes(values: list) -> dict:
     return out
 
 
+def 시트줄_만들기(product: str, r: dict) -> dict:
+    """confirmed_rows 한 줄 → 시트에 넘길 줄 · 순수함수.
+
+    ★2026-09-05 실물 사고: 시트 471줄 중 최고순위·평균순위·어느 키워드 몇 위가
+    **0/471** 이었다. 계산은 confirmed_rows 가 이미 다 해놨는데, 시트로 옮기는
+    자리에서 그 세 칸을 안 담아 그대로 버렸다.
+    이게 사장님 프로세스의 핵심이다 —
+    "어떤 키워드에 몇위에 상위노출되어있는지 알 수 있지."
+
+    ★옮기는 자리를 함수로 빼 둔다 — 안에 두면 시험이 그 자리를 못 지나고,
+      손으로 만든 값으로 통과하는 껍데기 시험이 된다(2026-09-05에 실제로 그랬다).
+    """
+    return {"제품군": product, "경쟁사": r["제품"], "횟수": r["횟수"],
+            "상위노출": r.get("상위노출", 0), "놓친": r.get("놓친", 0),
+            "키워드수": r["키워드수"], "키워드들": r.get("키워드들") or [],
+            "최고순위": r.get("최고순위", ""),
+            "평균순위": r.get("평균순위", ""),
+            "키워드별순위": r.get("키워드별순위", ""),
+            "글들": r.get("글들") or [], "댓글 예시": r.get("댓글 예시", "")}
+
+
 def 읽은정도_말(stat: dict | None) -> str:
     """이 표가 몇 %를 읽고 만든 것인지 한 줄로 · 순수함수.
 
@@ -1021,10 +1042,7 @@ def run_from_sheet(args) -> int:
     out_rows: list[dict] = []
     for product, mentions in branded.items():
         for r in confirmed_rows(mentions, verdicts, unified):
-            out_rows.append({"제품군": product, "경쟁사": r["제품"], "횟수": r["횟수"],
-                             "상위노출": r.get("상위노출", 0), "놓친": r.get("놓친", 0),
-                             "키워드수": r["키워드수"], "키워드들": r.get("키워드들") or [],
-                             "글들": r.get("글들") or [], "댓글 예시": r["댓글 예시"]})
+            out_rows.append(시트줄_만들기(product, r))
         print(f"[{product}] 경쟁 제품 "
               f"{len([x for x in out_rows if x['제품군'] == product])}종")
 
