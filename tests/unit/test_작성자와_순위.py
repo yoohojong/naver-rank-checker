@@ -26,9 +26,13 @@ class 가짜크롤:
 class 가짜댓글기:
     def __init__(self, 댓글, 글쓴이=None):
         self._c, self._w, self.연글 = 댓글, 글쓴이, []
+        self.카페번호값 = ""
 
     def comments(self, url):
         return self._c
+
+    def cafe_no(self, url):
+        return self.카페번호값
 
     def writer(self, url):
         self.연글.append(url)
@@ -101,3 +105,69 @@ def test_지워진_댓글의_글쓴이는_안_쓴다():
     """지워진 댓글은 화면에 안 보인다 — 거기 남은 이름을 근거로 삼지 않는다."""
     assert C.글쓴이_찾기([{"writer": {"nick": "주인", "memberKey": "Z"},
                         "isArticleWriter": True, "isDeleted": True}]) == {}
+
+
+# ── 2026-09-04 독립 검수 지적 반영 ──────────────────────────
+
+def test_댓글에서_찾아도_프로필_주소가_나온다(monkeypatch):
+    """★검수 지적 #3 — 성공할수록 프로필이 비고 실패해야 채워지던 것.
+
+    카페번호는 댓글을 받을 때 이미 손에 들어와 있다(`_club` 에 담긴다).
+    공짜인데 안 쓰고 있었다.
+    """
+    f = 가짜댓글기([{"content": "안티트로 써요",
+                  "writer": {"nick": "바이럴이", "memberKey": "ZZZ"},
+                  "isArticleWriter": True}])
+    f.카페번호값 = "23335481"
+    got = _돌리기(monkeypatch, [_글()], f)
+    assert got[0]["카페번호"] == "23335481"
+    assert f.연글 == [], "댓글에서 찾았으면 글을 열지 않아야 한다"
+    assert C.프로필주소(got[0]["카페번호"], got[0]["글쓴이키"]).endswith("members/ZZZ")
+
+
+def test_글을_열_때_검색에서_받은_열쇠를_같이_보낸다():
+    """★검수 지적 #4 — 이 열쇠를 버리고 부르면 403 이다(2026-07-23 실측:
+    1,106개 중 548개를 그렇게 놓쳤다). 댓글 받는 쪽은 붙이는데 여기만 빠져 있었다.
+    """
+    부른곳 = []
+
+    class 가짜세션:
+        headers: dict = {}
+
+        def get(self, url, **kw):
+            부른곳.append(url)
+
+            class R:
+                status_code = 200
+
+                @staticmethod
+                def json():
+                    return {"result": {"article": {"writer": {"nick": "주인",
+                                                              "memberKey": "K"}}}}
+            return R()
+
+    f = C.CommentFetcher()
+    f.s = 가짜세션()
+    f._club["abc"] = "111"
+    got = f.writer("https://cafe.naver.com/abc/1?art=열쇠값")
+    assert got["키"] == "K" and got["카페번호"] == "111"
+    assert "art=열쇠값" in 부른곳[0], "검색에서 받은 열쇠가 빠졌습니다"
+
+
+def test_댓글이_하나도_없어도_글_기록은_남는다(monkeypatch):
+    """★검수 지적 #1의 짝 — 댓글을 못 연 글은 언급이 0건이라 그 계정이 통째로
+    사라졌다. 순위·작성자는 이미 손에 있으므로 글 단위 기록을 하나 남긴다.
+    """
+    f = 가짜댓글기([], 글쓴이={"닉": "바이럴이", "키": "ZZZ", "카페번호": "111"})
+    got = _돌리기(monkeypatch, [_글(rank=2)], f)
+    assert len(got) == 1
+    assert got[0]["원천"] == "글"
+    assert got[0]["댓글"] == ""
+    assert got[0]["순위"] == 2 and got[0]["글쓴이키"] == "ZZZ"
+
+
+def test_글_기록은_댓글이_있으면_안_만든다(monkeypatch):
+    """댓글이 있으면 그 언급들이 이미 순위·작성자를 들고 있다 — 겹쳐 세지 않는다."""
+    f = 가짜댓글기([{"content": "안티트로 써요", "writer": {"nick": "행인"}}])
+    got = _돌리기(monkeypatch, [_글()], f)
+    assert [m["원천"] for m in got] == ["댓글"]

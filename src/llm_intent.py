@@ -59,7 +59,9 @@ _SYSTEM = (
 
 
 def _api_key():
-    return os.environ.get("GROQ_API_KEY", "").strip()
+    """열쇠 씻기는 comment_brand_llm 한 곳에 있다(2026-09-04 검수 지적 #11)."""
+    from src.comment_brand_llm import _열쇠씻기
+    return _열쇠씻기(os.environ.get("GROQ_API_KEY", ""))
 
 
 def build_messages(text):

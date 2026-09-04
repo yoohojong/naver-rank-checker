@@ -117,6 +117,18 @@ class CommentFetcher:
                 return str(v)
         return ""
 
+    def cafe_no(self, url: str) -> str:
+        """이 글이 있는 카페 번호. **댓글을 받을 때 이미 받아 둔 값**을 돌려준다.
+
+        ★2026-09-04 검수 지적 #3 — 프로필 주소를 만들려면 이 번호가 필요한데,
+        댓글에서 글쓴이를 찾아낸(=잘 된) 경우에 오히려 번호가 비어 있었다.
+        성공할수록 프로필이 비고 실패해야 채워지는, 뒤집힌 모양이었다.
+        """
+        m = _CAFE_URL.search(url)
+        if not m:
+            return ""
+        return self._club.get(m.group(1)) or ""
+
     def writer(self, url: str) -> dict:
         """글 하나 → 글쓴이 {닉, 키, 카페번호}. 못 받으면 {}.
 
@@ -129,8 +141,14 @@ class CommentFetcher:
         club = self._club_id(url, m.group(1))
         if not club:
             return {}
+        # ★2026-09-04 검수 지적 #4 — 검색 주소에 붙어 있는 열쇠(art)를 버리고
+        #   부르면 회원 전용 카페에서 403 이 난다(2026-07-23 실측: 1,106개 중
+        #   548개를 그렇게 놓쳤다). 댓글 받는 쪽은 붙이는데 여기만 빠져 있었다.
+        #   그리고 회원 전용 카페가 곧 바이럴이 가장 많은 자리다.
+        tok = _ART_TOKEN.search(url)
         api = (f"https://apis.naver.com/cafe-web/cafe-articleapi/v3/cafes/{club}"
-               f"/articles/{m.group(2)}")
+               f"/articles/{m.group(2)}"
+               + (f"?art={tok.group(1)}" if tok else ""))
         try:
             r = self.s.get(api, headers={"Referer": url}, timeout=25)
             if r.status_code != 200:
@@ -404,7 +422,12 @@ def confirmed_rows(mentions: list, verdicts: dict, unified: dict | None = None) 
         # ★'횟수'는 날짜 열·추세의 재료다 → **댓글 언급만** 센다.
         # 제목 언급까지 섞으면 시트에 쌓인 어제까지의 값(댓글만 세던 정의)과 잣대가 달라져,
         # 아무 일도 없었는데 "▲ 늘었다" 로 보인다. 정의를 바꿔놓고 현실이 변한 걸로 읽는 사고.
-        r["횟수"] = len([m for m in mine if m.get("원천") != "상위노출"])
+        # ★2026-09-04 — '아닌 것 빼기' 에서 '맞는 것만 세기' 로 바꿨다.
+        #   글 단위 기록(원천="글", 댓글을 못 연 글의 계정을 살리려고 남긴다)이
+        #   '상위노출 이 아니다' 라는 이유로 횟수에 섞여 추세를 부풀렸다.
+        #   빼는 목록은 새 값이 생길 때마다 조용히 틀린다 — 넣는 목록으로 쓴다.
+        #   원천이 안 적힌 옛 자료는 댓글로 본다(그때는 댓글밖에 없었다).
+        r["횟수"] = len([m for m in mine if (m.get("원천") or "댓글") == "댓글"])
         kw_count: dict = {}
         for m in mine:
             kw = m.get("키워드")
@@ -419,46 +442,83 @@ def confirmed_rows(mentions: list, verdicts: dict, unified: dict | None = None) 
             if link and link not in seen_link:
                 seen_link.append(link)
         r["글들"] = seen_link
-        # 상위 구좌를 몇 개 키워드에서 차지했나 / 그중 우리 글이 아예 없던 키워드는 몇 개인가.
-        상위 = {m.get("키워드") for m in mine
-                if m.get("원천") == "상위노출" and m.get("키워드")}
-        r["상위노출"] = len(상위)
+        # ★2026-09-04 독립 검수 지적 #6 — 전에는 `원천 == "상위노출"` 인 것만 셌는데
+        #   그 값을 넣는 코드가 저장소에 **한 줄도 없어** 두 칸이 늘 0이었다.
+        #   화면은 그 0을 "우리가 놓친 것 없음" 으로 보이게 했다.
+        #   · '상위노출 차지' 는 폐기했다 — 애초에 상위 구좌 글만 훑으므로
+        #     '뜬 키워드 수' 와 언제나 같은 값이다. 같은 것을 두 번 적으면
+        #     사장님이 서로 다른 뜻으로 읽으신다.
+        #   · '우리가 놓친' 은 원천을 안 따지고 센다. 그 키워드 상위 구좌에
+        #     우리 글이 하나도 없었나(우리놓침)는 글마다 이미 붙어 있다.
         r["놓친"] = len({m.get("키워드") for m in mine
-                        if m.get("원천") == "상위노출" and m.get("우리놓침") and m.get("키워드")})
+                        if m.get("우리놓침") and m.get("키워드")})
         # ★2026-09-04 사장님: "어떤 키워드에 몇위에 상위노출되어있는지 알 수 있지".
         #   키워드 하나에 그 브랜드 글이 여러 개면 **가장 좋은 자리**가 그 키워드 성적이다.
         #   순위 0 은 '모른다' 지 '1등보다 좋다' 가 아니므로 셈에서 뺀다 —
         #   섞으면 표가 성적을 거짓으로 좋게 말한다.
-        r["순위별"] = _최고순위별(mine)
+        r["순위별"] = _순위표(mine)
         r["최고순위"], r["평균순위"] = _순위요약(r["순위별"])
+        r["키워드별순위"] = _순위글(r["순위별"])
     return rows
 
 
-def _최고순위별(mentions: list) -> dict:
-    """언급 목록 → {키워드: 그 키워드에서 받은 가장 좋은 순위}. 순위 모르는 것은 뺀다."""
-    out: dict = {}
+# 사장님이 '상위노출' 이라 부르는 자리. 다른 구좌(인기글·스마트블록)는 같은 1위여도
+# 다른 자리라, 한 평균에 섞으면 성적이 거짓으로 좋아진다(2026-09-04 검수 지적 #5).
+상위노출_구좌 = "AB"
+
+
+def _순위표(mentions: list) -> list:
+    """언급 목록 → [{키워드, 구좌, 순위}] · 키워드·구좌마다 **가장 좋은 자리** 하나.
+
+    ★`SlotItem.rank` 는 '그 구좌 **안**의 순위' 다(parser.py 참고).
+    AB 1위와 인기글 1위는 서로 다른 자리이므로 구좌를 떼어 두면 안 된다.
+    순위 0 은 '모른다' 지 '1위보다 좋다' 가 아니므로 아예 뺀다.
+    """
+    best: dict = {}
     for m in mentions or []:
         kw = m.get("키워드")
+        구좌 = str(m.get("구좌") or "").strip() or "모름"
         try:
             rank = int(m.get("순위") or 0)
         except (TypeError, ValueError):
             rank = 0
         if not kw or rank <= 0:
             continue
-        if kw not in out or rank < out[kw]:
-            out[kw] = rank
-    return out
+        key = (kw, 구좌)
+        if key not in best or rank < best[key]:
+            best[key] = rank
+    return [{"키워드": k, "구좌": g, "순위": v}
+            for (k, g), v in sorted(best.items(), key=lambda x: (x[1], x[0]))]
 
 
-def _순위요약(순위별: dict):
-    """{키워드: 순위} → (최고순위, 평균순위). 하나도 모르면 빈 값 — 0 을 쓰지 않는다."""
-    vals = [v for v in (순위별 or {}).values() if v > 0]
+def _순위요약(표):
+    """순위표 → (최고순위, 평균순위). **상위노출 구좌만** 센다.
+
+    하나도 없으면 빈 값 — 0 을 쓰지 않는다.
+    """
+    vals = [r["순위"] for r in (표 or []) if r.get("구좌") == 상위노출_구좌]
     if not vals:
         return "", ""
     return min(vals), round(sum(vals) / len(vals), 1)
 
 
-def viral_accounts(mentions: list, verdicts: dict, unified: dict | None = None) -> list:
+def _순위글(표) -> str:
+    """순위표 → "지루성두피염샴푸 AB 2위 · 비듬샴푸 인기글 1위". 좋은 자리부터.
+
+    요약에서 빠지는 구좌도 여기에는 남긴다 — 사라지게 두지 않는다.
+    """
+    표 = sorted(표 or [], key=lambda r: (r["순위"], r["키워드"]))
+    if not 표:
+        return ""
+    보임 = 표[:MAX_KEYWORDS_SHOWN]
+    글 = " · ".join(f'{r["키워드"]} {r["구좌"]} {r["순위"]}위' for r in 보임)
+    if len(표) > len(보임):
+        글 += f" 외 {len(표) - len(보임)}개"
+    return 글
+
+
+def viral_accounts(mentions: list, verdicts: dict, unified: dict | None = None,
+                   이름붙은: list | None = None) -> list:
     """언급 목록 → **계정별** 한 줄. 바이럴인지 아닌지는 이 숫자가 답한다.
 
     사장님 2026-09-04 원문: "대략적으로 전부 크롤링을 한다고 쳐볼게. 그러면 우리가
@@ -468,13 +528,21 @@ def viral_accounts(mentions: list, verdicts: dict, unified: dict | None = None) 
     ★바이럴 판정을 앞에 세우지 않는다. 미리 거르면 그 판정을 만들 재료를 버린다.
     전부 모으고, `키워드수 · 평균순위` 로 드러나게 한다.
 
+    ★2026-09-04 독립 검수 지적 #1 — 이 함수에 **이름이 뽑힌 댓글만** 넘기고 있었다.
+    그래서 상위노출은 됐는데 댓글에서 제품명이 안 나온 글의 계정이 통째로 사라졌고,
+    키워드 3개에 떠 있는 계정이 1개로 찍혔다. 사장님이 뒤집으신 바로 그 자리를
+    코드가 그대로 어기고 있었다. 지금은 `mentions` 에 **원문 그대로** 받는다.
+    `이름붙은` 은 미는 제품을 붙일 때만 쓴다 — 세는 일에는 안 쓴다.
+
     계정키(memberKey)가 없으면 묶지 않는다 — 닉네임이 같은 다른 사람을 한 계정으로
     합치면 **없는 바이럴을 만들어낸다**(이 프로젝트 원칙: 적게 세는 오류 > 지어내는 오류).
     """
     묶음: dict = {}
+    버린언급 = 0
     for m in mentions or []:
         키 = str(m.get("글쓴이키") or "").strip()
         if not 키:
+            버린언급 += 1
             continue
         a = 묶음.setdefault(키, {
             "계정": str(m.get("글쓴이") or ""), "계정키": 키,
@@ -484,18 +552,25 @@ def viral_accounts(mentions: list, verdicts: dict, unified: dict | None = None) 
         link = m.get("글")
         if link and link not in a["_글"]:
             a["_글"].append(link)
-        # 미는 제품 = 그 계정 글의 댓글에서 **판정을 통과한** 이름만.
-        # 판정 못 받은 것을 넣으면 '약국에서' 같은 조각이 업체 이름처럼 보인다.
+        if not a["카페번호"] and m.get("카페번호"):
+            a["카페번호"] = str(m.get("카페번호"))
+
+    # 미는 제품 = 그 계정 글의 댓글에서 **판정을 통과한** 이름만.
+    # 판정 못 받은 것을 넣으면 '약국에서' 같은 조각이 업체 이름처럼 보인다.
+    for m in (이름붙은 if 이름붙은 is not None else mentions) or []:
+        키 = str(m.get("글쓴이키") or "").strip()
+        a = 묶음.get(키)
         pk = m.get("키")
-        if pk and brand_verdicts.is_product(verdicts, pk):
-            이름 = brand_verdicts.display_name(verdicts, pk, m.get("표시") or "")
-            이름 = (unified or {}).get(이름, 이름)
-            if 이름 and is_real_brand(이름) and 이름 not in a["_제품"]:
-                a["_제품"].append(이름)
+        if not a or not pk or not brand_verdicts.is_product(verdicts, pk):
+            continue
+        이름 = brand_verdicts.display_name(verdicts, pk, m.get("표시") or "")
+        이름 = (unified or {}).get(이름, 이름)
+        if 이름 and is_real_brand(이름) and 이름 not in a["_제품"]:
+            a["_제품"].append(이름)
 
     rows = []
     for a in 묶음.values():
-        순위별 = _최고순위별(a["_언급"])
+        순위별 = _순위표(a["_언급"])
         최고, 평균 = _순위요약(순위별)
         키워드들 = sorted({m.get("키워드") for m in a["_언급"] if m.get("키워드")})
         rows.append({
@@ -510,6 +585,10 @@ def viral_accounts(mentions: list, verdicts: dict, unified: dict | None = None) 
     rows.sort(key=lambda r: (-r["키워드수"],
                              r["평균순위"] if r["평균순위"] != "" else 99,
                              r["계정키"]))
+    # ★몇 %를 보고 있는지 밝힌다 — 계정키가 없어 못 묶은 언급 수(검수 지적 #15).
+    #   "부분만 보고 있으면 몇 %를 보고 있는지 먼저 말한다"(팀 규칙).
+    for r in rows:
+        r["못묶은언급"] = 버린언급
     return rows
 
 
@@ -597,7 +676,11 @@ def scan_keyword(crawler: CommentFetcher, kw: str, *, our_links: set, our_slugs:
         #   ("어떤 키워드에 몇위에 상위노출되어있는지 알 수 있지").
         #   작성자는 갈래 B 의 출발점이다("그 계정이 바이럴하는 다른 키워드들").
         글쓴이 = 글쓴이_찾기(댓글들)
-        if not 글쓴이.get("키"):
+        if 글쓴이.get("키"):
+            # 카페번호는 댓글을 받을 때 이미 손에 들어와 있다 — 요청 0으로 채운다.
+            글쓴이 = {**글쓴이, "카페번호": (getattr(fetcher, "cafe_no", None)
+                                        and fetcher.cafe_no(it.url)) or ""}
+        else:
             글쓴이 = fetcher.writer(it.url) or {}     # 댓글에 없을 때만 글을 연다
         같이 = {"키워드": kw, "글": it.url, "카페": it.source_name or "",
                 "우리놓침": 우리놓침,
@@ -606,10 +689,18 @@ def scan_keyword(crawler: CommentFetcher, kw: str, *, our_links: set, our_slugs:
                 "글쓴이": str(글쓴이.get("닉") or ""),
                 "글쓴이키": str(글쓴이.get("키") or ""),
                 "카페번호": str(글쓴이.get("카페번호") or "")}
+        붙은 = 0
         for c in 댓글들:
             t = str((c or {}).get("content") or "").strip()
             if t:
                 mentions.append({"댓글": t[:300], **같이, "원천": "댓글"})
+                붙은 += 1
+        if not 붙은:
+            # ★2026-09-04 검수 지적 #1 — 댓글을 못 열거나 댓글이 없는 글은 언급이
+            #   0건이라 **그 계정이 통째로 사라졌다.** 순위·작성자는 이미 손에 있으니
+            #   글 단위로 한 줄 남긴다. 제품 이름을 뽑는 쪽은 댓글이 빈 이 줄을
+            #   그냥 지나친다(빈 글은 읽을 것이 없다).
+            mentions.append({"댓글": "", **같이, "원천": "글"})
         time.sleep(1.0)       # 네이버 부담 줄이기
     return mentions
 
@@ -620,7 +711,9 @@ FIXED_HEAD = ["제품군", "경쟁사", "최근7일 합계", "추세"]
 # ★2026-09-04 사장님 프로세스 — 순위·검색량 칸 신설.
 #   "어떤 키워드에 몇위에 상위노출되어있는지" / "그 경쟁사의 검색량도 알 수 있지"
 #   검색량은 집 PC 도구가 채운다 — 이 배치는 지키기만 한다.
-FIXED_TAIL = ["상위노출 차지", "우리가 놓친", "최고순위", "평균순위", "키워드별 순위",
+# ★'상위노출 차지' 는 폐기(2026-09-04 검수 지적 #6) — 상위 구좌 글만 훑으므로
+#   '나온 키워드 수' 와 언제나 같은 값이었다.
+FIXED_TAIL = ["우리가 놓친", "최고순위", "평균순위", "키워드별 순위",
               "검색량", "나온 키워드 수", "나온 키워드", "글 링크", "댓글 예시"]
 HISTORY_DAYS = 7                 # 날짜 열로 펼칠 날 수
 MAX_KEYWORDS_SHOWN, MAX_LINKS_SHOWN = 8, 3
@@ -678,18 +771,6 @@ def _prev_volumes(values: list) -> dict:
     return out
 
 
-def _순위글(순위별: dict | None) -> str:
-    """{키워드: 순위} → "지루성두피염샴푸 2위 · 비듬샴푸 4위". 좋은 자리부터."""
-    items = sorted((순위별 or {}).items(), key=lambda x: (x[1], x[0]))
-    if not items:
-        return ""
-    보임 = items[:MAX_KEYWORDS_SHOWN]
-    글 = " · ".join(f"{k} {v}위" for k, v in 보임)
-    if len(items) > len(보임):
-        글 += f" 외 {len(items) - len(보임)}개"
-    return 글
-
-
 def build_table(prev_values: list, today_rows: list, today: str,
                 days: int = HISTORY_DAYS) -> list:
     """지난 표 + 오늘 결과 → 시트에 쓸 표 전체 · 순수함수.
@@ -717,8 +798,8 @@ def build_table(prev_values: list, today_rows: list, today: str,
         total = sum(counts)
         r = extra.get((product, brand), {})
         # 7일 안에 댓글에 한 번도 안 나온 경쟁사는 내린다 —
-        # 단, 상위 구좌를 차지하고 있으면 남긴다(그게 사장님이 보자고 한 바로 그 경쟁사다).
-        if not total and not int(r.get("상위노출") or 0):
+        # 단, 오늘 어느 키워드에서든 보였으면 남긴다(그게 사장님이 보자고 한 그 경쟁사다).
+        if not total and not int(r.get("키워드수") or 0):
             continue
         before = next((c for c in counts[1:] if c), 0)
         now = counts[0]
@@ -735,9 +816,9 @@ def build_table(prev_values: list, today_rows: list, today: str,
         if len(kws) > MAX_KEYWORDS_SHOWN:
             kw_text += f" 외 {len(kws) - MAX_KEYWORDS_SHOWN}개"
         rows.append([product, brand, total, trend] + counts +
-                    [r.get("상위노출", ""), r.get("놓친", ""),
+                    [r.get("놓친", ""),
                      r.get("최고순위", ""), r.get("평균순위", ""),
-                     _순위글(r.get("순위별")),
+                     r.get("키워드별순위", ""),
                      검색량.get((product, brand), ""),
                      r.get("키워드수", ""), kw_text,
                      "\n".join((r.get("글들") or [])[:MAX_LINKS_SHOWN]),
@@ -887,6 +968,26 @@ def run_from_sheet(args) -> int:
     jstat["언급"] = len(all_mentions)
     jstat["확정제품"] = len(out_rows)
 
+    # ★2026-09-04 검수 지적 #13 — 글쓴이를 어디서 몇 개나 얻었는지 재는 줄이 하나도
+    #   없었다. 댓글에서 공짜로 얻는지, 글을 다시 열어야 하는지에 따라 요청 수가
+    #   수천 건 갈리는데 **어느 쪽인지 알 방법이 없었다.**
+    #   그리고 계정키를 못 얻으면 바이럴 계정 표가 통째로 빈다 — 그때 표가
+    #   '경쟁이 없다' 처럼 보이면 안 되므로, 몇 %를 보고 있는지 숫자로 남긴다.
+    글목록 = {}
+    for m in (m for ms in by_product.values() for m in ms):
+        글목록.setdefault(m.get("글"), m)
+    글수 = len(글목록)
+    키있음 = sum(1 for m in 글목록.values() if str(m.get("글쓴이키") or "").strip())
+    번호있음 = sum(1 for m in 글목록.values() if str(m.get("카페번호") or "").strip())
+    jstat["글수"], jstat["글쓴이키확보"], jstat["카페번호확보"] = 글수, 키있음, 번호있음
+    if 글수:
+        print(f"글쓴이 계정키 {키있음}/{글수}개 확보"
+              f" ({키있음 * 100 // 글수}%) · 프로필 주소를 만들 수 있는 글 "
+              f"{번호있음}/{글수}개")
+        if 키있음 == 0:
+            print("  ⚠ 계정키를 하나도 못 얻었습니다 — 바이럴 계정 표가 빕니다. "
+                  "'경쟁이 없다' 가 아니라 '못 알아봤다' 입니다.")
+
     print(f"\n댓글 연 글 {fetcher.stat['열림']}개 · 못 연 글 {fetcher.stat['막힘']}개 "
           f"· 댓글 {fetcher.stat.get('댓글', 0)}건(뒷장 {fetcher.stat.get('뒷장', 0)}장 포함)")
     print(f"새 댓글 {jstat.get('댓글', 0)}건을 {jstat.get('묶음', 0)}묶음으로 읽음 "
@@ -940,26 +1041,38 @@ def run_from_sheet(args) -> int:
 
         # ★갈래 B — 계정별로 묶어 바이럴을 드러낸다(2026-09-04 사장님 프로세스).
         #   추가 크롤 0. 이미 훑은 결과를 다른 축으로 세기만 한다.
-        계정줄 = viral_accounts(all_mentions, verdicts, unified)
-        vpay = build_viral_table(계정줄)
+        #   ★여기서 넘어져도 경쟁사 탭은 이미 새로 써졌다 — 그런데 job 이 죽으면
+        #     워크플로가 "시트 '경쟁사' 는 어제 값 그대로입니다" 라는 **거짓 문자**를
+        #     보낸다(검수 지적 #16). 두 갈래는 따로 살아야 한다.
         try:
-            vws = client.spreadsheet.worksheet("바이럴계정")
-        except gspread.exceptions.WorksheetNotFound:
-            vws = client.spreadsheet.add_worksheet(title="바이럴계정", rows=400, cols=14)
-        vws.resize(rows=len(vpay) + 20, cols=max(len(VIRAL_HEADER), 12))
-        vblank = [""] * len(VIRAL_HEADER)
-        vws.update("A1", vpay + [list(vblank) for _ in range(20)],
-                   value_input_option="RAW")
-        print(f"시트 '바이럴계정' 갱신 — 계정 {len(vpay) - 1}개")
+            # ★검수 지적 #1 — 원문(by_product) 을 넘긴다. all_mentions 는 이름이 뽑힌
+            #   것만 남은 목록이라, 그것으로 세면 사장님 제1원칙을 어긴다.
+            원문언급 = [m for ms in by_product.values() for m in ms]
+            계정줄 = viral_accounts(원문언급, verdicts, unified, 이름붙은=all_mentions)
+            vpay = build_viral_table(계정줄)
+            try:
+                vws = client.spreadsheet.worksheet("바이럴계정")
+            except gspread.exceptions.WorksheetNotFound:
+                vws = client.spreadsheet.add_worksheet(title="바이럴계정", rows=400, cols=14)
+            vws.resize(rows=len(vpay) + 20, cols=max(len(VIRAL_HEADER), 12))
+            vblank = [""] * len(VIRAL_HEADER)
+            vws.update("A1", vpay + [list(vblank) for _ in range(20)],
+                       value_input_option="RAW")
+            못묶음 = (계정줄[0].get("못묶은언급") if 계정줄 else 0) or 0
+            print(f"시트 '바이럴계정' 갱신 — 계정 {len(vpay) - 1}개"
+                  + (f" (계정을 못 알아본 언급 {못묶음}건은 뺐습니다)" if 못묶음 else ""))
+        except Exception as e:
+            # 조용히 넘어가지 않는다 — 사유를 남긴다.
+            print(f"시트 '바이럴계정' 갱신 실패({type(e).__name__}) — 경쟁사 탭은 위에서 이미 새로 썼습니다")
     return 0
 
 
 def _format_sheet(ws, payload: list) -> None:
     """보기 좋게 — 머리줄 고정·굵게, 숫자 가운데, 글 링크 줄바꿈. 실패해도 값은 이미 들어갔다."""
     n_dates = len(payload[0]) - len(FIXED_HEAD) - len(FIXED_TAIL)
-    # C열~날짜 끝 + 꼬리에서 이어지는 숫자 4칸
-    # (상위노출 차지·우리가 놓친·최고순위·평균순위). 그 뒤 '키워드별 순위' 는 글이다.
-    num_from, num_to = 2, len(FIXED_HEAD) + n_dates + 4
+    # C열~날짜 끝 + 꼬리에서 이어지는 숫자 3칸
+    # (우리가 놓친·최고순위·평균순위). 그 뒤 '키워드별 순위' 는 글이다.
+    num_from, num_to = 2, len(FIXED_HEAD) + n_dates + 3
     try:
         sid = ws.id
         ws.spreadsheet.batch_update({"requests": [

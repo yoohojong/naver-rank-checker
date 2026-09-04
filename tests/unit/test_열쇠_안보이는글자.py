@@ -96,3 +96,32 @@ def test_유료가_터져도_무료가_답하면_그_답을_쓴다(monkeypatch):
         "choices": [{"message": {"content": "무료답"}, "finish_reason": "stop"}]})
     assert llm._call("s", "u", max_tokens=10, timeout=5,
                      sleep=lambda *_: None) == ("무료답", False)
+
+
+# ── 2026-09-04 독립 검수 지적 반영 ──────────────────────────
+
+def test_가운데_낀_글자도_지운다(monkeypatch):
+    """양 끝만 벗기면 가운데 한 글자에 같은 사고가 다시 난다(검수 지적 #12).
+
+    눈에 안 보이는 글자는 열쇠 안 어디에도 정당하게 들어갈 수 없다.
+    """
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-a" + BOM + "bc")
+    assert llm._anthropic_key() == "sk-abc"
+    llm._anthropic_key().encode("ascii")
+
+
+def test_댓글_읽는_본_경로도_같은_열쇠를_쓴다(monkeypatch):
+    """★검수 지적 #11 — 씻는 코드를 한 곳에 만들어 놓고 정작 본 경로가 안 썼다.
+
+    `brand_from_comments` 가 댓글을 실제로 읽는 자리다. 규칙은 한 곳에만 두고
+    쓰는 쪽이 그것을 부른다([[feedback_one-rule-one-place]]).
+    """
+    from src import brand_from_comments as bfc
+    monkeypatch.setenv("GROQ_API_KEY", BOM + "gsk-abc ")
+    assert bfc._api_key() == "gsk-abc"
+
+
+def test_봇_말귀_알아듣는_곳도_같은_열쇠를_쓴다(monkeypatch):
+    from src import llm_intent
+    monkeypatch.setenv("GROQ_API_KEY", BOM + "gsk-abc")
+    assert llm_intent._api_key() == "gsk-abc"

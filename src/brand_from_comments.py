@@ -92,7 +92,13 @@ SYSTEM = (
 
 
 def _api_key() -> str:
-    return os.environ.get("GROQ_API_KEY", "").strip()
+    """★2026-09-04 검수 지적 #11 — 씻는 코드를 만들어 놓고 정작 여기가 안 썼다.
+
+    여기가 댓글을 실제로 읽는 본 경로다. 열쇠 씻는 규칙은 comment_brand_llm
+    한 곳에만 두고 쓰는 쪽이 그것을 부른다([[feedback_one-rule-one-place]]).
+    """
+    from src.comment_brand_llm import _열쇠씻기
+    return _열쇠씻기(os.environ.get("GROQ_API_KEY", ""))
 
 
 def _post(payload: dict, *, timeout: int, tries: int = 3, sleep=time.sleep,
