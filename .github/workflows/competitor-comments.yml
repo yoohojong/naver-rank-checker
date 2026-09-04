@@ -86,6 +86,10 @@ jobs:
           # ANTHROPIC_API_KEY 는 아직 미설정(2026-08-20) — 넣는 순간 보험이 켜진다.
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          # ★유료 보험 ① (2026-09-04). Anthropic 하나만 두었다가 그 계정 잔액이
+          #   0원이라 보험이 통째로 죽어 있었고, 무료는 한도에 걸려 댓글
+          #   16,379건 중 810/820 묶음을 못 읽었다. 보험은 둘이어야 한다.
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           # 모델 이름은 코드에 없다 — 계정에 물어 자동 선택(src/llm_pick).
           # 2026-08-16 llama-3.3 퇴역 404 사흘의 재발 방지. secret 으로 주면 그게 위다.
           GROQ_MODEL: ${{ secrets.GROQ_MODEL }}

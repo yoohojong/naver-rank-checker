@@ -185,6 +185,18 @@ def _groq_model() -> str:
     return os.environ.get("GROQ_MODEL", "").strip() or llm_pick.pick(_BASE_URL, _groq_key())
 
 
+# ★유료 보험 둘 (2026-09-04). Anthropic 하나만 두었다가 그 계정 잔액이 0원이라
+#   보험이 통째로 죽어 있었다. 살아 있는 OpenAI 열쇠가 이미 손에 있었는데
+#   쓰는 코드가 없었다 — '만들어 놓고 안 이은 자리' 였다.
+_OPENAI_URL = os.environ.get(
+    "OPENAI_BASE_URL", "https://api.openai.com/v1/chat/completions")
+_OPENAI_MODEL = os.environ.get("OPENAI_MODEL", "").strip() or "gpt-4o-mini"
+
+
+def _openai_key() -> str:
+    return _열쇠씻기(os.environ.get("OPENAI_API_KEY", ""))
+
+
 def _anthropic_key() -> str:
     return _열쇠씻기(os.environ.get("ANTHROPIC_API_KEY", ""))
 
@@ -246,6 +258,7 @@ def _salvage(content: str) -> list:
 
 
 def _post(payload: dict, *, timeout: int, tries: int = 3, sleep=time.sleep,
+          url: str | None = None, key: str | None = None,
           errors: list | None = None):
     """Groq 호출. 한도 초과(429)면 알려준 만큼 쉬었다 다시 — 조용히 포기하지 않는다.
 
@@ -255,11 +268,15 @@ def _post(payload: dict, *, timeout: int, tries: int = 3, sleep=time.sleep,
         if errors is not None:
             errors.append(reason)
 
-    key = _groq_key()
+    # ★어디로 보낼지·어느 열쇠를 쓸지를 밖에서 정할 수 있다(2026-09-04).
+    #   무료(Groq)와 유료(OpenAI)가 **같은 규격**이라, 보내는 몸통을 그대로 쓰고
+    #   주소와 열쇠만 갈아 끼운다. 같은 코드를 두 벌 두면 언젠가 한쪽만 고쳐진다.
+    보낼곳 = url or _BASE_URL
+    key = key if key is not None else _groq_key()
     body = json.dumps(payload).encode("utf-8")
     for attempt in range(tries):
         req = urllib.request.Request(
-            _BASE_URL, data=body,
+            보낼곳, data=body,
             headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json",
                      "User-Agent": _USER_AGENT},
         )
@@ -268,9 +285,11 @@ def _post(payload: dict, *, timeout: int, tries: int = 3, sleep=time.sleep,
                 return json.loads(resp.read().decode("utf-8"))
         except urllib.error.HTTPError as e:
             note(f"HTTP {e.code}")
-            if e.code == 404 and attempt < tries - 1:
+            if e.code == 404 and attempt < tries - 1 and 보낼곳 == _BASE_URL:
                 # 모델이 방금 퇴역했을 수 있다(2026-08-16 실사고) —
                 # 목록을 다시 물어 갈아타고 그 자리에서 한 번 더.
+                # ★무료 쪽에서만 한다 — 다른 곳에 무료 모델 이름을 끼우면
+                #   그쪽이 영영 404 가 된다(2026-09-04).
                 llm_pick.forget(_BASE_URL)
                 새모델 = _groq_model()
                 if 새모델 and 새모델 != payload.get("model"):
@@ -401,6 +420,42 @@ def _anthropic_call(system: str, user: str, *, max_tokens: int,
     return None, False
 
 
+def _openai_post(payload: dict, *, timeout: int, tries: int = 3, sleep=time.sleep,
+                 errors: list | None = None):
+    """OpenAI 규격 호출 — 무료(Groq)와 같은 모양이라 보내는 몸통을 그대로 쓴다."""
+    return _post(payload, timeout=timeout, tries=tries, sleep=sleep, errors=errors,
+                 url=_OPENAI_URL, key=_openai_key())
+
+
+def _openai_call(system: str, user: str, *, max_tokens: int, timeout: int,
+                 sleep=time.sleep, errors: list | None = None):
+    """유료 보험 ①. 열쇠가 없으면 조용히 물러난다 — 호출부가 다음 보험으로 넘긴다."""
+    if not _openai_key():
+        return None, False
+    data = _openai_post({
+        "model": _OPENAI_MODEL,
+        "messages": [{"role": "system", "content": system},
+                     {"role": "user", "content": user}],
+        "temperature": 0, "max_tokens": max_tokens,
+    }, timeout=timeout, sleep=sleep, errors=errors)
+    if not data:
+        if errors is not None:
+            errors.append("오픈에이아이: 답을 못 받음")
+        return None, False
+    try:
+        content = data["choices"][0]["message"]["content"]
+    except (KeyError, IndexError, TypeError):
+        if errors is not None:
+            errors.append("오픈에이아이: 답 모양이 다름")
+        return None, False
+    if not content:
+        if errors is not None:
+            errors.append("오픈에이아이: 빈 답")
+        return None, False
+    끝 = str((data.get("choices") or [{}])[0].get("finish_reason") or "")
+    return content, 끝 == "length"
+
+
 def _groq_call(system: str, user: str, *, max_tokens: int, timeout: int,
                sleep=time.sleep, errors: list | None = None):
     """무료 판정기에 물어본다 → (답 글자, 잘렸는지). 못 하면 (None, False)."""
@@ -443,6 +498,12 @@ def _call(system: str, user: str, *, max_tokens: int, timeout: int,
         system, user, max_tokens=max_tokens, timeout=timeout, sleep=sleep, errors=errors)
     if content:
         return content, truncated
+    # 보험 ① OpenAI — 살아 있는 열쇠가 이미 있다.
+    content, truncated = _openai_call(
+        system, user, max_tokens=max_tokens, timeout=timeout, sleep=sleep, errors=errors)
+    if content:
+        return content, truncated
+    # 보험 ② Anthropic — 잔액이 있으면 받는다.
     return _anthropic_call(
         system, user, max_tokens=max_tokens, sleep=sleep, errors=errors)
 
