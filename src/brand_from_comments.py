@@ -221,8 +221,15 @@ def 한도인가(사유들) -> bool:
 
     ★2026-09-04 실사고: 차단기가 둘을 똑같이 셌다. 429 는 분 단위로 풀리는데
     5번 만에 그날을 접어, 댓글 16,379건 중 하루에 10묶음밖에 못 읽었다.
+
+    ★2026-09-05: '무료 문이 닫혀 건너뛴다' 는 안내는 한도가 **아니다** —
+    아까 닫힌 걸 알고 지나간다는 뜻이라, 이걸 한도로 읽으면 유료로 잘 돌고 있는
+    묶음마다 쓸데없이 10~60초를 쉰다. 그 말만 따로 빼서 세지 않는다.
     """
-    return any("429" in str(x) or "한도" in str(x) for x in (사유들 or []))
+    from src.comment_brand_llm import 무료_건너뜀_말
+    return any(무료_건너뜀_말 not in str(x)
+               and ("429" in str(x) or "한도" in str(x))
+               for x in (사유들 or []))
 
 
 def read_all(texts: list, *, batch: int = BATCH, timeout: int = 60,

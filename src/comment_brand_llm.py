@@ -257,6 +257,54 @@ def _salvage(content: str) -> list:
     return out
 
 
+# ★무료 문이 닫히면 그 회차 동안은 다시 두드리지 않는다 (2026-09-05).
+#   그 전에는 묶음 820개를 **하나하나마다** 무료에 먼저 물었다. 무료 한도가 이미
+#   닫힌 뒤에도 묶음마다 3번씩 두드리고 알려준 만큼(최대 60초) 쉬고서야 유료로
+#   넘어갔다 — 그래서 회차가 5시간 한계를 넘겨 취소됐고 810/820 묶음이 안 읽혔다.
+#   순서(무료 먼저)는 그대로다. 닫힌 것을 **확인한 뒤에** 다시 안 물을 뿐이다.
+무료_포기_횟수 = 3                       # 연속 이만큼 한도에 걸리면 닫혔다고 본다
+_무료문 = {"연속한도": 0, "닫힘": False}
+
+# ★이 말은 '지금 막 한도에 걸렸다' 가 아니라 '아까 닫힌 걸 알고 건너뛴다' 는 뜻이다.
+#   묶음을 세는 쪽이 이걸 진짜 한도로 읽으면 또 10~60초씩 쉰다 — 그래서 한 곳에
+#   적어 두고 세는 쪽이 이 말을 알아보게 한다(같은 말을 두 벌 적으면 한쪽만 고쳐진다).
+무료_건너뜀_말 = "무료: 한도로 닫혀 이번 회차는 건너뜁니다"
+
+
+def 무료가_닫혔나() -> bool:
+    """이번 회차에 무료 문이 닫혔나 — 닫혔으면 곧장 유료로 간다."""
+    return bool(_무료문["닫힘"])
+
+
+def 무료문_열기() -> None:
+    """새 회차·검사 시작. 상태를 되돌린다."""
+    _무료문["연속한도"] = 0
+    _무료문["닫힘"] = False
+
+
+def _무료문_기록(한도인가: bool) -> None:
+    if 한도인가:
+        _무료문["연속한도"] += 1
+        if _무료문["연속한도"] >= 무료_포기_횟수:
+            _무료문["닫힘"] = True
+    else:
+        _무료문["연속한도"] = 0
+
+
+def _거절사유(e) -> str:
+    """거절한 쪽이 **뭐라고 했는지**까지 남긴다.
+
+    ★'HTTP 400' 한 줄만 남겨 두면 왜 막혔는지 아무도 모른다 — 오늘 실제로
+    그 한 줄뿐이라 유료가 왜 안 열렸는지 알아내는 데 회차 셋을 버렸다.
+    """
+    try:
+        몸통 = e.read().decode("utf-8", "replace")
+    except Exception:
+        몸통 = ""
+    몸통 = " ".join(몸통.split())[:200]
+    return f"HTTP {e.code}" + (f" — {몸통}" if 몸통 else "")
+
+
 def _post(payload: dict, *, timeout: int, tries: int = 3, sleep=time.sleep,
           url: str | None = None, key: str | None = None,
           errors: list | None = None):
@@ -282,9 +330,12 @@ def _post(payload: dict, *, timeout: int, tries: int = 3, sleep=time.sleep,
         )
         try:
             with urllib.request.urlopen(req, timeout=timeout) as resp:
-                return json.loads(resp.read().decode("utf-8"))
+                답 = json.loads(resp.read().decode("utf-8"))
+            if 보낼곳 == _BASE_URL:
+                _무료문_기록(False)          # 무료가 답했다 — 셈을 되돌린다
+            return 답
         except urllib.error.HTTPError as e:
-            note(f"HTTP {e.code}")
+            note(_거절사유(e))
             if e.code == 404 and attempt < tries - 1 and 보낼곳 == _BASE_URL:
                 # 모델이 방금 퇴역했을 수 있다(2026-08-16 실사고) —
                 # 목록을 다시 물어 갈아타고 그 자리에서 한 번 더.
@@ -305,6 +356,11 @@ def _post(payload: dict, *, timeout: int, tries: int = 3, sleep=time.sleep,
                     pass
                 sleep(min(wait, 60.0))
                 continue
+            # ★다시 두드려 보고도 안 열렸다. 한도였으면 그때 '닫힘' 쪽으로 한 칸.
+            #   묶음 하나가 아니라 **연속 세 묶음**이 이래야 문을 닫는다 —
+            #   잠깐 몰린 것 때문에 하루치를 유료로 넘기면 돈이 샌다.
+            if 보낼곳 == _BASE_URL:
+                _무료문_기록(e.code == 429)
             return None
         except (urllib.error.URLError, ValueError, TimeoutError, OSError):
             if attempt < tries - 1:
@@ -460,6 +516,12 @@ def _groq_call(system: str, user: str, *, max_tokens: int, timeout: int,
                sleep=time.sleep, errors: list | None = None):
     """무료 판정기에 물어본다 → (답 글자, 잘렸는지). 못 하면 (None, False)."""
     if not _groq_key():
+        return None, False
+    # ★이번 회차에 이미 닫힌 문이면 두드리지 않고 곧장 유료로 넘긴다.
+    #   두드리는 값이 묶음당 최대 3번 × 60초라, 이것 하나로 회차가 5시간을 넘겼다.
+    if 무료가_닫혔나():
+        if errors is not None:
+            errors.append(무료_건너뜀_말)
         return None, False
     payload = {
         "model": _groq_model(),
