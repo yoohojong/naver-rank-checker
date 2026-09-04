@@ -149,8 +149,23 @@ def unify(names: list, *, timeout: int = 30, sleep=time.sleep) -> dict:
     return out
 
 
+# 눈에 안 보이는데 머리글에 실리면 요청을 통째로 죽이는 글자들.
+# ★2026-09-04 실사고: ANTHROPIC_API_KEY 앞에 BOM(U+FEFF) 한 글자가 붙어 있어
+#   httpx 가 머리글을 ascii 로 옮기다 터졌고, 경쟁사 표가 15일간 멈췄다.
+#   str.strip() 은 이걸 못 지운다 — BOM 은 공백이 아니다.
+_안보이는글자 = "﻿​‌‍⁠ "
+
+
+def _열쇠씻기(값) -> str:
+    """열쇠 하나 → 머리글에 실을 수 있는 모양으로. 붙여넣다 딸려온 것을 걷어낸다."""
+    v = str(값 or "").strip().strip(_안보이는글자).strip()
+    if len(v) >= 2 and v[0] == v[-1] and v[0] in "\"'":
+        v = v[1:-1].strip()                 # 따옴표째 붙여넣은 경우
+    return v.strip(_안보이는글자).strip()
+
+
 def _groq_key() -> str:
-    return os.environ.get("GROQ_API_KEY", "").strip()
+    return _열쇠씻기(os.environ.get("GROQ_API_KEY", ""))
 
 
 def _groq_model() -> str:
@@ -163,7 +178,7 @@ def _groq_model() -> str:
 
 
 def _anthropic_key() -> str:
-    return os.environ.get("ANTHROPIC_API_KEY", "").strip()
+    return _열쇠씻기(os.environ.get("ANTHROPIC_API_KEY", ""))
 
 
 def _api_key() -> str:
@@ -307,7 +322,11 @@ def _anthropic_call(system: str, user: str, *, max_tokens: int,
         note("꾸러미 없음")
         return None, False
 
-    client = _anthropic_client(key)
+    try:
+        client = _anthropic_client(key)
+    except Exception as e:                  # 열쇠 모양이 이상하면 여기서 터진다
+        note(f"손님 못 만듦({type(e).__name__})")
+        return None, False
     for attempt in range(tries):
         try:
             resp = client.messages.create(
@@ -349,6 +368,14 @@ def _anthropic_call(system: str, user: str, *, max_tokens: int,
             return None, False
         except anthropic.APIError as e:      # 위 셋에 안 걸리는 나머지 — 실행을 죽이지 않는다
             note(f"기타 오류({type(e).__name__})")
+            return None, False
+        except Exception as e:
+            # ★2026-09-04: 여기가 없어서 15일을 잃었다.
+            # 머리글 인코딩 오류(UnicodeEncodeError)는 APIError 가 아니라 위 그물을
+            # 전부 빠져나갔고, 판정기 한 곳의 고장이 회차 전체를 죽였다.
+            # 설계는 "무료 먼저, 막히면 유료" 다 — 한쪽이 고장 나면 물러나야지 죽으면 안 된다.
+            # 조용히 물러나지는 않는다: 사유를 남겨 다음에 깜깜이가 되지 않게 한다.
+            note(f"예상 못 한 오류({type(e).__name__})")
             return None, False
 
         stop = str(getattr(resp, "stop_reason", "") or "")
