@@ -137,14 +137,18 @@ jobs:
       # 다음 run 은 새 것만 물어본다. (Groq 무료 하루치를 아끼는 핵심이자,
       # 키워드 1,240개 시대에 시간 초과를 막는 몸통. 시트를 못 쓴 날(exit 3)에도
       # 여기가 always 로 저장돼 다음 회차가 이어 읽는다.)
+      # ★viral_accounts.json 도 같이 올린다 (2026-09-05).
+      #   전에는 판정·읽기 기억만 올려서, 밤 배치가 찾아낸 바이럴 계정이
+      #   러너에서 만들어졌다가 그대로 사라졌다 — 집 PC 로 돌아올 길이
+      #   없어 갈래 B(계정 뒤져 후보 키워드 뽑기)가 영영 못 돌았다.
       - name: 판정·읽기 기억 저장
         if: always()
         run: |
-          if [ -n "$(git status --porcelain data/brand_verdicts.json data/comment_reads.json)" ]; then
+          if [ -n "$(git status --porcelain data/brand_verdicts.json data/comment_reads.json data/viral_accounts.json)" ]; then
             git config user.name  "github-actions[bot]"
             git config user.email "github-actions[bot]@users.noreply.github.com"
-            git add data/brand_verdicts.json data/comment_reads.json
-            git commit -m "chore(경쟁사): 판정·읽기 기억 갱신 [skip ci]"
+            git add data/brand_verdicts.json data/comment_reads.json data/viral_accounts.json
+            git commit -m "chore(경쟁사): 판정·읽기 기억 + 바이럴 계정 갱신 [skip ci]"
             git pull --rebase --autostash origin main || true
             git push origin HEAD:main || true
           fi
