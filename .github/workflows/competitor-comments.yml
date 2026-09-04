@@ -28,6 +28,9 @@ on:
       reuse_run_id:
         description: 어느 회차의 댓글을 가져올지 (reuse_mentions=true 일 때 필요)
         default: ''
+      read_budget:
+        description: 이번 회차에 AI 에 보낼 묶음 수 상한 (비우면 평소값 500)
+        default: ''
 
 concurrency:
   group: competitor-comments
@@ -96,7 +99,8 @@ jobs:
           ANTHROPIC_MODEL: ${{ secrets.ANTHROPIC_MODEL }}
           # 한 회차가 AI 에 보낼 댓글 묶음 상한 — 밀린 몫은 다음 회차가 이어 읽는다
           # (comment_reads 캐시). 유료 보험이 있어도 한 회차 비용이 이걸 못 넘는다.
-          READ_BATCH_BUDGET: '500'
+          # 평소 500. 밀린 것을 한 번에 치울 땐 회차마다 올려서 부른다.
+          READ_BATCH_BUDGET: ${{ inputs.read_budget || '500' }}
           NAVER_SLOWDOWN_BASE_SEC: '4.0'
           PYTHONIOENCODING: 'utf-8'
         run: |
