@@ -733,7 +733,7 @@ def scan_keyword(crawler: CommentFetcher, kw: str, *, our_links: set, our_slugs:
 #   → 읽는 순서대로: 누구인가 · 얼마나 큰가 · 얼마나 넓게 · 얼마나 잘 · 어디서.
 FIXED_HEAD = ["제품군", "경쟁사", "검색량", "뜬 키워드 수", "최고순위", "평균순위",
               "어느 키워드 몇 위", "7일 댓글 수", "추세", "우리가 놓친", "글 링크",
-              "이 표는 몇 % 읽고 만든 것인가"]
+              "이 표를 만들 때 얼마나 읽었나"]
 # ★2026-09-05 — 오늘 이 하나를 여섯 번 고쳤는데 사장님 화면은 하루 종일 어제 값이었다.
 #   원인은 버그가 아니라 **"다 못 읽으면 아예 안 쓴다"** 는 내 설계였다.
 #   22%를 못 읽었다고 이미 확인된 442종을 통째로 버렸다.
@@ -805,6 +805,41 @@ def _prev_volumes(values: list) -> dict:
     return out
 
 
+# 오늘 결과에 없으면 지난 표에서 되살릴 칸들. 안 되살리면 반쪽 회차가
+# 이 칸들을 **빈칸으로 덮는다** — 오늘 고친 그 화면이 그대로 되돌아온다
+# (2026-09-05 검수 심각 1). 날짜·검색량만 지키던 것을 여섯 칸으로 넓힌다.
+_지킬칸 = ("뜬 키워드 수", "최고순위", "평균순위", "어느 키워드 몇 위",
+         "우리가 놓친", "글 링크")
+
+
+def _prev_extras(values: list) -> dict:
+    """지난 표에서 (제품군, 경쟁사) → {칸이름: 값} 을 되살린다 · 순수함수.
+
+    ★오늘 안 본 경쟁사의 성적을 빈칸으로 만들지 않는다. 빈칸은 '0' 도 '없음' 도
+    아니고 **'오늘 안 봤다'** 인데, 표에서는 그 셋이 똑같이 보인다.
+    """
+    if not values or len(values) < 2:
+        return {}
+    head = [str(c).strip() for c in values[0]]
+    try:
+        ip, ib = head.index("제품군"), head.index("경쟁사")
+    except ValueError:
+        return {}
+    자리 = {이름: head.index(이름) for 이름 in _지킬칸 if 이름 in head}
+    out: dict = {}
+    for row in values[1:]:
+        if len(row) <= max(ip, ib):
+            continue
+        제품, 경쟁 = str(row[ip]).strip(), str(row[ib]).strip()
+        if not 제품 or not 경쟁:
+            continue
+        칸 = {이름: row[i] for 이름, i in 자리.items()
+             if i < len(row) and str(row[i]).strip()}
+        if 칸:
+            out[(제품, 경쟁)] = 칸
+    return out
+
+
 def 시트줄_만들기(product: str, r: dict) -> dict:
     """confirmed_rows 한 줄 → 시트에 넘길 줄 · 순수함수.
 
@@ -836,7 +871,20 @@ def 읽은정도_말(stat: dict | None) -> str:
     if not 묶음:
         return ""
     읽음 = 묶음 - int(stat.get("못읽은묶음") or 0)
-    return f"{round(읽음 * 100 / 묶음)}% ({읽음}/{묶음}묶음, 나머지는 다음 회차)"
+    말 = f"댓글 {round(읽음 * 100 / 묶음)}% 읽음({읽음}/{묶음}묶음)"
+    # ★2026-09-05 검수 심각 3: 이 칸이 **댓글 읽기 한 단계만** 재면서 머리글은
+    #   표 전체가 온전한 것처럼 말했다. 확정 1종뿐인 반쪽 표에 '100%' 가 찍혔다.
+    #   재는 것을 늘리고, 이름도 재는 그대로 부른다.
+    확인 = int(stat.get("검색확인") or 0)
+    막힘 = int(stat.get("검색막힘") or 0)
+    if 확인:
+        말 += f" · 이름 확인 {확인 - 막힘}/{확인}"
+    elif 막힘:
+        말 += f" · 이름 확인 막힘 {막힘}건"
+    확정 = int(stat.get("확정제품") or 0)
+    if 확정:
+        말 += f" · 오늘 확정 {확정}종"
+    return 말 + " · 나머지는 다음 회차"
 
 
 def build_table(prev_values: list, today_rows: list, today: str,
@@ -861,18 +909,49 @@ def build_table(prev_values: list, today_rows: list, today: str,
 
     header = FIXED_HEAD + dates
     읽은정도 = 읽은정도_말(stat)
+    지난값 = _prev_extras(prev_values)
     rows = []
+    # 오늘 이 제품군을 **아예 안 봤나**(회차가 거기까지 못 감) — 봤는데 안 나온 것과 다르다.
+    본제품군 = {p for p, _ in extra}
     for (product, brand), per in merged.items():
-        counts = [per.get(d, 0) for d in dates]
-        total = sum(counts)
+        오늘봄 = (product, brand) in extra
+        제품군을봄 = product in 본제품군
+        # ★오늘 그 제품군을 아예 안 봤으면 오늘 칸을 **0 으로 만들지 않는다** —
+        #   0 은 '댓글이 없었다' 는 뜻이고, 안 본 것은 '모른다' 다.
+        #   (2026-09-05 검수 심각 2: 안 본 경쟁사에 '▼ -5' 가 찍혔다.)
+        #   봤는데 안 나온 것은 그대로 0 이다 — 그건 진짜 0 이다.
+        counts = [(per.get(d, 0) if (d != today or 제품군을봄) else "") for d in dates]
+        total = sum(c for c in counts if isinstance(c, int))
         r = extra.get((product, brand), {})
-        # 7일 안에 댓글에 한 번도 안 나온 경쟁사는 내린다 —
-        # 단, 오늘 어느 키워드에서든 보였으면 남긴다(그게 사장님이 보자고 한 그 경쟁사다).
-        if not total and not int(r.get("키워드수") or 0):
+        try:
+            _키수 = int(r.get("키워드수") or 0)
+        except (TypeError, ValueError):
+            _키수 = 0
+        # 7일 안에 댓글에 한 번도 안 나온 경쟁사는 내린다 — 단, 오늘 보였으면 남긴다.
+        # ★내릴지는 **오늘 값**으로만 정한다. 지난 값으로 정하면 사라진 경쟁사가
+        #   영영 안 내려간다.
+        if not total and not _키수:
             continue
-        before = next((c for c in counts[1:] if c), 0)
+        # ★오늘 이 경쟁사가 안 나왔으면 지난 성적을 **그대로 두되 언제 잰 것인지 붙인다**
+        #   (2026-09-05 검수 심각 1). 순위는 '오늘 댓글에 안 나왔다' 고 사라질 값이
+        #   아니다 — 빈칸으로 덮으면 어제 알던 것을 오늘 잃는다.
+        #   7일 내내 안 나오면 위에서 줄째로 내려가므로 묵은 값이 눌러앉지 않는다.
+        if not 오늘봄:
+            묵은 = 지난값.get((product, brand)) or {}
+            잰날 = 묵은.get("잰날") or ""
+            꼬리 = f" ({잰날} 기준)" if 잰날 else " (지난 회차 기준)"
+            키별 = str(묵은.get("어느 키워드 몇 위") or "")
+            r = {"키워드수": 묵은.get("뜬 키워드 수", ""),
+                 "최고순위": 묵은.get("최고순위", ""),
+                 "평균순위": 묵은.get("평균순위", ""),
+                 "키워드별순위": (키별 + 꼬리) if 키별 and "기준)" not in 키별 else 키별,
+                 "놓친": 묵은.get("우리가 놓친", ""),
+                 "글들": [묵은.get("글 링크", "")] if 묵은.get("글 링크") else []}
+        before = next((c for c in counts[1:] if isinstance(c, int) and c), 0)
         now = counts[0]
-        if not before:
+        if now == "":
+            trend = "오늘은 못 봄"      # 안 본 것을 '줄었다' 로 적지 않는다
+        elif not before:
             trend = "신규" if now else ""
         elif now > before:
             trend = f"▲ +{now - before}"
@@ -1155,7 +1234,10 @@ def _format_sheet(ws, payload: list) -> None:
     n_dates = len(payload[0]) - len(FIXED_HEAD) - len(FIXED_TAIL)
     # C열~날짜 끝 + 꼬리에서 이어지는 숫자 3칸
     # (우리가 놓친·최고순위·평균순위). 그 뒤 '키워드별 순위' 는 글이다.
-    num_from, num_to = 2, len(FIXED_HEAD) + n_dates + 3
+    # ★+3 은 FIXED_TAIL 에 칸 3개가 있던 시절 값이다. 그 꼬리를 비운 뒤로
+    #   시작 칸이 끝 칸보다 커져 **서식이 매번 통째로 취소**되고 있었다
+    #   (머리줄 고정·굵게·줄바꿈·폭 맞추기 전부. 2026-09-05 검수 중간 6).
+    num_from, num_to = 2, min(len(FIXED_HEAD) + n_dates, len(payload[0]))
     try:
         sid = ws.id
         ws.spreadsheet.batch_update({"requests": [
