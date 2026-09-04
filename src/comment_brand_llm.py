@@ -263,7 +263,12 @@ def _salvage(content: str) -> list:
 #   넘어갔다 — 그래서 회차가 5시간 한계를 넘겨 취소됐고 810/820 묶음이 안 읽혔다.
 #   순서(무료 먼저)는 그대로다. 닫힌 것을 **확인한 뒤에** 다시 안 물을 뿐이다.
 무료_포기_횟수 = 3                       # 연속 이만큼 한도에 걸리면 닫혔다고 본다
-_무료문 = {"연속한도": 0, "닫힘": False}
+# ★닫아 놓고 영영 안 열면 9/4 사고를 한 층 아래에서 되풀이하는 것이다(2026-09-05 검수).
+#   그날 적어 둔 말이 그대로 근거다 — "429 는 분 단위로 풀리는데 5번 만에 그날을 접었다."
+#   무료 한도는 대개 분 단위(TPM)라, 한참 뒤에 한 번 두드려 보면 남은 회차가 공짜다.
+#   두드리는 값은 묶음 하나뿐이다.
+무료_다시두드리기_초 = 300               # 닫고 5분 지나면 딱 한 번 다시 본다
+_무료문 = {"연속한도": 0, "닫힘": False, "닫은때": 0.0}
 
 # ★이 말은 '지금 막 한도에 걸렸다' 가 아니라 '아까 닫힌 걸 알고 건너뛴다' 는 뜻이다.
 #   묶음을 세는 쪽이 이걸 진짜 한도로 읽으면 또 10~60초씩 쉰다 — 그래서 한 곳에
@@ -271,24 +276,38 @@ _무료문 = {"연속한도": 0, "닫힘": False}
 무료_건너뜀_말 = "무료: 한도로 닫혀 이번 회차는 건너뜁니다"
 
 
-def 무료가_닫혔나() -> bool:
-    """이번 회차에 무료 문이 닫혔나 — 닫혔으면 곧장 유료로 간다."""
-    return bool(_무료문["닫힘"])
+def 무료가_닫혔나(지금=None) -> bool:
+    """이번 회차에 무료 문이 닫혀 있나 — 닫혔으면 곧장 유료로 간다.
+
+    ★닫은 지 오래되면 **한 번 다시 두드려 본다.** 무료 한도는 대개 분 단위로
+    풀리기 때문이다. 안 그러면 잠깐 몰린 것 때문에 남은 회차 전체가 유료로 간다.
+    """
+    if not _무료문["닫힘"]:
+        return False
+    이제 = time.time() if 지금 is None else 지금
+    if 이제 - _무료문["닫은때"] >= 무료_다시두드리기_초:
+        _무료문["닫힘"] = False           # 딱 한 번 열어 본다
+        _무료문["연속한도"] = 무료_포기_횟수 - 1   # 또 걸리면 곧바로 다시 닫힌다
+        return False
+    return True
 
 
 def 무료문_열기() -> None:
     """새 회차·검사 시작. 상태를 되돌린다."""
     _무료문["연속한도"] = 0
     _무료문["닫힘"] = False
+    _무료문["닫은때"] = 0.0
 
 
-def _무료문_기록(한도인가: bool) -> None:
+def _무료문_기록(한도인가: bool, 지금=None) -> None:
     if 한도인가:
         _무료문["연속한도"] += 1
         if _무료문["연속한도"] >= 무료_포기_횟수:
             _무료문["닫힘"] = True
+            _무료문["닫은때"] = time.time() if 지금 is None else 지금
     else:
         _무료문["연속한도"] = 0
+        _무료문["닫힘"] = False
 
 
 def _거절사유(e) -> str:
@@ -312,9 +331,12 @@ def _post(payload: dict, *, timeout: int, tries: int = 3, sleep=time.sleep,
 
     실패하면 왜 실패했는지 errors 에 남긴다. 안 남기면 다음에 또 깜깜이가 된다.
     """
+    # ★어느 문이 막았는지를 안 적으면 절반만 아는 것이다(2026-09-05 검수).
+    #   무료와 유료가 같은 규격이라 거절 글자가 **똑같이** 생겼다 —
+    #   그래서 "왜 막혔나" 를 알아도 "어디가 막았나" 를 몰랐다.
     def note(reason: str):
         if errors is not None:
-            errors.append(reason)
+            errors.append(f"{'무료' if 보낼곳 == _BASE_URL else '유료'}:{reason}")
 
     # ★어디로 보낼지·어느 열쇠를 쓸지를 밖에서 정할 수 있다(2026-09-04).
     #   무료(Groq)와 유료(OpenAI)가 **같은 규격**이라, 보내는 몸통을 그대로 쓰고
@@ -362,10 +384,15 @@ def _post(payload: dict, *, timeout: int, tries: int = 3, sleep=time.sleep,
             if 보낼곳 == _BASE_URL:
                 _무료문_기록(e.code == 429)
             return None
-        except (urllib.error.URLError, ValueError, TimeoutError, OSError):
+        except (urllib.error.URLError, ValueError, TimeoutError, OSError) as e:
+            note(f"못 물어봄({type(e).__name__})")
             if attempt < tries - 1:
                 sleep(2.0 * (attempt + 1))
                 continue
+            # 시간초과는 한도가 아니다 — 연속 셈을 끊는다. 안 끊으면
+            # 429 → 시간초과 → 429 로도 '연속 3' 이 차 문이 잘못 닫힌다.
+            if 보낼곳 == _BASE_URL:
+                _무료문_기록(False)
             return None
     return None
 
@@ -566,8 +593,16 @@ def _call(system: str, user: str, *, max_tokens: int, timeout: int,
     if content:
         return content, truncated
     # 보험 ② Anthropic — 잔액이 있으면 받는다.
-    return _anthropic_call(
+    content, truncated = _anthropic_call(
         system, user, max_tokens=max_tokens, sleep=sleep, errors=errors)
+    if content:
+        return content, truncated
+    # ★셋 다 못 했다. 무료가 '한도로 닫힌' 상태였다면 그 사실을 사유에 남긴다 —
+    #   안 남기면 사유가 '건너뜁니다' 한 줄뿐이라 부르는 쪽이 **고장**으로 세고
+    #   회차를 접는다(2026-09-05 검수). 한도는 기다리면 풀리는 것이라 뜻이 반대다.
+    if errors is not None and 무료가_닫혔나():
+        errors.append("무료:한도로 닫혀 있고 유료도 못 열었습니다")
+    return None, False
 
 
 def judge_batch(items: list, *, timeout: int = 30, sleep=time.sleep,

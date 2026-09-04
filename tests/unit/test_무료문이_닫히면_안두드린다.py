@@ -118,3 +118,61 @@ def test_건너뛴다는_안내를_진짜_한도로_세지_않는다():
     assert B.한도인가([L.무료_건너뜀_말]) is False
     assert B.한도인가(["HTTP 429 — rate limit"]) is True
     assert B.한도인가([L.무료_건너뜀_말, "HTTP 429"]) is True
+
+
+# ── 검수 지적 반영 (2026-09-05) ────────────────────────────────
+# ① 사유에 몸통을 붙이자 몸통 속 숫자가 한도로 잘못 세어졌다
+# ② 닫은 문이 영영 안 열려 9/4 사고를 한 층 아래에서 되풀이했다
+# ③ 무료 거절과 유료 거절이 글자로 구별되지 않았다
+
+def test_몸통_속_숫자를_한도로_세지_않는다():
+    """실제 벤더가 보내는 몸통들이다 — 셋 다 한도가 아니다."""
+    아닌것 = [
+        "무료:HTTP 400 — on tokens per minute (TPM): Limit 6000, Requested 6429",
+        "무료:HTTP 400 — max_tokens must be less than or equal to 4296",
+        "유료:HTTP 400 — Invalid model id for org_01k2m429ab7",
+    ]
+    for x in 아닌것:
+        assert B.한도인가([x]) is False, x
+    assert B.한도인가(["무료:HTTP 429 — rate limit reached"]) is True
+
+
+def test_닫은_문도_한참_뒤엔_한_번_다시_본다():
+    """★무료 한도는 대개 분 단위로 풀린다 — 안 열어 보면 남은 회차가 통째로 유료다."""
+    L._무료문.update({"닫힘": True, "닫은때": 1000.0, "연속한도": 3})
+    assert L.무료가_닫혔나(지금=1000.0 + L.무료_다시두드리기_초 - 1) is True
+    assert L.무료가_닫혔나(지금=1000.0 + L.무료_다시두드리기_초) is False
+
+
+def test_다시_본_문이_또_막히면_곧바로_닫힌다():
+    """한 번 열어 보는 값은 묶음 하나여야 한다 — 또 820번 두드리면 안 고친 것이다."""
+    L._무료문.update({"닫힘": True, "닫은때": 1000.0, "연속한도": 3})
+    assert L.무료가_닫혔나(지금=1000.0 + L.무료_다시두드리기_초) is False
+    L._무료문_기록(True, 지금=2000.0)
+    assert L.무료가_닫혔나(지금=2000.0) is True
+
+
+def test_시간초과는_한도가_아니라서_연속셈을_끊는다(monkeypatch):
+    """429 → 시간초과 → 429 로도 '연속 3' 이 차면 문이 잘못 닫힌다."""
+    _한도만_돌려준다(monkeypatch)
+    L._groq_call("계", "글", max_tokens=10, timeout=1, sleep=lambda s: None)
+    assert L._무료문["연속한도"] == 1
+
+    def 끊김(req, timeout=None):
+        raise TimeoutError("느림")
+    monkeypatch.setattr(L.urllib.request, "urlopen", 끊김)
+    L._groq_call("계", "글", max_tokens=10, timeout=1, sleep=lambda s: None)
+    assert L._무료문["연속한도"] == 0, "시간초과가 한도 셈에 얹혔다"
+
+
+def test_어느_문이_막았는지_사유에_적힌다(monkeypatch):
+    """무료와 유료가 같은 규격이라 거절 글자가 똑같이 생겼다."""
+    def 열기(req, timeout=None):
+        raise 가짜거절(400, b'{"error":"nope"}')
+    monkeypatch.setattr(L.urllib.request, "urlopen", 열기)
+    무료사유, 유료사유 = [], []
+    L._post({"model": "m"}, timeout=1, tries=1, sleep=lambda s: None, errors=무료사유)
+    L._post({"model": "m"}, timeout=1, tries=1, sleep=lambda s: None,
+            url=L._OPENAI_URL, key="다른열쇠", errors=유료사유)
+    assert 무료사유[0].startswith("무료:")
+    assert 유료사유[0].startswith("유료:")

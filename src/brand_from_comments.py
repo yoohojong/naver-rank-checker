@@ -225,11 +225,22 @@ def 한도인가(사유들) -> bool:
     ★2026-09-05: '무료 문이 닫혀 건너뛴다' 는 안내는 한도가 **아니다** —
     아까 닫힌 걸 알고 지나간다는 뜻이라, 이걸 한도로 읽으면 유료로 잘 돌고 있는
     묶음마다 쓸데없이 10~60초를 쉰다. 그 말만 따로 빼서 세지 않는다.
+
+    ★2026-09-05 두 번째: 사유에 상대 몸통을 붙이자 몸통 속 숫자가 걸리기
+    시작했다. 실제 벤더 몸통이 이렇다 — "Limit 6000, Requested 6429",
+    "less than or equal to 4296", "org_01k2m429ab7". 셋 다 한도가 아닌데
+    한도로 세어 묶음마다 10~60초씩 헛잠을 잔다.
+    사유는 항상 `HTTP {코드}` 로 시작하므로 **머리만** 본다.
     """
     from src.comment_brand_llm import 무료_건너뜀_말
-    return any(무료_건너뜀_말 not in str(x)
-               and ("429" in str(x) or "한도" in str(x))
-               for x in (사유들 or []))
+    for x in (사유들 or []):
+        말 = str(x)
+        if 무료_건너뜀_말 in 말:
+            continue                      # 아까 닫힌 걸 알고 지나가는 것뿐이다
+        머리 = 말.split(" — ")[0]          # 몸통은 빼고 본다
+        if "429" in 머리 or "한도" in 머리:
+            return True
+    return False
 
 
 def read_all(texts: list, *, batch: int = BATCH, timeout: int = 60,
