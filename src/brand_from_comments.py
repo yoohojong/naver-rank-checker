@@ -216,9 +216,19 @@ def read_batch(texts: list, *, timeout: int = 60, sleep=time.sleep,
     return out
 
 
+def 한도인가(사유들) -> bool:
+    """이 실패가 '잠깐 기다려'(한도)인가, '영영 안 됨'(고장)인가.
+
+    ★2026-09-04 실사고: 차단기가 둘을 똑같이 셌다. 429 는 분 단위로 풀리는데
+    5번 만에 그날을 접어, 댓글 16,379건 중 하루에 10묶음밖에 못 읽었다.
+    """
+    return any("429" in str(x) or "한도" in str(x) for x in (사유들 or []))
+
+
 def read_all(texts: list, *, batch: int = BATCH, timeout: int = 60,
              sleep=time.sleep, max_batches: int | None = None,
-             max_consecutive_fail: int = 5) -> tuple:
+             max_consecutive_fail: int = 5,
+             max_한도대기: int = 20) -> tuple:
     """댓글 전체 → ({댓글 index: [브랜드명]}, 통계). 못 읽은 묶음은 통계에 남긴다.
 
     ★멈출 줄 안다 (2026-08-20):
@@ -237,7 +247,8 @@ def read_all(texts: list, *, batch: int = BATCH, timeout: int = 60,
     out: dict = {}
     읽은자리: set = set()
     errors: list = []
-    연속실패 = 0
+    연속실패 = 0          # 진짜 고장(다시 해도 안 됨)
+    한도대기 = 0          # 기다리면 풀리는 것
     중단 = ""
     for start in range(0, len(texts), batch):
         if max_batches is not None and stat["예산사용"] >= max_batches:
@@ -246,15 +257,25 @@ def read_all(texts: list, *, batch: int = BATCH, timeout: int = 60,
         if 연속실패 >= max_consecutive_fail:
             중단 = f"연속 {max_consecutive_fail}묶음 실패"
             break
+        if 한도대기 >= max_한도대기:
+            중단 = f"한도에 {max_한도대기}번 걸림"
+            break
         chunk = texts[start:start + batch]
         stat["묶음"] += 1
         stat["예산사용"] += 1
+        앞사유 = len(errors)
         got = read_batch(chunk, timeout=timeout, sleep=sleep, errors=errors)
         if got is None:
             stat["못읽은묶음"] += 1
-            연속실패 += 1
+            새사유 = errors[앞사유:]
+            if 한도인가(새사유):
+                # 기다리면 풀린다 — 고장으로 세지 않고, 점점 더 오래 쉰다.
+                한도대기 += 1
+                sleep(min(10.0 * 한도대기, 60.0))
+            else:
+                연속실패 += 1
             continue
-        연속실패 = 0
+        연속실패 = 한도대기 = 0
         읽은자리.update(range(start, start + len(chunk)))   # 빈 결과도 '읽은 자리'다
         for i, names in got.items():
             out[start + i] = names
