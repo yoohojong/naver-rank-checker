@@ -599,43 +599,12 @@ def viral_accounts(mentions: list, verdicts: dict, unified: dict | None = None,
     return rows
 
 
-VIRAL_HEADER = ["계정", "카페", "우리를 이긴 키워드", "우리 키워드 수",
-                "최고순위", "평균순위", "뜬 키워드", "어느 키워드 몇 위",
-                "미는 제품", "글 수", "글 링크", "프로필", "계정키"]
-
-
 def 프로필주소(카페번호: str, 계정키: str) -> str:
     """계정 프로필 주소. 카페번호나 계정키가 없으면 빈칸 — 주소를 지어내지 않는다."""
     카페번호, 계정키 = str(카페번호 or "").strip(), str(계정키 or "").strip()
     if not 카페번호 or not 계정키:
         return ""
     return f"https://cafe.naver.com/ca-fe/cafes/{카페번호}/members/{계정키}"
-
-
-def build_viral_table(accounts: list) -> list:
-    """계정 줄 → 시트 '바이럴계정' 탭에 쓸 표 전체 · 순수함수.
-
-    이 표가 사장님 갈래 B 의 출발점이다 — 여기 뜬 계정의 프로필로 들어가
-    그 계정이 바이럴하는 **다른 키워드**를 뽑는다(2026-09-04 사장님 프로세스).
-    """
-    rows = [VIRAL_HEADER]
-    for a in accounts or []:
-        kws = list(a.get("키워드들") or [])
-        kw_text = ", ".join(kws[:MAX_KEYWORDS_SHOWN])
-        if len(kws) > MAX_KEYWORDS_SHOWN:
-            kw_text += f" 외 {len(kws) - MAX_KEYWORDS_SHOWN}개"
-        rows.append([
-            a.get("계정", ""), a.get("카페", ""),
-            a.get("이긴키워드수", ""),
-            a.get("키워드수", ""), a.get("최고순위", ""), a.get("평균순위", ""),
-            kw_text, _순위글(a.get("순위별")),
-            ", ".join(a.get("미는제품") or []),
-            a.get("글수", ""),
-            "\n".join((a.get("글들") or [])[:MAX_LINKS_SHOWN]),
-            프로필주소(a.get("카페번호"), a.get("계정키")),
-            a.get("계정키", ""),
-        ])
-    return rows
 
 
 # 언급 한 줄이 반드시 들고 있어야 하는 칸. 2026-09-04 에 늘었다(순위·구좌·작성자).
@@ -1121,21 +1090,23 @@ def run_from_sheet(args) -> int:
             #   것만 남은 목록이라, 그것으로 세면 사장님 제1원칙을 어긴다.
             원문언급 = [m for ms in by_product.values() for m in ms]
             계정줄 = viral_accounts(원문언급, verdicts, unified, 이름붙은=all_mentions)
-            vpay = build_viral_table(계정줄)
-            try:
-                vws = client.spreadsheet.worksheet("바이럴계정")
-            except gspread.exceptions.WorksheetNotFound:
-                vws = client.spreadsheet.add_worksheet(title="바이럴계정", rows=400, cols=14)
-            vws.resize(rows=len(vpay) + 20, cols=max(len(VIRAL_HEADER), 12))
-            vblank = [""] * len(VIRAL_HEADER)
-            vws.update("A1", vpay + [list(vblank) for _ in range(20)],
-                       value_input_option="RAW")
+            # ★2026-09-05 사장님 물음('바이럴 계정탭이 왜 필요한데..?') 으로 바꿨다.
+            #   시트 탭이 아니라 **저장소 파일**에 적는다. 이 목록은 사장님이 보실
+            #   것이 아니라 집 PC 도구가 읽을 것이고(그쪽이 카페 로그인을 갖고 있다),
+            #   사장님이 보시는 자리는 화면(/competitors)에 이미 있다.
+            #   판정 기억·읽기 기억이 이미 같은 방식으로 저장소에 쌓인다.
+            자리 = os.path.join(os.path.dirname(os.path.dirname(
+                os.path.abspath(__file__))), "data", "viral_accounts.json")
+            os.makedirs(os.path.dirname(자리), exist_ok=True)
+            with open(자리, "w", encoding="utf-8") as f:
+                json.dump({"때": today, "계정": 계정줄}, f,
+                          ensure_ascii=False, indent=1)
             못묶음 = (계정줄[0].get("못묶은언급") if 계정줄 else 0) or 0
-            print(f"시트 '바이럴계정' 갱신 — 계정 {len(vpay) - 1}개"
+            print(f"바이럴 계정 {len(계정줄)}개를 data/viral_accounts.json 에 적음"
                   + (f" (계정을 못 알아본 언급 {못묶음}건은 뺐습니다)" if 못묶음 else ""))
         except Exception as e:
-            # 조용히 넘어가지 않는다 — 사유를 남긴다.
-            print(f"시트 '바이럴계정' 갱신 실패({type(e).__name__}) — 경쟁사 탭은 위에서 이미 새로 썼습니다")
+            print(f"바이럴 계정 못 적음({type(e).__name__}) — "
+                  f"경쟁사 탭은 위에서 이미 새로 썼습니다")
     return 0
 
 
