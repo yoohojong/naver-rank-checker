@@ -14,7 +14,8 @@ import pytest
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 
-from scripts.collect_comment_brands import (  # noqa: E402
+from scripts.collect_comment_brands import (
+    읽은정도_말,  # noqa: E402
     build_table, candidates_from_title, confirmed_rows, should_skip_write)
 from src import brand_verdicts, comment_brand_llm  # noqa: E402
 from src.comment_brand import (  # noqa: E402
@@ -166,10 +167,23 @@ def test_판정이_뚫려도_종류_이름은_막힌다():
     assert confirmed_rows(mentions, {"샴푸": {"제품": True, "이름": "샴푸"}}) == []
 
 
-def test_댓글_반이상_못읽으면_시트를_덮지_않는다():
-    # ★새 구조(2026-07-24): 막는 잣대 = 못 읽은 묶음 / 검색 막힘 비율.
-    assert should_skip_write({"묶음": 10, "못읽은묶음": 8, "확정제품": 5}) is True
+def test_다_못_읽었어도_확인된_것은_쓴다():
+    """★2026-09-05 뜻이 바뀐 자리 — 전에는 반 이상 못 읽으면 안 썼다.
+
+    그것 때문에 하루 종일 경쟁 제품 442종을 확인해 놓고 사장님 화면은
+    어제 값이었다. 막은 이유("반쪽짜리 표를 덮으면 그게 전부인 줄 안다")는
+    맞지만, 답은 '안 쓰기' 가 아니라 **'쓰되 몇 % 인지 같이 적기'** 다.
+    (우리 규칙: "부분만 보고 있으면 몇 %를 보고 있는지 먼저 말한다.")
+    """
+    assert should_skip_write({"묶음": 10, "못읽은묶음": 8, "확정제품": 5}) is False
     assert should_skip_write({"묶음": 10, "못읽은묶음": 1, "확정제품": 5}) is False
+
+
+def test_몇_퍼센트_읽었는지를_표에_적는다():
+    """안 적으면 반쪽 표가 온전한 표처럼 보인다 — 그게 원래 막던 사고다."""
+    assert 읽은정도_말({"묶음": 338, "못읽은묶음": 73}) ==         "78% (265/338묶음, 나머지는 다음 회차)"
+    assert 읽은정도_말({}) == ""          # 모르면 지어내지 않는다
+    assert 읽은정도_말(None) == ""
 
 
 def test_검색_반이상_막히면_무검증이라_덮지_않는다():

@@ -732,7 +732,14 @@ def scan_keyword(crawler: CommentFetcher, kw: str, *, our_links: set, our_slugs:
 #   한 칸에 들어가 행 높이를 키우고 있었다.
 #   → 읽는 순서대로: 누구인가 · 얼마나 큰가 · 얼마나 넓게 · 얼마나 잘 · 어디서.
 FIXED_HEAD = ["제품군", "경쟁사", "검색량", "뜬 키워드 수", "최고순위", "평균순위",
-              "어느 키워드 몇 위", "7일 댓글 수", "추세", "우리가 놓친", "글 링크"]
+              "어느 키워드 몇 위", "7일 댓글 수", "추세", "우리가 놓친", "글 링크",
+              "이 표는 몇 % 읽고 만든 것인가"]
+# ★2026-09-05 — 오늘 이 하나를 여섯 번 고쳤는데 사장님 화면은 하루 종일 어제 값이었다.
+#   원인은 버그가 아니라 **"다 못 읽으면 아예 안 쓴다"** 는 내 설계였다.
+#   22%를 못 읽었다고 이미 확인된 442종을 통째로 버렸다.
+#   막은 이유("반쪽짜리 표를 덮으면 사장님이 그게 전부인 줄 안다")는 맞다 —
+#   그러면 답은 '안 쓰기' 가 아니라 **'쓰되 몇 % 인지 같이 적기'** 다.
+#   (우리 규칙: "부분만 보고 있으면 몇 %를 보고 있는지 먼저 말한다.")
 # ★2026-09-04 사장님 프로세스 — 순위·검색량 칸 신설.
 #   "어떤 키워드에 몇위에 상위노출되어있는지" / "그 경쟁사의 검색량도 알 수 있지"
 #   검색량은 집 PC 도구가 채운다 — 이 배치는 지키기만 한다.
@@ -798,8 +805,21 @@ def _prev_volumes(values: list) -> dict:
     return out
 
 
+def 읽은정도_말(stat: dict | None) -> str:
+    """이 표가 몇 %를 읽고 만든 것인지 한 줄로 · 순수함수.
+
+    ★모르면 지어내지 않는다 — 빈 글자로 둔다.
+    """
+    stat = stat or {}
+    묶음 = int(stat.get("묶음") or 0)
+    if not 묶음:
+        return ""
+    읽음 = 묶음 - int(stat.get("못읽은묶음") or 0)
+    return f"{round(읽음 * 100 / 묶음)}% ({읽음}/{묶음}묶음, 나머지는 다음 회차)"
+
+
 def build_table(prev_values: list, today_rows: list, today: str,
-                days: int = HISTORY_DAYS) -> list:
+                days: int = HISTORY_DAYS, stat: dict | None = None) -> list:
     """지난 표 + 오늘 결과 → 시트에 쓸 표 전체 · 순수함수.
 
     today_rows = [{"제품군","경쟁사","횟수","키워드수","키워드들","글들","댓글 예시"}]
@@ -819,6 +839,7 @@ def build_table(prev_values: list, today_rows: list, today: str,
     dates = [(base - timedelta(days=i)).isoformat() for i in range(days)]
 
     header = FIXED_HEAD + dates
+    읽은정도 = 읽은정도_말(stat)
     rows = []
     for (product, brand), per in merged.items():
         counts = [per.get(d, 0) for d in dates]
@@ -850,7 +871,7 @@ def build_table(prev_values: list, today_rows: list, today: str,
                      r.get("최고순위", ""), r.get("평균순위", ""),
                      r.get("키워드별순위", ""),
                      total, trend, r.get("놓친", ""),
-                     (r.get("글들") or [""])[0]] + counts)
+                     (r.get("글들") or [""])[0], 읽은정도] + counts)
 
     # 제품군으로 묶고, 넓게 퍼진 경쟁사부터(뜬 키워드 수 → 7일 댓글 수).
     def _수(v):
@@ -877,9 +898,10 @@ def should_skip_write(stat: dict) -> bool:
     아무 것도 못 막았다. 그래서 '못 읽은 묶음'·'검색 막힘' 비율로 바꾼다.
     """
     stat = stat or {}
-    묶음 = int(stat.get("묶음") or 0)
-    if 묶음 and (int(stat.get("못읽은묶음") or 0) / 묶음) > MAX_UNJUDGED_RATIO:
-        return True                         # 댓글을 반 이상 못 읽었으면 덮지 않는다
+    # ★2026-09-05 — '못 읽은 묶음' 만으로는 더 이상 막지 않는다.
+    #   이것 때문에 오늘 하루 종일 442종을 확인해 놓고 시트는 어제 값이었다.
+    #   대신 표에 **몇 % 읽고 만든 것인지**를 칸으로 적는다(읽은정도_말).
+    #   막는 건 '뭔가 잘못된 것' 뿐이다 — 검색이 대량 차단됐거나 확정이 0이거나.
     확인 = int(stat.get("검색확인") or 0)
     if 확인 and (int(stat.get("검색막힘") or 0) / 확인) > MAX_UNJUDGED_RATIO:
         return True                         # 검색이 반 이상 막혔으면 무검증이라 덮지 않는다
@@ -1072,7 +1094,7 @@ def run_from_sheet(args) -> int:
             ws = client.spreadsheet.add_worksheet(title="경쟁사", rows=400, cols=26)
             prev_values = []
 
-        payload = build_table(prev_values, out_rows, today)
+        payload = build_table(prev_values, out_rows, today, stat=jstat)
         ws.resize(rows=len(payload) + 20, cols=max(len(payload[0]), 12))
         blank = [""] * len(payload[0])
         ws.update("A1", payload + [list(blank) for _ in range(20)], value_input_option="RAW")
