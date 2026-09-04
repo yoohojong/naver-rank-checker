@@ -58,3 +58,32 @@ def test_c9_always_notification_step_present():
     notify = next(s for s in steps if "Telegram" in s.get("name", ""))
     assert notify["if"] == "always()"
     assert notify["continue-on-error"] == "true"
+
+
+def test_모아둔_댓글을_다시_쓰는_길이_있다():
+    """★2026-09-04 — 댓글을 3일 보관해 두고도 **다시 쓰는 길이 없었다.**
+
+    훑기가 이 작업의 1시간 40분인데, 판정 쪽만 고쳐 다시 돌릴 때도 매번
+    처음부터 긁었다(파일 주석에는 "판정만 실패했을 때 다시 훑지 않도록 남겨둔다"
+    고 적혀 있었는데 배선이 0줄이었다 — 만들어 놓고 안 이은 자리).
+    """
+    import yaml
+    from pathlib import Path
+    p = (Path(__file__).resolve().parents[2] / ".github" / "workflows"
+         / "competitor-comments.yml")
+    d = yaml.safe_load(p.read_text(encoding="utf-8"))
+    inputs = d[True]["workflow_dispatch"]["inputs"]
+    assert "reuse_mentions" in inputs and "reuse_run_id" in inputs
+    steps = d["jobs"]["collect"]["steps"]
+    받기 = [s for s in steps if "download-artifact" in str(s.get("uses", ""))]
+    assert 받기, "지난 회차 댓글을 받아오는 단계가 있어야 한다"
+    받 = 받기[0]
+    assert 받.get("continue-on-error") is True, \
+        "못 받으면 새로 긁으면 된다 — 여기서 멈추면 안 된다"
+    assert 받["with"]["name"] == "mentions"
+    # 받는 단계가 실제 실행 단계보다 **앞**에 있어야 파일이 쓰인다.
+    자리 = [i for i, s in enumerate(steps)
+            if "download-artifact" in str(s.get("uses", ""))][0]
+    실행 = [i for i, s in enumerate(steps)
+            if "collect_comment_brands" in str(s.get("run", ""))][0]
+    assert 자리 < 실행, "받기가 실행보다 뒤에 있으면 아무 일도 안 한다"

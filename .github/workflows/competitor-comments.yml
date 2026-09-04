@@ -22,6 +22,12 @@ on:
       write_sheet:
         description: 시트에 쓸지 (false 면 로그로만 확인)
         default: 'true'
+      reuse_mentions:
+        description: 지난 회차가 모아 둔 댓글을 다시 쓸지 (true 면 훑기를 건너뛴다)
+        default: 'false'
+      reuse_run_id:
+        description: 어느 회차의 댓글을 가져올지 (reuse_mentions=true 일 때 필요)
+        default: ''
 
 concurrency:
   group: competitor-comments
@@ -56,6 +62,19 @@ jobs:
           python -m venv .venv
           ./.venv/bin/pip install -q --upgrade pip
           ./.venv/bin/pip install -q -r requirements.txt
+
+      # ★2026-09-04 배선 — 모아 둔 댓글(mentions)을 3일 보관해 두고도 **다시 쓰는 길이
+      #   없었다.** 훑기가 이 작업의 1시간 40분인데, 판정 쪽 코드만 고쳐 다시 돌릴 때도
+      #   매번 처음부터 긁었다. 파일이 있으면 스크립트가 알아서 그것을 읽는다
+      #   (collect_comment_brands: mentions_file 이 있으면 크롤을 건너뛴다).
+      - name: 지난 회차 댓글 가져오기 (reuse_mentions=true 일 때만)
+        if: inputs.reuse_mentions == 'true'
+        uses: actions/download-artifact@v4
+        continue-on-error: true          # 못 받으면 그냥 새로 긁는다 — 멈추지 않는다
+        with:
+          name: mentions
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          run-id: ${{ inputs.reuse_run_id }}
 
       - name: Collect competitor products from comments
         env:

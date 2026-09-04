@@ -630,6 +630,23 @@ def build_viral_table(accounts: list) -> list:
     return rows
 
 
+# 언급 한 줄이 반드시 들고 있어야 하는 칸. 2026-09-04 에 늘었다(순위·구좌·작성자).
+_언급_필수칸 = ("키워드", "글", "순위", "구좌", "제목", "글쓴이", "글쓴이키", "카페번호")
+
+
+def 모양_모자란칸(by_product: dict) -> list:
+    """모아둔 댓글 파일이 지금 코드가 기대하는 모양인가 → 모자란 칸 이름들.
+
+    ★모아둔 댓글을 다시 쓰는 길(reuse_mentions)을 열면서 같이 막는 함정이다.
+    모양이 바뀐 뒤 옛 파일을 읽으면 **크롤은 건너뛰는데 계정 표가 조용히 빈다.**
+    빈 표는 '경쟁이 없다' 처럼 보이고, 그게 이 저장소가 가장 자주 데인 자리다.
+    """
+    첫 = next((m for ms in (by_product or {}).values() for m in ms), None)
+    if not 첫:
+        return []
+    return [c for c in _언급_필수칸 if c not in 첫]
+
+
 def 글쓴이_찾기(comments: list) -> dict:
     """댓글 목록 → 그 글을 쓴 사람 {닉, 키}. 못 찾으면 {}.
 
@@ -873,6 +890,12 @@ def run_from_sheet(args) -> int:
     if args.mentions_file and os.path.exists(args.mentions_file):
         with open(args.mentions_file, encoding="utf-8") as f:
             by_product = json.load(f)
+        부족 = 모양_모자란칸(by_product)
+        if 부족:
+            # 조용히 반쪽으로 돌지 않는다 — 옛 모양이면 그냥 새로 긁는다.
+            print(f"모아둔 댓글이 옛 모양입니다(없는 칸: {', '.join(부족)}) — "
+                  f"그대로 쓰면 계정 표가 빕니다. 새로 훑습니다.")
+            by_product = {}
         print(f"모아둔 댓글 재사용: {args.mentions_file} "
               f"({sum(len(v) for v in by_product.values())}건) — 다시 훑지 않습니다")
 
@@ -1098,9 +1121,9 @@ def _format_sheet(ws, payload: list) -> None:
                 "cell": {"userEnteredFormat": {"wrapStrategy": "WRAP",
                                                "verticalAlignment": "TOP"}},
                 "fields": "userEnteredFormat(wrapStrategy,verticalAlignment)"}},
-            {"autoResizeDimensions": {
+            {"autoResizeDimensions": {                    # 꼬리 칸까지 폭을 맞춘다
                 "dimensions": {"sheetId": sid, "dimension": "COLUMNS",
-                               "startIndex": 0, "endIndex": num_to}}},
+                               "startIndex": 0, "endIndex": len(payload[0])}}},
         ]})
     except Exception as e:                                # 서식은 곁다리 — 값이 먼저다
         print(f"서식 적용 건너뜀: {type(e).__name__}")
