@@ -192,3 +192,53 @@ def test_새_모양이면_모자란_칸이_없다():
                    "순위": 2, "구좌": "AB", "제목": "가 후기",
                    "글쓴이": "바이럴이", "글쓴이키": "ZZZ", "카페번호": "111"}]}
     assert C.모양_모자란칸(새것) == []
+
+
+# ── 사장님 정정 (2026-09-04): 뒤질 대상은 '우리보다 위' 다 ──────────
+# "일단 우리가 카페외부 할 떄 우리가 카페 구좌 1등 아닌 키워드들의
+#  우리보다 높이 있는 카페 들을 뒤져봐."
+
+def _우리글(rank):
+    return _글(rank=rank, url="https://cafe.naver.com/ours/9", title="우리 글")
+
+
+def test_우리_순위와_우리보다_위인지를_같이_남긴다(monkeypatch):
+    f = 가짜댓글기([{"content": "안티트로 써요", "writer": {"nick": "행인"}}])
+    글들 = [_우리글(3), _글(rank=1, url="https://cafe.naver.com/abc/1"),
+           _글(rank=5, url="https://cafe.naver.com/xyz/2")]
+    monkeypatch.setattr(C, "is_our_item",
+                        lambda u, a, b: "ours" in u)
+    got = _돌리기(monkeypatch, 글들, f)
+    자리 = {m["글"]: m for m in got}
+    assert 자리["https://cafe.naver.com/abc/1"]["우리순위"] == 3
+    assert 자리["https://cafe.naver.com/abc/1"]["우리보다위"] is True    # 1등 < 우리 3등
+    assert 자리["https://cafe.naver.com/xyz/2"]["우리보다위"] is False   # 5등 > 우리 3등
+
+
+def test_우리_글이_아예_없으면_전부_우리보다_위다(monkeypatch):
+    f = 가짜댓글기([{"content": "안티트로 써요", "writer": {"nick": "행인"}}])
+    got = _돌리기(monkeypatch, [_글(rank=4)], f)
+    assert got[0]["우리순위"] == ""          # 없는 것을 0 으로 만들지 않는다
+    assert got[0]["우리보다위"] is True
+
+
+def test_우리가_1등이면_위에_아무도_없다(monkeypatch):
+    """사장님: '우리가 카페 구좌 1등 아닌 키워드들' — 1등이면 뒤질 것이 없다."""
+    f = 가짜댓글기([{"content": "안티트로 써요", "writer": {"nick": "행인"}}])
+    글들 = [_우리글(1), _글(rank=2, url="https://cafe.naver.com/abc/1")]
+    monkeypatch.setattr(C, "is_our_item", lambda u, a, b: "ours" in u)
+    got = _돌리기(monkeypatch, 글들, f)
+    assert all(m["우리보다위"] is False for m in got)
+
+
+def test_구좌가_다르면_견줄_수_없다고_적는다(monkeypatch):
+    """AB 3등과 인기글 1등은 견줄 수 없다 — 섞으면 거짓으로 '이겼다' 가 된다.
+    '못 이겼다'(False) 도 아니고 '모른다'(빈칸) 다. 셋을 뭉개지 않는다.
+    """
+    f = 가짜댓글기([{"content": "안티트로 써요", "writer": {"nick": "행인"}}])
+    우리 = _우리글(3)
+    남 = _글(rank=1, url="https://cafe.naver.com/abc/1")
+    남.area = "인기글"
+    monkeypatch.setattr(C, "is_our_item", lambda u, a, b: "ours" in u)
+    got = _돌리기(monkeypatch, [우리, 남], f)
+    assert got[0]["우리보다위"] == "", "견줄 수 없으면 빈칸이지 False 가 아니다"

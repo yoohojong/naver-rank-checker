@@ -676,6 +676,19 @@ def scan_keyword(crawler: CommentFetcher, kw: str, *, our_links: set, our_slugs:
     seen_url: set = set()
     # 이 키워드의 상위 구좌에 우리 글이 하나도 없나 — "우리가 놓친" 을 세는 잣대.
     우리놓침 = not any(is_our_item(i.url, our_links, our_slugs) for i in items)
+
+    # ★2026-09-04 사장님 정정: "우리가 카페 구좌 1등 아닌 키워드들의
+    #   **우리보다 높이 있는** 카페 들을 뒤져봐."
+    #   남의 글을 무차별로 보는 것이 아니라, 실제로 우리를 이기고 있는 글을 본다.
+    #   구좌가 다르면 견주지 않는다 — AB 3등과 인기글 1등은 다른 자리다.
+    우리순위: dict = {}
+    for i in items:
+        if not is_our_item(i.url, our_links, our_slugs):
+            continue
+        구 = str(getattr(i, "area", "") or "")
+        r = int(getattr(i, "rank", 0) or 0)
+        if r > 0 and (구 not in 우리순위 or r < 우리순위[구]):
+            우리순위[구] = r
     for it in items:
         if len(seen_url) >= top_posts:
             break
@@ -699,8 +712,20 @@ def scan_keyword(crawler: CommentFetcher, kw: str, *, our_links: set, our_slugs:
                                         and fetcher.cafe_no(it.url)) or ""}
         else:
             글쓴이 = fetcher.writer(it.url) or {}     # 댓글에 없을 때만 글을 연다
+        내구좌 = str(getattr(it, "area", "") or "")
+        내순위 = int(getattr(it, "rank", 0) or 0)
+        우리것 = 우리순위.get(내구좌)          # 같은 구좌에서 우리는 몇 등인가
         같이 = {"키워드": kw, "글": it.url, "카페": it.source_name or "",
                 "우리놓침": 우리놓침,
+                # 우리 글이 아예 없으면 모두가 우리보다 위다(우리는 자리에 없다).
+                "우리순위": 우리것 if 우리것 else "",
+                # 셋으로 갈린다: True(이겼다) / False(못 이겼다) / ""(견줄 수 없다).
+                #   · 우리 글이 그 키워드에 아예 없으면 → 다 우리보다 위다.
+                #   · 같은 구좌에 우리가 있으면 → 순위로 견준다.
+                #   · 우리가 **다른 구좌**에만 있으면 → 견줄 수 없다(빈칸).
+                #     AB 3등과 인기글 1등을 견주면 거짓으로 '이겼다' 가 된다.
+                "우리보다위": (True if not 우리순위 else
+                            (내순위 > 0 and 내순위 < 우리것) if 우리것 else ""),
                 "순위": getattr(it, "rank", 0), "구좌": getattr(it, "area", ""),
                 "제목": getattr(it, "title", "") or "",
                 "글쓴이": str(글쓴이.get("닉") or ""),
