@@ -144,3 +144,18 @@ def test_검색량_0도_다음날까지_지킨다():
     머리 = 표[0]
     assert 표[1][머리.index("검색량")] == "0"
     assert 표[1][머리.index("판정")] == "검색량 0 — 이름 확인 필요"
+
+
+def test_얀이_든_경쟁사를_지우지_않는다():
+    """★2026-09-05 독립검증 MAJOR: '얀'(한 글자)이 부분일치로 '에비얀' 같은 진짜
+    경쟁사를 조용히 지웠다. 자사('뽀얀'·'두드럼')는 그대로 빼되 남은 지켜야 한다."""
+    import sys
+    from pathlib import Path
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+    from src import comment_brand as CB
+    언급 = [{"표시": n, "키": n, "종류": "제품", "댓글": n, "키워드": "x"}
+          for n in ("에비얀", "뽀얀샴푸", "두드럼크림", "안티트로")]
+    남은 = {x["제품"] for x in CB.tally(언급, exclude_keys=C.OUR_PRODUCT_HINTS)}
+    assert "에비얀" in 남은 and "안티트로" in 남은, 남은
+    assert "뽀얀샴푸" not in 남은 and "두드럼크림" not in 남은, 남은
+    assert "얀" not in C.OUR_PRODUCT_HINTS, "한 글자 어근은 진짜 경쟁사를 삼킨다"
