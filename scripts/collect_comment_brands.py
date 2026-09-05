@@ -1471,20 +1471,19 @@ def run_from_sheet(args) -> int:
 
         # ★로그인 없는 키워드 후보(2026-09-05) — 남의 글 제목에서 우리한테 없는
         #   것만 '키워드후보' 탭에 더한다. 경쟁사 탭 쓰기와 별개로 산다.
-        # ★제목→검색 키워드 판정(LLM)을 붙였다(2026-09-06). 다만 **기본은 아직 꺼둔다** —
-        #   로컬엔 LLM 열쇠가 없어 실제 판정 품질을 눈으로 못 봤고, 켠 채로 돌리면
-        #   기존 잡음 416줄과 섞여 구별이 안 된다. 순서: 잡음 삭제 → 작은 회차로 실제
-        #   판정 미리보기(WRITE_TITLE_CANDIDATES=1) → 사장님 눈에 깨끗하면 기본 켜짐으로.
-        #   켜기: WRITE_TITLE_CANDIDATES=1. (품질이 자동화보다 먼저 — 의도 앵커)
-        if os.environ.get("WRITE_TITLE_CANDIDATES") == "1":
+        # ★제목→검색 키워드 판정(LLM)을 붙이고(2026-09-06), 잡음 삭제 + 작은 회차 실물
+        #   미리보기로 품질을 확인해 기본 켜짐으로 되돌린다. 미리보기 결과: 탈모샴푸·
+        #   모공각화증·햇빛 알레르기 치료·홍조 등 진짜 키워드만 나왔고, 새어 나온 '병원'
+        #   같은 뭉뚱한 한낱말은 코드(title_keywords._뭉뚱한_한낱말)가 결정론적으로 버린다.
+        #   안전장치: LLM 열쇠 없으면 빈 결과(아무것도 안 씀). 끄개: WRITE_TITLE_CANDIDATES=0.
+        if os.environ.get("WRITE_TITLE_CANDIDATES") == "0":
+            print("키워드후보: 제목 경로가 꺼져 있습니다(WRITE_TITLE_CANDIDATES=0)")
+        else:
             try:
                 _후보탭_갱신(client, by_product, today)
             except Exception as e:
                 print(f"키워드후보 못 적음({type(e).__name__}) — "
                       f"경쟁사 탭은 위에서 이미 새로 썼습니다")
-        else:
-            print("키워드후보: 제목 경로는 아직 꺼져 있습니다(실제 판정 미리보기 뒤 켬) "
-                  "— 켜기: WRITE_TITLE_CANDIDATES=1")
     return 0
 
 
