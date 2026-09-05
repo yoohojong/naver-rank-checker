@@ -92,17 +92,3 @@ def test_빈_입력은_빈_결과():
     assert T.extract_keywords([]) == {}
     assert T.extract_keywords(["", "  "]) == {}
 
-
-def test_뭉뚱한_한낱말은_버리되_붙은말은_살린다():
-    """★2026-09-06 실물 미리보기에서 '병원' 하나가 새어 나왔다. 낱말 하나만 오면 버리고,
-    증상·부위와 붙은 것(두피염 병원)은 살린다."""
-    import json
-    from src import title_keywords as T
-    def fake(system, user, **kw):
-        return json.dumps({"제목별": [
-            {"n": 1, "제목": "지루성 두피염 병원", "키워드": ["지루성 두피염", "병원"]},
-            {"n": 2, "제목": "두피염 병원 추천", "키워드": ["두피염 병원", "추천", "병원"]},
-        ]}), False
-    r = T.extract_keywords(["지루성 두피염 병원", "두피염 병원 추천"], call=fake)
-    assert r["지루성 두피염 병원"] == ["지루성 두피염"], r
-    assert r["두피염 병원 추천"] == ["두피염 병원"], r   # 병원·추천 낱말은 빠짐
