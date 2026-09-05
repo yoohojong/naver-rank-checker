@@ -107,6 +107,25 @@ def is_real_brand(name: str) -> bool:
     return key not in {normalize_name(x) for x in NOT_A_BRAND}
 
 
+def 우리제품인가(name: str) -> bool:
+    """우리 브랜드(뽀얀·두드럼 등)인가 — tally 의 자사 제외와 같은 잣대(부분일치)."""
+    key = normalize_name(name)
+    return any(s and s in key for s in {normalize_name(x) for x in OUR_PRODUCT_HINTS})
+
+
+def 표에_남길_경쟁사인가(name: str) -> bool:
+    """이어받는 옛 줄에 남길 이름인가 — 자사·장소·일반명(NOT_A_BRAND)을 뺀다.
+    ★confirmed_rows(오늘 새로 세는 쪽)와 build_table(옛 줄 이어받는 쪽)이 자사·가게·성분에
+      **같은 잣대**를 써야 한다. 안 그러면 제외가 생기기 전에 들어온 줄(두드럼·케라틴·
+      다이소)이 이어받기로 눌러앉는다(2026-09-05 실물 확인에서 잡음).
+    ★길이(한 글자) 검사는 **안 한다** — 그건 추가 시점(confirmed_rows 의 is_real_brand)이
+      이미 막는다. 여기서까지 걸면 옛 자료의 짧은 이름을 새로 지우는 셈이라 범위를 벗어난다."""
+    key = normalize_name(name)
+    if key in {normalize_name(x) for x in NOT_A_BRAND}:
+        return False
+    return not 우리제품인가(name)
+
+
 class CommentFetcher:
     """카페 글 → 댓글 **전부**. 뒷장까지 따라가고, 검색 주소의 열쇠(art)를 쓴다."""
 
@@ -1088,6 +1107,10 @@ def build_table(prev_values: list, today_rows: list, today: str,
     # 오늘 이 제품군을 **아예 안 봤나**(회차가 거기까지 못 감) — 봤는데 안 나온 것과 다르다.
     본제품군 = {p for p, _ in extra}
     for (product, brand), per in merged.items():
+        # ★옛 줄에도 오늘 잣대를 건다 — 제외가 생기기 전에 들어온 자사·가게·일반명
+        #   (두드럼·다이소·케라틴)이 이어받기로 눌러앉는 것을 막는다(2026-09-05 실물 확인).
+        if not 표에_남길_경쟁사인가(brand):
+            continue
         오늘봄 = (product, brand) in extra
         제품군을봄 = product in 본제품군
         # ★오늘 그 제품군을 아예 안 봤으면 오늘 칸을 **0 으로 만들지 않는다** —
