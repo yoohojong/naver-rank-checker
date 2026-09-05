@@ -41,6 +41,7 @@ from src import brand_verdicts  # noqa: E402
 from src import brand_from_comments  # noqa: E402
 from src import comment_reads  # noqa: E402
 from src import comment_brand_llm  # noqa: E402
+from src import title_keywords  # noqa: E402
 from src import shop_probe  # noqa: E402
 from src.crawler import Crawler  # noqa: E402
 from src.parser import cafe_slug_of, is_known_url  # noqa: E402
@@ -312,12 +313,17 @@ def candidates_from_title(title: str) -> list:
             for shown, key, suffix in extract_candidates(t)]
 
 
-# ── 로그인 없는 키워드 후보 (2026-09-05) ────────────────────────────────
+# ── 로그인 없는 키워드 후보 (2026-09-05, LLM 판정 2026-09-06) ────────────
 # 사장님 오늘 지시: "문제를 해결해. 로그인이 꼭 필요해?"
 # 갈래 B(계정 프로필 역추적)는 카페 로그인이 있어야 돈다. 그런데 경쟁사 배치는
 # 로그인 없이 상위노출 남의 글의 **제목**을 이미 손에 쥐고 있다. 그 제목에서
 # 후보를 뽑아 **우리한테 없는 것만** 제품별로 '키워드후보' 탭에 넣는다 —
 # 갈래 B 의 로그인 없는 축소판이다(추가 크롤 0).
+#
+# ★2026-09-06: 전에는 브랜드 추출기(candidates_from_title)를 그대로 써서 제목에서
+#   브랜드 조각을 뽑았다 — 게시판 이름·조사·문장 조각이 그대로 후보가 돼 잡음이
+#   심했다. 이제 제목→검색 키워드 판정(title_keywords.extract_keywords, LLM)을 쓰고,
+#   그 판정을 이 순수함수에 인자로 주입한다(가짜 판정으로 검사한다).
 #
 # 머리줄·문구는 정본(cafe-external/바이럴_키워드_선별.py)과 똑같이 쓴다 —
 # 두 길(로그인 있는 갈래 B · 없는 이 길)이 같은 탭에 같은 모양으로 쌓여야 한다.
@@ -338,28 +344,49 @@ def _키워드정규화(s) -> str:
 
 def 제목_키워드후보(by_product: dict, 이미가진: set, 이미후보: set, *,
               오늘: str = "", 발견경로: str = 후보_발견경로,
-              제안자: str = 후보_제안자) -> list:
-    """남의 글 **제목** → 우리한테 없는 키워드 후보 줄(제품군별) · 순수함수.
+              제안자: str = 후보_제안자, 키워드뽑기=None) -> list:
+    """남의 글 **제목** → 우리한테 없는 검색 키워드 후보 줄(제품군별) · 순수함수.
 
     by_product = {제품군: [언급...]} — 언급은 최소 '제목' 을 든다(경쟁사 배치가 남긴 모양).
     이미가진 · 이미후보 = **정규화된** 키워드 집합(우리 제품탭 · 이미 후보에 있는 것).
+    키워드뽑기 = 제목 목록 → {제목: [키워드,...]} 판정기. 안 주면 진짜 LLM 판정을 쓴다.
+      검사에서는 가짜 판정을 주입한다(그래서 이 함수는 LLM·네트워크를 모른다).
 
+    ★브랜드 조각이 아니라 **사람이 검색할 법한 키워드**를 뽑는다(잡음 제거는 판정기 몫).
+    ★열쇠(LLM)가 없으면 판정기가 빈 결과를 줘 후보가 한 줄도 안 나온다(지어내지 않음).
     ★줄을 지우지 않는다 — 새 후보만 돌려준다. 중복은 키워드 정규화로 막는다.
     ★검색량(MB·PC·총합)은 비워 둔다 — 집 PC 검색량 도구가 나중에 채운다.
-    파일·시트·네트워크를 모른다.
+    파일·시트를 모른다.
     """
     이미가진 = 이미가진 or set()
     이미후보 = 이미후보 or set()
+
+    # 모든 제목을 한데 모아 한 번에 판정한다(같은 제목은 판정기가 알아서 한 번만 묻는다).
+    모든제목: list = []
+    본제목: set = set()
+    for 언급들 in (by_product or {}).values():
+        for m in 언급들 or []:
+            제목 = str((m or {}).get("제목") or "").strip()
+            if 제목 and 제목 not in 본제목:
+                본제목.add(제목)
+                모든제목.append(제목)
+    if not 모든제목:
+        return []
+
+    if 키워드뽑기 is None:
+        키워드뽑기 = title_keywords.extract_keywords
+    제목별키워드 = 키워드뽑기(모든제목) or {}
+
     본것: set = set()
     out: list = []
     for 제품군, 언급들 in (by_product or {}).items():
         for m in 언급들 or []:
-            제목 = str((m or {}).get("제목") or "")
+            제목 = str((m or {}).get("제목") or "").strip()
             if not 제목:
                 continue
             카페 = str((m or {}).get("카페") or "")
-            for c in candidates_from_title(제목):
-                kw = str(c.get("표시") or "").strip()
+            for kw in 제목별키워드.get(제목) or []:
+                kw = str(kw).strip()
                 n = _키워드정규화(kw)
                 if not n or n in 이미가진 or n in 이미후보 or n in 본것:
                     continue
@@ -1444,10 +1471,11 @@ def run_from_sheet(args) -> int:
 
         # ★로그인 없는 키워드 후보(2026-09-05) — 남의 글 제목에서 우리한테 없는
         #   것만 '키워드후보' 탭에 더한다. 경쟁사 탭 쓰기와 별개로 산다.
-        # ★2026-09-05 껐다: 제목만으로 뽑으니 잡음(게시판 이름·조사·문장 조각)이 많아
-        #   사장님 품질 기준에 못 미친다(실물 416줄 대부분 쓰레기). 제목에서 **키워드**를
-        #   뽑는 판정(LLM)을 붙이기 전까지 시트에 안 쓴다. 켜기 = 환경변수
-        #   WRITE_TITLE_CANDIDATES=1. (품질이 자동화보다 먼저 — 의도 앵커)
+        # ★제목→검색 키워드 판정(LLM)을 붙였다(2026-09-06). 다만 **기본은 아직 꺼둔다** —
+        #   로컬엔 LLM 열쇠가 없어 실제 판정 품질을 눈으로 못 봤고, 켠 채로 돌리면
+        #   기존 잡음 416줄과 섞여 구별이 안 된다. 순서: 잡음 삭제 → 작은 회차로 실제
+        #   판정 미리보기(WRITE_TITLE_CANDIDATES=1) → 사장님 눈에 깨끗하면 기본 켜짐으로.
+        #   켜기: WRITE_TITLE_CANDIDATES=1. (품질이 자동화보다 먼저 — 의도 앵커)
         if os.environ.get("WRITE_TITLE_CANDIDATES") == "1":
             try:
                 _후보탭_갱신(client, by_product, today)
@@ -1455,7 +1483,7 @@ def run_from_sheet(args) -> int:
                 print(f"키워드후보 못 적음({type(e).__name__}) — "
                       f"경쟁사 탭은 위에서 이미 새로 썼습니다")
         else:
-            print("키워드후보: 제목 경로는 꺼져 있습니다(잡음 많음 · 키워드 판정 붙이기 전까지) "
+            print("키워드후보: 제목 경로는 아직 꺼져 있습니다(실제 판정 미리보기 뒤 켬) "
                   "— 켜기: WRITE_TITLE_CANDIDATES=1")
     return 0
 
