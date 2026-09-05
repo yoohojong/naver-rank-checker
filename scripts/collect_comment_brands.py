@@ -1444,11 +1444,19 @@ def run_from_sheet(args) -> int:
 
         # ★로그인 없는 키워드 후보(2026-09-05) — 남의 글 제목에서 우리한테 없는
         #   것만 '키워드후보' 탭에 더한다. 경쟁사 탭 쓰기와 별개로 산다.
-        try:
-            _후보탭_갱신(client, by_product, today)
-        except Exception as e:
-            print(f"키워드후보 못 적음({type(e).__name__}) — "
-                  f"경쟁사 탭은 위에서 이미 새로 썼습니다")
+        # ★2026-09-05 껐다: 제목만으로 뽑으니 잡음(게시판 이름·조사·문장 조각)이 많아
+        #   사장님 품질 기준에 못 미친다(실물 416줄 대부분 쓰레기). 제목에서 **키워드**를
+        #   뽑는 판정(LLM)을 붙이기 전까지 시트에 안 쓴다. 켜기 = 환경변수
+        #   WRITE_TITLE_CANDIDATES=1. (품질이 자동화보다 먼저 — 의도 앵커)
+        if os.environ.get("WRITE_TITLE_CANDIDATES") == "1":
+            try:
+                _후보탭_갱신(client, by_product, today)
+            except Exception as e:
+                print(f"키워드후보 못 적음({type(e).__name__}) — "
+                      f"경쟁사 탭은 위에서 이미 새로 썼습니다")
+        else:
+            print("키워드후보: 제목 경로는 꺼져 있습니다(잡음 많음 · 키워드 판정 붙이기 전까지) "
+                  "— 켜기: WRITE_TITLE_CANDIDATES=1")
     return 0
 
 
