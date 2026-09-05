@@ -28,6 +28,9 @@ on:
       reuse_run_id:
         description: 어느 회차의 댓글을 가져올지 (reuse_mentions=true 일 때 필요)
         default: ''
+      write_title_candidates:
+        description: 제목에서 뽑은 키워드 후보를 시트에 쓸지 (미리보기·검증용, 예약 회차는 항상 꺼짐)
+        default: 'false'
       read_budget:
         description: 이번 회차에 AI 에 보낼 묶음 수 상한 (비우면 평소값 500)
         default: ''
@@ -112,6 +115,9 @@ jobs:
           # (comment_reads 캐시). 유료 보험이 있어도 한 회차 비용이 이걸 못 넘는다.
           # 평소 500. 밀린 것을 한 번에 치울 땐 회차마다 올려서 부른다.
           READ_BATCH_BUDGET: ${{ inputs.read_budget || '500' }}
+          # 제목 키워드 후보 시트 쓰기 — 손으로 미리보기할 때만 1. 예약 회차는 inputs 가
+          # 비어 '0' 이라 항상 꺼짐(실제 판정 품질을 눈으로 본 뒤 기본을 켠다).
+          WRITE_TITLE_CANDIDATES: ${{ inputs.write_title_candidates == 'true' && '1' || '0' }}
           NAVER_SLOWDOWN_BASE_SEC: '4.0'
           PYTHONIOENCODING: 'utf-8'
         run: |
