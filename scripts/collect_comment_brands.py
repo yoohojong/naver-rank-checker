@@ -81,6 +81,17 @@ NOT_A_BRAND = {
     #   검색량이 크다고 위로 올라오던 것들. 화장품 브랜드가 아니라 유통 채널이다.
     "다이소", "다이소몰", "코스트코", "무인양품", "이케아", "쿠팡", "네이버",
     "아이허브", "무신사", "쿠팡이츠", "마켓컬리", "오늘의집", "지마켓", "티몬",
+    # ★2026-09-05 사장님 "경쟁사 추출한거 보니까 다 이상하다" — 제품 브랜드가 아니라
+    #   성분·약 일반명이 제품=true 로 올라 있었다. 실측(data/brand_verdicts.json)에서
+    #   실제로 true 로 오른 것 중, **명백한 일반 성분·약만** 넣는다.
+    #   ★애매한 것은 넣지 않는다(사장님 "확실하지 않으면 빼지 마라 / 데이터 쌓이면
+    #     알게 된다"). '판테놀'·'큐텐' 은 제품명으로도 팔려 뺐다(큐텐은 쇼핑몰 Qoo10 도 됨).
+    "케라틴",        # keratin — 머리카락 단백질 성분
+    "호호바",        # jojoba — 식물 오일 성분(호호바오일)
+    "티트리", "티트리오일",   # tea tree oil — 정유 성분
+    "징크피리치온",  # zinc pyrithione — 비듬 완화 활성 성분
+    "유황",          # sulfur — 원소·성분(유황비누의 성분명)
+    "칼라민",        # calamine — 진정용 약 일반명(칼라민 로션)
 }
 
 
@@ -276,6 +287,113 @@ def candidates_from_title(title: str) -> list:
         return []
     return [{"표시": shown, "키": key, "종류": suffix, "댓글": t[:120]}
             for shown, key, suffix in extract_candidates(t)]
+
+
+# ── 로그인 없는 키워드 후보 (2026-09-05) ────────────────────────────────
+# 사장님 오늘 지시: "문제를 해결해. 로그인이 꼭 필요해?"
+# 갈래 B(계정 프로필 역추적)는 카페 로그인이 있어야 돈다. 그런데 경쟁사 배치는
+# 로그인 없이 상위노출 남의 글의 **제목**을 이미 손에 쥐고 있다. 그 제목에서
+# 후보를 뽑아 **우리한테 없는 것만** 제품별로 '키워드후보' 탭에 넣는다 —
+# 갈래 B 의 로그인 없는 축소판이다(추가 크롤 0).
+#
+# 머리줄·문구는 정본(cafe-external/바이럴_키워드_선별.py)과 똑같이 쓴다 —
+# 두 길(로그인 있는 갈래 B · 없는 이 길)이 같은 탭에 같은 모양으로 쌓여야 한다.
+키워드후보_머리줄 = ["키워드", "제품군", "접촉지점", "MB", "PC", "총합", "발견경로",
+                 "대상카페", "제안자", "제안일", "중복체크(자동)", "주제 분류"]
+후보_발견경로 = "남의 글 제목"
+후보_제안자 = "자동(제목)"
+
+
+def _키워드정규화(s) -> str:
+    """띄어쓰기·대소문자를 무시한 비교용 모양 — 중복을 이걸로 막는다.
+
+    cafe-external 쪽 `키워드발굴._nospace` 와 같은 규칙(공백 제거 + casefold)이라,
+    두 길이 같은 키워드를 같은 것으로 본다.
+    """
+    return "".join(str(s or "").split()).casefold()
+
+
+def 제목_키워드후보(by_product: dict, 이미가진: set, 이미후보: set, *,
+              오늘: str = "", 발견경로: str = 후보_발견경로,
+              제안자: str = 후보_제안자) -> list:
+    """남의 글 **제목** → 우리한테 없는 키워드 후보 줄(제품군별) · 순수함수.
+
+    by_product = {제품군: [언급...]} — 언급은 최소 '제목' 을 든다(경쟁사 배치가 남긴 모양).
+    이미가진 · 이미후보 = **정규화된** 키워드 집합(우리 제품탭 · 이미 후보에 있는 것).
+
+    ★줄을 지우지 않는다 — 새 후보만 돌려준다. 중복은 키워드 정규화로 막는다.
+    ★검색량(MB·PC·총합)은 비워 둔다 — 집 PC 검색량 도구가 나중에 채운다.
+    파일·시트·네트워크를 모른다.
+    """
+    이미가진 = 이미가진 or set()
+    이미후보 = 이미후보 or set()
+    본것: set = set()
+    out: list = []
+    for 제품군, 언급들 in (by_product or {}).items():
+        for m in 언급들 or []:
+            제목 = str((m or {}).get("제목") or "")
+            if not 제목:
+                continue
+            카페 = str((m or {}).get("카페") or "")
+            for c in candidates_from_title(제목):
+                kw = str(c.get("표시") or "").strip()
+                n = _키워드정규화(kw)
+                if not n or n in 이미가진 or n in 이미후보 or n in 본것:
+                    continue
+                본것.add(n)
+                out.append({
+                    "키워드": kw, "제품군": 제품군, "접촉지점": "",
+                    "MB": "", "PC": "", "총합": "",
+                    "발견경로": 발견경로, "대상카페": 카페,
+                    "제안자": 제안자, "제안일": 오늘,
+                    "중복체크(자동)": "", "주제 분류": "",
+                })
+    return out
+
+
+def 키워드후보_표로(줄들: list) -> list:
+    """후보 줄 → 시트에 붙일 값 목록(머리줄 없이) · 순수함수."""
+    return [[줄.get(c, "") for c in 키워드후보_머리줄] for 줄 in 줄들 or []]
+
+
+def _후보탭_갱신(client, by_product: dict, today: str) -> int:
+    """제목에서 뽑은 키워드 후보를 '키워드후보' 탭에 **더한다**(줄 안 지움).
+
+    ★경쟁사 탭 쓰기와 **별개**로 산다 — 여기서 넘어져도 경쟁사 탭은 그대로다.
+    우리 제품탭('…카외')과 이미 있는 후보를 읽어 그중에 없는 것만 append 한다.
+    """
+    import gspread
+
+    이미가진, 이미후보 = set(), set()
+    for ws in client.spreadsheet.worksheets():
+        title = ws.title.strip()
+        if title.endswith("카외"):
+            대상 = 이미가진
+        elif title == "키워드후보":
+            대상 = 이미후보
+        else:
+            continue
+        v = ws.get_all_values()
+        if not v or "키워드" not in v[0]:
+            continue
+        ki = v[0].index("키워드")
+        for r in v[1:]:
+            if ki < len(r) and str(r[ki]).strip():
+                대상.add(_키워드정규화(r[ki]))
+
+    새것 = 제목_키워드후보(by_product, 이미가진, 이미후보, 오늘=today)
+    if not 새것:
+        print("키워드후보: 제목에서 나온 새 후보 없음 (다 이미 갖고 있거나 후보에 있음)")
+        return 0
+    try:
+        ws = client.spreadsheet.worksheet("키워드후보")
+    except gspread.exceptions.WorksheetNotFound:
+        ws = client.spreadsheet.add_worksheet(
+            title="키워드후보", rows=200, cols=len(키워드후보_머리줄))
+        ws.update("A1", [키워드후보_머리줄], value_input_option="RAW")
+    ws.append_rows(키워드후보_표로(새것), value_input_option="RAW")
+    print(f"키워드후보: 제목에서 뽑은 새 후보 {len(새것)}줄 추가 (발견경로='{후보_발견경로}')")
+    return len(새것)
 
 
 def extract_brands(mentions: list, *, verdict_path: str = brand_verdicts.DEFAULT_PATH,
@@ -1295,6 +1413,14 @@ def run_from_sheet(args) -> int:
                   + (f" (계정을 못 알아본 언급 {못묶음}건은 뺐습니다)" if 못묶음 else ""))
         except Exception as e:
             print(f"바이럴 계정 못 적음({type(e).__name__}) — "
+                  f"경쟁사 탭은 위에서 이미 새로 썼습니다")
+
+        # ★로그인 없는 키워드 후보(2026-09-05) — 남의 글 제목에서 우리한테 없는
+        #   것만 '키워드후보' 탭에 더한다. 경쟁사 탭 쓰기와 별개로 산다.
+        try:
+            _후보탭_갱신(client, by_product, today)
+        except Exception as e:
+            print(f"키워드후보 못 적음({type(e).__name__}) — "
                   f"경쟁사 탭은 위에서 이미 새로 썼습니다")
     return 0
 
