@@ -388,7 +388,14 @@ def 제목_키워드후보(by_product: dict, 이미가진: set, 이미후보: se
             for kw in 제목별키워드.get(제목) or []:
                 kw = str(kw).strip()
                 n = _키워드정규화(kw)
-                if not n or n in 이미가진 or n in 이미후보 or n in 본것:
+                if not n or n in 이미후보 or n in 본것:
+                    continue
+                # ★사장님 2026-09-07 "그거 다 지금 우리 키워드에 포함되어있잖아":
+                #   후보가 우리 키워드 **안에 들어가면**(= 더 구체적인 걸 이미 가짐) 뺀다.
+                #   예: '아토피샴푸' 는 우리 '아토피샴푸추천' 에 포함 → 새것 아님.
+                #   방향은 하나 — 후보 ⊆ 우리 것. 반대(우리 것 ⊆ 후보)는 더 구체적인 새
+                #   후보라 남긴다(예: '탈모샴푸추천' 은 우리 '샴푸추천' 을 품어도 새것).
+                if n in 이미가진 or any(n in o for o in 이미가진):
                     continue
                 본것.add(n)
                 out.append({
