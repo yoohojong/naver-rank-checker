@@ -174,8 +174,27 @@ def _열쇠씻기(값) -> str:
     return v.strip(_안보이는글자).strip()
 
 
+# ★열쇠는 환경변수(클라우드=GitHub Secrets) 먼저, 없으면 secrets 폴더 파일(로컬).
+#   같은 저장소 발행본_검수.py 와 같은 방식이다 — 이 PC(로컬)에서 도는 키워드 뽑기는
+#   GitHub Secrets 를 못 읽으므로, 사장님이 발급받은 키를 secrets/<파일> 에 붙여넣으면 읽는다.
+#   secrets 폴더는 .gitignore 로 커밋에서 빠진다.
+_KEY_DIR = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "secrets")
+
+
+def _열쇠_환경변수_또는_파일(env이름: str, 파일이름: str) -> str:
+    v = os.environ.get(env이름, "")
+    if not v:
+        try:
+            with open(os.path.join(_KEY_DIR, 파일이름), encoding="utf-8") as f:
+                v = f.read()
+        except OSError:
+            v = ""
+    return _열쇠씻기(v)
+
+
 def _groq_key() -> str:
-    return _열쇠씻기(os.environ.get("GROQ_API_KEY", ""))
+    return _열쇠_환경변수_또는_파일("GROQ_API_KEY", "groq_key.txt")
 
 
 def _groq_model() -> str:
@@ -196,11 +215,11 @@ _OPENAI_MODEL = os.environ.get("OPENAI_MODEL", "").strip() or "gpt-4o-mini"
 
 
 def _openai_key() -> str:
-    return _열쇠씻기(os.environ.get("OPENAI_API_KEY", ""))
+    return _열쇠_환경변수_또는_파일("OPENAI_API_KEY", "openai_key.txt")
 
 
 def _anthropic_key() -> str:
-    return _열쇠씻기(os.environ.get("ANTHROPIC_API_KEY", ""))
+    return _열쇠_환경변수_또는_파일("ANTHROPIC_API_KEY", "anthropic_key.txt")
 
 
 def _api_key() -> str:
