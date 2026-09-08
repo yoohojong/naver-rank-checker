@@ -356,6 +356,10 @@ def 제목_키워드후보(by_product: dict, 이미가진: set, 이미후보: se
     ★열쇠(LLM)가 없으면 판정기가 빈 결과를 줘 후보가 한 줄도 안 나온다(지어내지 않음).
     ★줄을 지우지 않는다 — 새 후보만 돌려준다. 중복은 키워드 정규화로 막는다.
     ★검색량(MB·PC·총합)은 비워 둔다 — 집 PC 검색량 도구가 나중에 채운다.
+    ★여기 적히는 '제품군' 은 **그 제목을 어느 탭에서 주웠나** 다(경쟁사 표와 달리 그대로 둔다).
+      키워드가 실제로 어느 제품 이야기인지는 집 PC 가 매일 한 번
+      `cafe-external/키워드후보_제품군.py` 로 키워드 글자를 보고 다시 판정한다.
+      여기서 억지로 정하면 근거(키워드 글자)를 못 보고 탭 이름만 베끼게 된다.
     파일·시트를 모른다.
     """
     이미가진 = 이미가진 or set()
@@ -587,6 +591,25 @@ def brand_names(mentions: list, verdicts: dict) -> list:
     return seen
 
 
+def 표시할_브랜드명(m: dict, verdicts: dict, unified: dict | None = None) -> str | None:
+    """언급 하나 → 표에 적을 최종 브랜드 이름. 표에 못 넣을 언급이면 None · 순수함수.
+
+    판정 → 정식 이름 → 이름 묶기 → 마지막 그물(종류 이름·장소·성분) 순서로 거른다.
+
+    ★이 자리를 함수로 뺀 이유: 오늘 언급을 세는 쪽(confirmed_rows)과 제품군을 옮기는
+      쪽(제품군_재배치)이 **같은 이름**을 봐야 한다. 두 곳에 같은 코드를 적어 두면
+      한쪽만 고쳐져 옮긴 줄과 센 줄이 어긋난다(같은 뿌리 사고를 여러 번 겪었다).
+    """
+    key = m["키"]
+    if not brand_verdicts.is_product(verdicts, key):
+        return None
+    name = brand_verdicts.display_name(verdicts, key, m["표시"])
+    name = (unified or {}).get(name, name)   # 흐트러뜨린 표기를 정식 브랜드명 하나로
+    if not is_real_brand(name):        # 마지막 그물 — 종류 이름·장소가 판정을 뚫어도 여기서 막는다
+        return None
+    return name
+
+
 def confirmed_rows(mentions: list, verdicts: dict, unified: dict | None = None) -> list:
     """판정된 제품만 남겨 집계. 미판정·제품아님은 조용히 뺀다.
 
@@ -595,12 +618,8 @@ def confirmed_rows(mentions: list, verdicts: dict, unified: dict | None = None) 
     """
     kept = []
     for m in mentions or []:
-        key = m["키"]
-        if not brand_verdicts.is_product(verdicts, key):
-            continue
-        name = brand_verdicts.display_name(verdicts, key, m["표시"])
-        name = (unified or {}).get(name, name)   # 흐트러뜨린 표기를 정식 브랜드명 하나로
-        if not is_real_brand(name):        # 마지막 그물 — 종류 이름·장소가 판정을 뚫어도 여기서 막는다
+        name = 표시할_브랜드명(m, verdicts, unified)
+        if name is None:
             continue
         # 종류 이름까지 벗겨 묶는다 — '안티트로' 와 '안티트로샴푸' 는 한 브랜드다
         kept.append({**m, "표시": name, "키": strip_generic_tail(name) or normalize_name(name)})
@@ -926,7 +945,16 @@ def scan_keyword(crawler: CommentFetcher, kw: str, *, our_links: set, our_slugs:
 #   표 한가운데 있어 정작 볼 숫자를 오른쪽 밖으로 밀어냈고, '댓글 예시' 가 통째로
 #   한 칸에 들어가 행 높이를 키우고 있었다.
 #   → 읽는 순서대로: 누구인가 · 얼마나 큰가 · 얼마나 넓게 · 얼마나 잘 · 어디서.
-FIXED_HEAD = ["제품군", "경쟁사", "검색량", "판정", "뜬 키워드 수", "최고순위", "평균순위",
+#   ★2026-09-09 사장님 "경쟁사 추출도 제품군 잘 구분해서 좀 해놔봐" — 칸 두 개를 더한다.
+#     그동안 '제품군' 은 **그 댓글을 어느 탭 키워드에서 주웠나** 였다. 그래서 샴푸인
+#     안티트로가 바디워시 줄에 앉아 있었다(등여드름 키워드 댓글 하나 때문에).
+#     515줄 중 59개 브랜드가 두세 제품군에 겹쳐 있었다(2026-09-09 실측).
+#     → '파는 제품군' = 그 브랜드가 **실제로 파는** 것. 집 PC 도구가 브랜드+제품종류로
+#       검색량을 물어 채운다. 이 배치는 그 값을 지키고, 그 값대로 줄을 옮긴다.
+#     → '검색량 키워드' = 그 검색량이 어느 말로 나온 것인가. '안티트로' 990 이 아니라
+#       '안티트로샴푸' 12,580 이 그 브랜드의 크기다.
+FIXED_HEAD = ["제품군", "경쟁사", "검색량", "검색량 키워드", "파는 제품군",
+              "판정", "뜬 키워드 수", "최고순위", "평균순위",
               "어느 키워드 몇 위", "7일 댓글 수", "추세", "우리가 놓친", "글 링크",
               "이 표를 만들 때 얼마나 읽었나"]
 
@@ -1008,28 +1036,146 @@ def _prev_counts(values: list) -> tuple:
     return out, [d for _, d in date_cols]
 
 
+# 집 PC 도구(cafe-external/경쟁사_검색량.py)가 채우는 칸들. 이 배치는 지키기만 한다.
+_검색칸 = ("검색량", "검색량 키워드", "파는 제품군")
+
+# '파는 제품군' 칸에 적히는 세 가지 모양.
+#   빈 칸        = 아직 안 물어봤다      (열쇠 자체가 없다 → 줄을 옮기지 않는다)
+#   못 정함 글자 = 물어봤는데 못 정했다  ([] → 줄을 옮기지 않는다)
+#   "샴푸·바디워시" = 파는 제품군 목록   (검색량 큰 순)
+파는제품군_못정함 = "못 정함(검색량 없음)"
+제품군_이름들 = ("샴푸", "바디워시", "두드러기")
+
+
+def _수로(값) -> int:
+    """검색량 칸 글자 → 숫자. 못 읽으면 0 · 순수함수."""
+    try:
+        return int(float(str(값 if 값 is not None else "").strip().replace(",", "") or 0))
+    except ValueError:
+        return 0
+
+
 def _prev_volumes(values: list) -> dict:
-    """지난 표에서 (제품군, 경쟁사) → 검색량 을 되살린다.
+    """지난 표에서 **경쟁사 이름** → {검색량, 검색량 키워드, 파는 제품군} 을 되살린다.
 
     ★검색량은 이 배치가 만드는 값이 아니다. 집 PC 도구가 네이버 검색광고에 물어
     채워 넣는 칸이고, 이 배치는 매일 표를 통째로 다시 쓴다. 지키지 않으면
     사람이 채운 값이 다음 새벽에 사라져 영영 빈칸으로 남는다.
+
+    ★2026-09-09 — 열쇠를 (제품군, 경쟁사) 에서 **경쟁사 이름 하나**로 바꿨다.
+      브랜드가 파는 제품군으로 줄이 옮겨 다니는데 제품군을 열쇠에 넣어 두면,
+      옮기는 그 날 검색량이 통째로 빈칸이 된다(어제 채운 값을 오늘 잃는다).
+    ★같은 이름이 여러 줄이면 **검색량이 가장 큰 줄**을 쓴다. 그 줄에 없는 칸은
+      다른 줄에서 있는 것으로 메운다 — 채워 둔 값을 버리지 않는다.
+    ★'0' 도 지킨다. 빈칸으로 되돌리면 집 PC 도구가 매일 같은 이름을 다시 조회한다.
     """
     if not values or len(values) < 2:
         return {}
     head = [str(c).strip() for c in values[0]]
-    try:
-        ip, ib, iv = head.index("제품군"), head.index("경쟁사"), head.index("검색량")
-    except ValueError:
+    if "경쟁사" not in head or "검색량" not in head:
         return {}
+    ib = head.index("경쟁사")
+    자리 = {이름: head.index(이름) for 이름 in _검색칸 if 이름 in head}
     out: dict = {}
     for row in values[1:]:
-        if len(row) <= max(ip, ib) or not str(row[ip]).strip() or not str(row[ib]).strip():
+        if len(row) <= ib:
             continue
-        val = row[iv] if iv < len(row) else ""
-        if str(val).strip():
-            out[(str(row[ip]).strip(), str(row[ib]).strip())] = val
+        brand = str(row[ib]).strip()
+        if not brand:
+            continue
+        칸 = {이름: row[i] for 이름, i in 자리.items()
+             if i < len(row) and str(row[i]).strip()}
+        if not 칸:
+            continue
+        기존 = out.get(brand)
+        if 기존 is None:
+            out[brand] = 칸
+        elif _수로(칸.get("검색량")) > _수로(기존.get("검색량")):
+            out[brand] = {**{k: v for k, v in 기존.items() if k not in 칸}, **칸}
+        else:
+            for k, v in 칸.items():
+                기존.setdefault(k, v)
     return out
+
+
+def _prev_families(values: list) -> dict:
+    """지난 표에서 경쟁사 이름 → **실제로 파는 제품군 목록** 을 되살린다 · 순수함수.
+
+    빈 칸(아직 안 물어봄)은 열쇠 자체를 안 만든다 — '모른다' 와 '없다' 를 가른다.
+    "못 정함(검색량 없음)" 은 빈 목록. 둘 다 줄을 옮기지 않는다
+    (사장님 원칙: 확실하지 않으면 빼지 마라).
+    """
+    out: dict = {}
+    for brand, 칸 in (_prev_volumes(values) or {}).items():
+        글 = str(칸.get("파는 제품군") or "").strip()
+        if not 글:
+            continue
+        if 글 == 파는제품군_못정함:
+            out[brand] = []
+            continue
+        out[brand] = [p for p in (x.strip() for x in 글.split("·"))
+                      if p in 제품군_이름들]
+    return out
+
+
+def 옮길_제품군(product: str, brand: str, families: dict | None) -> str:
+    """이 줄을 어느 제품군에 놓을 것인가 · 순수함수.
+
+    그 브랜드가 파는 것을 알고(목록이 비지 않았고) 지금 자리가 그 안에 없으면,
+    파는 것 중 **첫째**(검색량이 가장 큰 것)로 옮긴다. 모르면 그대로 둔다.
+    """
+    fam = (families or {}).get(brand)
+    if fam and product not in fam:
+        return fam[0]
+    return product
+
+
+def 제품군_재배치(branded: dict, verdicts: dict, unified: dict | None,
+             families: dict | None) -> dict:
+    """오늘 언급을 그 브랜드가 **실제로 파는** 제품군 통으로 옮긴다 · 순수함수.
+
+    branded = {제품군(탭): [이름 붙은 언급...]} — extract_brands 가 돌려준 모양.
+
+    ★안티트로는 샴푸다. 그런데 바디워시 탭 키워드('등여드름없애는법') 댓글에서
+      한 번 나왔다고 바디워시 경쟁사로 표에 앉아 있었다(2026-09-09 실측).
+      제품군은 '어느 탭에서 주웠나' 가 아니라 '무엇을 파나' 여야 한다.
+    ★모르는 브랜드(칸이 빈 것)와 못 정한 브랜드는 **그대로 둔다** —
+      사장님: "확실하지 않으면 빼지 마라".
+    ★원래 있던 통은 비어도 열쇠를 남긴다. 오늘 그 탭을 봤다는 사실이 사라지면
+      안 되기 때문이다(build_table 의 '오늘은 못 봄' 판정이 그것을 본다).
+    """
+    out: dict = {p: [] for p in (branded or {})}
+    for product, mentions in (branded or {}).items():
+        for m in mentions or []:
+            name = 표시할_브랜드명(m, verdicts, unified)
+            갈곳 = 옮길_제품군(product, name, families) if name else product
+            out.setdefault(갈곳, []).append(m)
+    return out
+
+
+def 옛줄_재배치(prev_counts: dict, prev_extras: dict, families: dict | None) -> tuple:
+    """어제까지 쌓인 줄도 파는 제품군으로 옮긴다 · 순수함수. → (날짜별 횟수, 지난 성적)
+
+    같은 브랜드 줄이 두 제품군에 갈라져 있었으면 한 줄로 합친다 —
+    날짜별 횟수는 **더하고**, 성적 칸은 원래 그 자리에 있던 줄 것을 그대로 둔다
+    (옮겨온 줄이 제자리 줄을 덮으면 오늘 잰 성적이 옛 값으로 되돌아간다).
+    """
+    counts: dict = {}
+    for (product, brand), per in (prev_counts or {}).items():
+        키 = (옮길_제품군(product, brand, families), brand)
+        묶음 = counts.setdefault(키, {})
+        for day, n in (per or {}).items():
+            묶음[day] = 묶음.get(day, 0) + int(n or 0)
+
+    extras: dict = {}
+    for (product, brand), 칸 in (prev_extras or {}).items():        # ① 제자리 줄 먼저
+        if 옮길_제품군(product, brand, families) == product:
+            extras[(product, brand)] = 칸
+    for (product, brand), 칸 in (prev_extras or {}).items():        # ② 옮겨온 줄은 빈 자리에만
+        키 = (옮길_제품군(product, brand, families), brand)
+        if 키 != (product, brand):
+            extras.setdefault(키, 칸)
+    return counts, extras
 
 
 # 오늘 결과에 없으면 지난 표에서 되살릴 칸들. 안 되살리면 반쪽 회차가
@@ -1115,13 +1261,21 @@ def 읽은정도_말(stat: dict | None) -> str:
 
 
 def build_table(prev_values: list, today_rows: list, today: str,
-                days: int = HISTORY_DAYS, stat: dict | None = None) -> list:
+                days: int = HISTORY_DAYS, stat: dict | None = None,
+                scanned_products: set | None = None) -> list:
     """지난 표 + 오늘 결과 → 시트에 쓸 표 전체 · 순수함수.
 
     today_rows = [{"제품군","경쟁사","횟수","키워드수","키워드들","글들","댓글 예시"}]
+    scanned_products = 오늘 **실제로 훑은** 제품군(탭) 이름들. 안 주면 오늘 줄에서 뽑는다.
+      ★2026-09-09 — 오늘 줄에서 뽑으면 안 된다. 제품군 재배치로 옮겨온 언급밖에
+        없는 통이 생기면, 그 제품군을 오늘 훑은 적이 없는데도 '봤다' 가 되어
+        그 통의 다른 경쟁사들에 0 이 찍힌다('오늘은 못 봄' 이어야 할 자리에).
     """
+    지킨칸 = _prev_volumes(prev_values)
+    파는제품군 = _prev_families(prev_values)
     prev, _ = _prev_counts(prev_values)
-    검색량 = _prev_volumes(prev_values)
+    지난값 = _prev_extras(prev_values)
+    prev, 지난값 = 옛줄_재배치(prev, 지난값, 파는제품군)
     merged = {k: dict(v) for k, v in prev.items()}
     extra: dict = {}
     for r in today_rows or []:
@@ -1136,10 +1290,10 @@ def build_table(prev_values: list, today_rows: list, today: str,
 
     header = FIXED_HEAD + dates
     읽은정도 = 읽은정도_말(stat)
-    지난값 = _prev_extras(prev_values)
     rows = []
     # 오늘 이 제품군을 **아예 안 봤나**(회차가 거기까지 못 감) — 봤는데 안 나온 것과 다르다.
-    본제품군 = {p for p, _ in extra}
+    본제품군 = (set(scanned_products) if scanned_products is not None
+             else {p for p, _ in extra})
     for (product, brand), per in merged.items():
         # ★옛 줄에도 오늘 잣대를 건다 — 제외가 생기기 전에 들어온 자사·가게·일반명
         #   (두드럼·다이소·케라틴)이 이어받기로 눌러앉는 것을 막는다(2026-09-05 실물 확인).
@@ -1196,9 +1350,12 @@ def build_table(prev_values: list, today_rows: list, today: str,
             kw_text += f" 외 {len(kws) - MAX_KEYWORDS_SHOWN}개"
         # ★행 높이를 키우던 두 칸을 없앴다 — '댓글 예시'(통째로 들어감)와
         #   여러 줄짜리 '글 링크'. 링크는 대표 하나만 둔다.
-        _검색량 = 검색량.get((product, brand), "")
+        # ★검색량 세 칸은 **브랜드 이름**으로 이어받는다 — 줄이 제품군을 옮겨도 남는다.
+        칸 = 지킨칸.get(brand) or {}
+        _검색량 = 칸.get("검색량", "")
         rows.append([product, brand,
-                     _검색량, 판정_말(_검색량),
+                     _검색량, 칸.get("검색량 키워드", ""), 칸.get("파는 제품군", ""),
+                     판정_말(_검색량),
                      r.get("키워드수", ""),
                      r.get("최고순위", ""), r.get("평균순위", ""),
                      r.get("키워드별순위", ""),
@@ -1214,16 +1371,10 @@ def build_table(prev_values: list, today_rows: list, today: str,
     #     우리 키워드 몇 개에 걸렸나(뜬 키워드 수)다. 검색량을 앞세우면 우리 키워드에
     #     한 번 걸린 검색량 큰 가게(다이소 283만)가 여섯 키워드에 걸린 진짜 경쟁사
     #     (아토팜 6개) 위로 온다 — 사장님이 "다 이상하다" 하신 그 모양. 개수를 앞세운다.
-    def _수(v):
-        try:
-            return int(str(v or 0).replace(",", ""))
-        except (TypeError, ValueError):
-            return 0
-
     i판정, i검색량 = header.index("판정"), header.index("검색량")
     i키수 = header.index("뜬 키워드 수")
-    rows.sort(key=lambda x: (판정_순서.get(x[i판정], 9), -_수(x[i키수]),
-                             -_수(x[i검색량]), x[0], x[1]))
+    rows.sort(key=lambda x: (판정_순서.get(x[i판정], 9), -_수로(x[i키수]),
+                             -_수로(x[i검색량]), x[0], x[1]))
     return [header] + rows
 
 # 판정을 못 받은 몫이 이만큼을 넘으면 시트를 덮지 않는다.
@@ -1361,6 +1512,26 @@ def run_from_sheet(args) -> int:
         print(f"이름 묶기: {len(merged)}개를 정식 브랜드명으로 통일"
               + (f" (예: {', '.join(list(merged)[:3])})" if merged else ""))
 
+    # ★어제까지의 '경쟁사' 표를 **여기서** 읽는다(쓰기 직전이 아니라).
+    #   오늘 언급을 어느 제품군에 놓을지가 그 표의 '파는 제품군' 칸에 적혀 있다 —
+    #   집 PC 도구가 브랜드+제품종류로 검색량을 물어 채워 둔 값이다.
+    #   쓰기 직전에 읽으면 재배치가 그 값을 못 보고 지나간다.
+    import gspread
+    try:
+        경쟁사탭 = client.spreadsheet.worksheet("경쟁사")
+        prev_values = 경쟁사탭.get_all_values()      # 어제까지의 기록 = 시트 자신
+    except gspread.exceptions.WorksheetNotFound:
+        경쟁사탭, prev_values = None, []
+
+    파는제품군 = _prev_families(prev_values)
+    본탭 = set(branded)                    # 오늘 **실제로 훑은** 제품군 — 옮기기 전 모양
+    옮기기전 = {p: len(ms) for p, ms in branded.items()}
+    branded = 제품군_재배치(branded, verdicts, unified, 파는제품군)
+    옮김 = [f"{p} {len(ms) - 옮기기전.get(p, 0):+d}건"
+          for p, ms in branded.items() if len(ms) != 옮기기전.get(p, 0)]
+    if 옮김:
+        print(f"제품군 재배치(파는 제품군 기준): {' · '.join(옮김)}")
+
     out_rows: list[dict] = []
     for product, mentions in branded.items():
         for r in confirmed_rows(mentions, verdicts, unified):
@@ -1426,15 +1597,10 @@ def run_from_sheet(args) -> int:
         return 3
 
     if args.write_sheet and out_rows:
-        import gspread
-        try:
-            ws = client.spreadsheet.worksheet("경쟁사")
-            prev_values = ws.get_all_values()      # 어제까지의 기록 = 시트 자신
-        except gspread.exceptions.WorksheetNotFound:
-            ws = client.spreadsheet.add_worksheet(title="경쟁사", rows=400, cols=26)
-            prev_values = []
+        ws = 경쟁사탭 or client.spreadsheet.add_worksheet(title="경쟁사", rows=400, cols=26)
 
-        payload = build_table(prev_values, out_rows, today, stat=jstat)
+        payload = build_table(prev_values, out_rows, today, stat=jstat,
+                              scanned_products=본탭)
         ws.resize(rows=len(payload) + 20, cols=max(len(payload[0]), 12))
         blank = [""] * len(payload[0])
         ws.update("A1", payload + [list(blank) for _ in range(20)], value_input_option="RAW")
@@ -1494,18 +1660,41 @@ def run_from_sheet(args) -> int:
     return 0
 
 
+# 숫자로 읽는 칸 — 가운데 정렬한다. 날짜 칸도 숫자다(그날 댓글 수).
+# 나머지는 글이라 줄바꿈해서 보인다.
+숫자로_읽는칸 = {"검색량", "뜬 키워드 수", "최고순위", "평균순위", "7일 댓글 수", "우리가 놓친"}
+
+
+def 서식_칸묶음(header: list) -> tuple:
+    """머리줄 → (가운데 정렬할 칸 묶음, 줄바꿈할 칸 묶음) · 순수함수.
+    묶음은 (시작, 끝) — 끝 칸은 안 들어간다(구글 시트 range 와 같은 모양).
+
+    ★칸 자리를 숫자로 적어 두지 않는다. 그렇게 적어 뒀다가 꼬리를 비운 뒤
+      시작 칸이 끝 칸보다 커져 **서식이 매번 통째로 취소**되고 있었다
+      (머리줄 고정·굵게·줄바꿈·폭 맞추기 전부. 2026-09-05 검수 중간 6).
+      칸이 늘 때마다 또 어긋나므로 **이름으로** 고른다.
+    """
+    숫자냐 = [str(c).strip() in 숫자로_읽는칸
+            or bool(re.fullmatch(r"\d{4}-\d{2}-\d{2}", str(c).strip()))
+            for c in header or []]
+    가운데, 줄바꿈 = [], []
+    i = 0
+    while i < len(숫자냐):
+        j = i
+        while j < len(숫자냐) and 숫자냐[j] == 숫자냐[i]:
+            j += 1
+        (가운데 if 숫자냐[i] else 줄바꿈).append((i, j))
+        i = j
+    # 앞의 두 칸(제품군·경쟁사)은 이름이라 줄바꿈하지 않는다 — 짧고, 얼어 있는 칸이다.
+    return 가운데, [(a, b) for a, b in ((max(a, 2), b) for a, b in 줄바꿈) if a < b]
+
+
 def _format_sheet(ws, payload: list) -> None:
     """보기 좋게 — 머리줄 고정·굵게, 숫자 가운데, 글 링크 줄바꿈. 실패해도 값은 이미 들어갔다."""
-    n_dates = len(payload[0]) - len(FIXED_HEAD) - len(FIXED_TAIL)
-    # C열~날짜 끝 + 꼬리에서 이어지는 숫자 3칸
-    # (우리가 놓친·최고순위·평균순위). 그 뒤 '키워드별 순위' 는 글이다.
-    # ★+3 은 FIXED_TAIL 에 칸 3개가 있던 시절 값이다. 그 꼬리를 비운 뒤로
-    #   시작 칸이 끝 칸보다 커져 **서식이 매번 통째로 취소**되고 있었다
-    #   (머리줄 고정·굵게·줄바꿈·폭 맞추기 전부. 2026-09-05 검수 중간 6).
-    num_from, num_to = 2, min(len(FIXED_HEAD) + n_dates, len(payload[0]))
+    가운데, 줄바꿈 = 서식_칸묶음(payload[0])
     try:
         sid = ws.id
-        ws.spreadsheet.batch_update({"requests": [
+        요청 = [
             {"updateSheetProperties": {                   # 머리줄 고정
                 "properties": {"sheetId": sid,
                                "gridProperties": {"frozenRowCount": 1, "frozenColumnCount": 2}},
@@ -1517,21 +1706,22 @@ def _format_sheet(ws, payload: list) -> None:
                     "backgroundColor": {"red": .93, "green": .95, "blue": .98},
                     "horizontalAlignment": "CENTER"}},
                 "fields": "userEnteredFormat(textFormat,backgroundColor,horizontalAlignment)"}},
-            {"repeatCell": {                              # 숫자칸 가운데 정렬
-                "range": {"sheetId": sid, "startRowIndex": 1,
-                          "startColumnIndex": num_from, "endColumnIndex": num_to},
-                "cell": {"userEnteredFormat": {"horizontalAlignment": "CENTER"}},
-                "fields": "userEnteredFormat.horizontalAlignment"}},
-            {"repeatCell": {                              # 키워드·링크·예시는 줄바꿈해서 보이게
-                "range": {"sheetId": sid, "startRowIndex": 1,
-                          "startColumnIndex": num_to, "endColumnIndex": len(payload[0])},
-                "cell": {"userEnteredFormat": {"wrapStrategy": "WRAP",
-                                               "verticalAlignment": "TOP"}},
-                "fields": "userEnteredFormat(wrapStrategy,verticalAlignment)"}},
-            {"autoResizeDimensions": {                    # 꼬리 칸까지 폭을 맞춘다
-                "dimensions": {"sheetId": sid, "dimension": "COLUMNS",
-                               "startIndex": 0, "endIndex": len(payload[0])}}},
-        ]})
+        ]
+        요청 += [{"repeatCell": {                          # 숫자칸 가운데 정렬
+            "range": {"sheetId": sid, "startRowIndex": 1,
+                      "startColumnIndex": a, "endColumnIndex": b},
+            "cell": {"userEnteredFormat": {"horizontalAlignment": "CENTER"}},
+            "fields": "userEnteredFormat.horizontalAlignment"}} for a, b in 가운데]
+        요청 += [{"repeatCell": {                          # 키워드·링크는 줄바꿈해서 보이게
+            "range": {"sheetId": sid, "startRowIndex": 1,
+                      "startColumnIndex": a, "endColumnIndex": b},
+            "cell": {"userEnteredFormat": {"wrapStrategy": "WRAP",
+                                           "verticalAlignment": "TOP"}},
+            "fields": "userEnteredFormat(wrapStrategy,verticalAlignment)"}} for a, b in 줄바꿈]
+        요청.append({"autoResizeDimensions": {             # 꼬리 칸까지 폭을 맞춘다
+            "dimensions": {"sheetId": sid, "dimension": "COLUMNS",
+                           "startIndex": 0, "endIndex": len(payload[0])}}})
+        ws.spreadsheet.batch_update({"requests": 요청})
     except Exception as e:                                # 서식은 곁다리 — 값이 먼저다
         print(f"서식 적용 건너뜀: {type(e).__name__}")
 
