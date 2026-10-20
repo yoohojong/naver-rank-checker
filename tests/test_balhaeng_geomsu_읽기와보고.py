@@ -329,3 +329,21 @@ def test_키워드_분류가_비어_검사_못_한_글이_있으면_보낸다():
     요["건너뜀"] = [("샴푸 카외", "k")] * 149
     본문 = G.보고만들기(요, "")
     assert 본문 and "검사 못 한 글 149건" in 본문
+
+
+# ── 손 시험 실행(notify=0)은 텔레그램을 한 통도 안 보낸다 ───────────────────
+def _발행검수_스텝들():
+    import yaml
+    wf = yaml.load((ROOT / ".github" / "workflows" / "balhaeng-geomsu.yml").read_text(encoding="utf-8"),
+                   Loader=yaml.BaseLoader)
+    return {s.get("name"): s for s in wf["jobs"]["audit"]["steps"]}
+
+
+@pytest.mark.parametrize("스텝", ["Notify on failure", "자가치유 보고"])
+def test_손으로_notify0_돌리면_뒤_알림_스텝도_안_돈다(스텝):
+    """2026-10-21: notify=0 으로 손 시험을 돌렸더니 성공으로 끝나면 '자가치유 보고'가
+    '✅ 복구됨' 문자를 보내고 이슈를 닫게 돼 있었다(그 스텝이 돌기 전에 취소해 막음). notify=0 은
+    '텔레그램 0통'이라는 뜻이므로 뒤 알림 스텝도 그 입력을 따른다."""
+    조건 = _발행검수_스텝들()[스텝]["if"]
+    assert "github.event.inputs.notify != '0'" in 조건
+    assert "github.event_name != 'workflow_dispatch'" in 조건    # 정기 실행은 그대로 알린다
