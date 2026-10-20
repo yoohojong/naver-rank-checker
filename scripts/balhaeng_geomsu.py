@@ -28,6 +28,7 @@ import time
 from collections import Counter
 from datetime import datetime, timedelta, timezone
 
+import gspread
 from curl_cffi import requests
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -108,9 +109,13 @@ def 이전기록(sc: SheetsClient) -> tuple[set, dict, list]:
     삭제 확인('글 없음(404)')된 링크는 오늘 검사 대상에서 뺀다. 지난 판정은 보고에서
     '새로 걸린 글'과 '전부터 걸려 있던 글'을 나누는 데 쓴다. 탭이 없으면 전부 빈 값.
     """
+    # ★2026-10-21(GPT 검토): '탭이 정말 없음'만 빈 값이다. 시트를 잠깐 못 읽은 것까지
+    #   빈 값으로 넘기면 지난 판정이 통째로 사라져, 전부터 걸려 있던 글이 전부
+    #   '새로 걸림'으로 보고된다(보고를 '새로 걸린 날만' 보내게 바꾼 뒤로 더 해롭다).
+    #   그 밖의 오류는 위로 올려 '돌지 못했습니다' 경보로 알린다.
     try:
         vals = sc.spreadsheet.worksheet(탭이름).get_all_values()
-    except Exception:
+    except gspread.exceptions.WorksheetNotFound:
         return set(), {}, []
     if len(vals) < 2:
         return set(), {}, []
@@ -189,6 +194,45 @@ def 대상읽기(sc: SheetsClient, limit: int, 빼기: set = frozenset()) -> tup
     return 본[:limit], 건너뜀
 
 
+삭제표시 = "글 없음(404)"      # 이 글자를 '이전기록'이 삭제 확인으로 읽는다 — 바꾸지 않는다
+
+
+def 글읽기주소(gid: str, art_id: str, link: str = "") -> str:
+    """카페 글 한 건을 읽는 주소.
+
+    ★2026-10-21: 네이버가 9/23 아침부터 v3(…/v3/cafes/{번호}/articles/{글})에
+      `500 {"errorCode":"9999"}` 만 돌려줘 4주 동안 148건 전부 못 읽었다(우리 코드는
+      7/30 이후 그대로). 같은 글을 v2.1 로 부르면 본문·글쓴이가 그대로 오고, 지워진 글은
+      `404 errorCode 4003` 으로 갈린다(이 PC 실측). 회원 전용 카페는 링크의 art 열쇠가
+      있어야 열리므로 같이 넘긴다.
+    """
+    tok = re.search(r"[?&]art=([^&#]+)", link or "")
+    return (f"https://apis.naver.com/cafe-web/cafe-articleapi/v2.1/cafes/{gid}/articles/{art_id}"
+            f"?useCafeId=true&requestFrom=A" + (f"&art={tok.group(1)}" if tok else ""))
+
+
+def 읽기실패이유(a) -> str:
+    """'삭제'와 '못 읽음'을 가른다. 삭제는 404 + errorCode 4003 일 때만.
+
+    ★예전엔 200 이 아니면 전부 '글 없음(상태)' 이라 적어, 서버 오류(500)가 삭제처럼 보였다.
+      또 404 를 무조건 삭제로 보면 주소가 바뀌어 404 가 나는 날 살아 있는 글 전부가
+      '삭제 확인'으로 영영 검사에서 빠진다 — 그래서 4003 을 확인한다.
+    """
+    코드 = ""
+    try:
+        j = a.json() or {}
+        코드 = str((j.get("result") or {}).get("errorCode") or j.get("errorCode") or "")
+    except Exception:
+        pass
+    if a.status_code == 404 and 코드 == "4003":
+        return 삭제표시
+    return f"글을 못 읽음({a.status_code}" + (f" · {코드}" if 코드 else "") + ")"
+
+
+def 삭제인가(post: dict) -> bool:
+    return 삭제표시 in (post.get("_실패") or "")
+
+
 def 한건수집(t: dict) -> dict:
     link = t["url"]
     m = CAFE_LINK.search(link)
@@ -202,11 +246,11 @@ def 한건수집(t: dict) -> dict:
     if not gid:
         return {**t, "_실패": "카페번호 못 찾음"}
 
-    a = requests.get(f"https://apis.naver.com/cafe-web/cafe-articleapi/v3/cafes/{gid}/articles/{art_id}",
+    a = requests.get(글읽기주소(gid, art_id, link),
                      impersonate=IMPERSONATE, timeout=25, headers={"Referer": link})
     쉬기()
     if a.status_code != 200:
-        return {**t, "_실패": f"글 없음({a.status_code})"}
+        return {**t, "_실패": 읽기실패이유(a)}
     res = a.json().get("result", {})
     art = res.get("article", res)
     본문, 사진 = 본문풀기(art.get("contentHtml") or art.get("content") or "")
@@ -321,16 +365,28 @@ def 시트반영(ws, 결과들: list[tuple[dict, dict]], 실패들: list[dict]):
         else:
             새행.append(row)
 
+    # ★2026-10-21: 삭제(404·4003)가 아닌 '못 읽음'은 행을 아예 건드리지 않는다.
+    #   9/23~10/20 네이버 주소 고장 동안 살아 있는 글 148건의 행이 날마다 '수집실패'로
+    #   덮여 진짜 판정(불합격 사유)이 지워졌고, 검사일도 날마다 오늘 날짜가 찍혀
+    #   '검사일이 오래됨 = 검사가 멈춤' 신호가 죽었다. 못 읽은 날은 어제 판정·검사일이
+    #   그대로 남아야 한다. 아직 행이 없는 새 글도 판정이 없으니 행을 만들지 않는다
+    #   (못 읽은 건수는 실행 기록과 — 막힌 날에는 — 보고에 남는다).
+    못읽음 = 0
     for post in 실패들:
+        if not 삭제인가(post):
+            못읽음 += 1
+            continue
         r = 자리.get(post["url"])
         if r:
-            # 어제 잰 측정·처음 걸린 날을 지우지 않는다(일시 차단 한 번에 기록이 날아갔다)
+            # 어제 잰 측정을 지우지 않는다(일시 차단 한 번에 기록이 날아갔다)
             옛 = 기존[r - 1]
             row = 행만들기(post, "수집실패", post.get("_실패", ""),
                           옛[측정열] if len(옛) > 측정열 else "")
             바꿀것.append({"range": f"A{r}:{끝}{r}", "values": [row]})
         else:
             새행.append(행만들기(post, "수집실패", post.get("_실패", ""), ""))
+    if 못읽음:
+        print(f"  못 읽은 글 {못읽음}건은 시트 행을 그대로 둠(어제 판정·검사일 유지)")
 
     보기 = (바꿀것[0]["values"][0] if 바꿀것 else (새행[0] if 새행 else None))
     if 보기:
@@ -408,7 +464,7 @@ def 보고문(요약: dict, 시트url: str) -> str:
           f"한번 봐야 함 {n['보류']}"]
     if 실패들:
         # 삭제(404)와 일시 오류는 다른 문제다 — 삭제는 발행 손실, 오류는 내일 재시도.
-        삭제 = [p for p in 실패들 if "글 없음(404)" in (p.get("_실패") or "")]
+        삭제 = [p for p in 실패들 if 삭제인가(p)]
         줄.append(f"글을 못 읽은 것 {len(실패들)}건"
                   + (f" — 그중 카페에서 삭제된 글 {len(삭제)}건" if 삭제 else ""))
     if 요약.get("누적삭제"):
@@ -436,11 +492,22 @@ def 보고문(요약: dict, 시트url: str) -> str:
     보류 = [(p, r) for p, r in 결과들 if r["판정"] == "보류"]
     # 매일 같은 글을 다시 나열하지 않는다 — 새로 걸린 글만 목록으로, 전부터 걸려
     # 있던 글은 건수 한 줄로(자세한 목록은 시트에 있다). 지난 기록이 없으면 전부 '새로'.
-    새불 = [(p, r) for p, r in 불합격 if 지난판정.get(p.get("url")) != "불합격"]
-    새보류 = [(p, r) for p, r in 보류 if 지난판정.get(p.get("url")) != "보류"]
+    # ★2026-10-21: 지난 기록이 '수집실패'(못 읽음)인 글은 '새로 걸린' 글이 아니라 판정이
+    #   되살아난 글이다(네이버 주소 고장 4주 동안 행이 '수집실패'로 덮였다). 하나씩
+    #   늘어놓지 않고 건수 한 줄로 — 고친 뒤 첫날 148건이 '새로 걸림'으로 쏟아지지 않게.
+    되살 = 되살아난(요약)
+    되살url = {p.get("url") for p, _ in 되살}
+    if 되살:
+        되살불 = sum(1 for _, r in 되살 if r["판정"] == "불합격")
+        줄.append(f"되살아난 판정 {len(되살)}건 · 그중 고칠 글 {되살불}건 "
+                  f"— 읽기가 막혔던 동안 못 잰 글입니다. 목록은 시트 '발행 검수' 탭")
+    새불 = [(p, r) for p, r in 불합격
+            if 지난판정.get(p.get("url")) != "불합격" and p.get("url") not in 되살url]
+    새보류 = [(p, r) for p, r in 보류
+              if 지난판정.get(p.get("url")) != "보류" and p.get("url") not in 되살url]
     지적줄(새불, "고쳐야 할 글" + (" (새로 걸림)" if len(새불) < len(불합격) else ""))
     지적줄(새보류, "사람이 한번 봐야 할 글")
-    남은 = (len(불합격) - len(새불)) + (len(보류) - len(새보류))
+    남은 = sum(1 for p, _ in 불합격 + 보류 if p.get("url") not in 되살url) - len(새불) - len(새보류)
     if 남은:
         줄.append("")
         줄.append(f"전부터 걸려 있는데 아직 안 고쳐진 글 {남은}건 — 목록은 시트 '발행 검수' 탭")
@@ -470,6 +537,72 @@ def 보고문(요약: dict, 시트url: str) -> str:
         줄.append("")
         줄.append(f"시트: {시트url}")
     return "\n".join(줄)
+
+
+def 되살아난(요약: dict) -> list:
+    """오늘 채점됐는데 지난 기록은 '수집실패'(못 읽음)였던 글 — 판정이 되살아난 글."""
+    지난판정 = 요약.get("지난판정") or {}
+    return [(p, r) for p, r in 요약["결과들"] if 지난판정.get(p.get("url")) == "수집실패"]
+
+
+def 보고머리(요약: dict) -> tuple[str, bool]:
+    """(보고 맨 앞에 붙일 경보 줄, 고장으로 끝낼 날인가).
+
+    못 읽은 글이 절반을 넘으면 자연스러운 결과가 아니다 — 대부분 삭제면 발행 손실,
+    아니면 **우리 쪽 읽는 방법이 막힌 것**이다. ★2026-10-21: 예전 첫 줄 "네이버가 막고
+    있을 수 있습니다"는 누가 할 일인지 안 보여 4주 동안 아무도 안 고쳤다. 작업자·사장님이
+    할 일이 아니라 Claude 가 고칠 일이라고 첫 줄에 적는다.
+    """
+    실패들 = 요약["실패들"]
+    전체 = len(요약["결과들"]) + len(실패들)
+    if not 전체:
+        return "", False
+    삭제수 = sum(1 for p in 실패들 if 삭제인가(p))
+    못읽음 = [p for p in 실패들 if not 삭제인가(p)]
+    이유, 수 = (Counter(p.get("_실패") or "?" for p in 못읽음).most_common(1)[0]
+                if 못읽음 else ("", 0))
+    if len(실패들) / 전체 > 0.5:
+        if 삭제수 >= len(못읽음):
+            # 숫자를 그대로 적는다(GPT 검토: '절반 이상 삭제'라고 썼는데 실제는 26%인 경우가 있었다)
+            return (f"🚨 오늘 검사한 {전체}건 중 {삭제수}건이 카페에서 삭제돼 있습니다 — "
+                    "발행한 글이 지워지고 있습니다"), True
+        return ("🚨 발행 검수: 글 읽는 방법이 막힘 — Claude가 고칠 일\n"
+                f"검사 {len(요약['결과들'])}건 · 못 읽은 글 {len(못읽음)}건(그중 {수}건이 같은 이유: "
+                f"{이유}). 작업자가 고칠 일이 아닙니다"), True
+    # ★GPT 검토: 절반이 안 돼도 한 카페가 통째로 막히면 조용해지면 안 된다.
+    #   가끔 한두 건 시간 초과는 다음 날 다시 읽으니 보내지 않는다(3건 이상 · 10% 이상일 때만).
+    if len(못읽음) >= 3 and len(못읽음) * 10 >= 전체:
+        return (f"⚠️ 발행 검수: 글 일부를 못 읽음 — Claude가 볼 일 ({전체}건 중 {len(못읽음)}건, "
+                f"그중 {수}건이 같은 이유: {이유})"), False
+    return "", False
+
+
+def 보고만들기(요약: dict, 시트url: str) -> str | None:
+    """보낼 보고문. 보낼 일이 없는 날은 None.
+
+    ★사장님 2026-10-21 "이상한 보고가 너무 많아 진짜" — 30일에 29통이 갔다.
+      보내는 날: ① 고칠 글이 새로 나온 날(새로 불합격 = 치명이 있는 글)
+                ② 글 읽는 방법이 막힌 날 · 삭제가 몰린 날(반드시)
+                ③ 결과를 시트에 못 쓴 날
+                ④ 판정이 되살아난 날(고친 뒤 첫 실행 — 요약 한 통)
+      안 보내는 날: 전부 통과 · 전부터 걸려 있던 글만 · 보류(사람이 볼 것)만 새로 나온 날.
+      결과는 날마다 시트 '발행 검수' 탭에 그대로 적힌다.
+    """
+    머리, _ = 보고머리(요약)
+    지난판정 = 요약.get("지난판정") or {}
+    되살 = 되살아난(요약)
+    되살url = {p.get("url") for p, _ in 되살}
+    새불 = [p for p, r in 요약["결과들"]
+            if r["판정"] == "불합격" and 지난판정.get(p.get("url")) != "불합격"
+            and p.get("url") not in 되살url]
+    # 시간이 모자라 다 못 본 날도 보낸다 — 그날 못 본 글은 조용히 빠진 것이다(GPT 검토)
+    # '키워드 분류'가 비어 건너뛴 글도 보낸다 — 시트에도 안 적혀 보고가 유일한 흔적이다(GPT 검토 2차).
+    #   (10/21 실측: 보이는 카외 탭 3개 909행 모두 분류가 차 있어 지금은 0건)
+    if not (머리 or 새불 or 되살 or 요약.get("시트오류") or 요약.get("시간초과")
+            or 요약.get("건너뜀")):
+        return None
+    본문 = 보고문(요약, 시트url)
+    return f"{머리}\n\n{본문}" if 머리 else 본문
 
 
 def 알림보내기(본문: str) -> bool:
@@ -529,7 +662,9 @@ def main() -> int:
     #   실패로 끝내 텔레그램을 울렸다. 그래서 ①고칠 글이 있는 정상 상태와 ②진짜 고장이
     #   같은 문구("검수가 실패했습니다 — 로그를 확인해 주세요")로 나갔고, 사장님은
     #   무슨 일인지 알 수 없었다. 매일 울리면 아무도 안 본다는 문제도 그대로였다.
-    #   → 결과는 **매일 보고**로 보낸다. 실패로 끝내는 건 **진짜 고장일 때만**이다.
+    #   → 결과는 보고로 보낸다. 실패로 끝내는 건 **진짜 고장일 때만**이다.
+    #   ★2026-10-21 사장님 "이상한 보고가 너무 많아 진짜" — 매일이 아니라 고칠 글이 새로
+    #     나온 날 · 읽는 방법이 막힌 날만 보낸다(보고만들기). 결과는 날마다 시트에 적힌다.
     try:
         sc = SheetsClient(os.environ["SPREADSHEET_ID"], os.environ["SERVICE_ACCOUNT_JSON"])
         요약 = 검수하기(sc, limit, 쓰기, 마감분)
@@ -541,32 +676,27 @@ def main() -> int:
             _알림표시남기기()     # ★보낸 게 확인됐을 때만. 아니면 워크플로가 대신 알린다.
         return 1
 
-    # 전멸은 자연스러운 결과가 아니다 — 링크가 낡았거나 네이버가 막고 있다.
-    전체 = len(요약["결과들"]) + len(요약["실패들"])
-    전멸 = bool(전체) and len(요약["실패들"]) / 전체 > 0.5
+    # 전멸은 자연스러운 결과가 아니다 — 글이 지워지고 있거나 읽는 방법이 막혔다.
+    _, 전멸 = 보고머리(요약)
     시트url = getattr(sc.spreadsheet, "url", "") or ""
     보냈나 = False
+    본문 = 보고만들기(요약, 시트url)
 
-    if 알림:
-        본문 = 보고문(요약, 시트url)
-        if 전멸:
-            # 못 읽은 것의 대부분이 404(삭제)면 발행 손실 문제, 아니면 수집이 막힌 문제.
-            삭제수 = sum(1 for p in 요약["실패들"]
-                        if "글 없음(404)" in (p.get("_실패") or ""))
-            if 삭제수 * 2 >= len(요약["실패들"]):
-                머리 = ("🚨 오늘 검사한 글의 절반 이상이 카페에서 삭제돼 있습니다 — "
-                        "발행한 글이 지워지고 있습니다")
-            else:
-                머리 = ("🚨 글을 못 읽은 것이 절반을 넘습니다 — "
-                        "네이버가 막고 있을 수 있습니다")
-            본문 = f"{머리}\n\n{본문}"
+    if 알림 and 본문 is None:
+        print("  보고 안 보냄 — 새로 걸린 글이 없음(결과는 시트 '발행 검수' 탭에 적음)")
+    elif 알림:
         보냈나 = 알림보내기(본문)
         print("  텔레그램 보고 보냄" if 보냈나 else "  ✗ 텔레그램 보고를 보내지 못했습니다")
-
-    # ★보고가 유일한 통로다. 그 통로가 막히면 조용히 초록불로 끝내지 않는다 —
-    #   실패로 끝내면 GitHub 이 실패 메일을 보내 두 번째 통로가 된다.
-    if 알림 and not 보냈나:
-        return 1
+        # ★보내야 할 보고가 못 나갔으면 조용히 초록불로 끝내지 않는다 —
+        #   실패로 끝내면 GitHub 이 실패 메일을 보내 두 번째 통로가 된다.
+        if not 보냈나:
+            return 1
+    elif 본문:
+        # 손 시험 실행용 — 시트 주소(열쇠값)는 기록에 남기지 않는다
+        print("  (GEOMSU_NOTIFY=0 — 보낼 보고가 있었지만 보내지 않음)\n"
+              + (보고만들기(요약, "") or ""))
+    else:
+        print("  (GEOMSU_NOTIFY=0 — 오늘은 보낼 보고도 없음)")
     if 전멸 or 요약["시트오류"]:
         if 보냈나:
             _알림표시남기기()

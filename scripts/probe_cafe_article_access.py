@@ -113,7 +113,10 @@ def 찔러보기(url: str) -> dict:
         r["판정"] = "카페번호 못 찾음"
         return r
 
-    a = 부르기(f"https://apis.naver.com/cafe-web/cafe-articleapi/v3/cafes/{gid}/articles/{art_id}", url)
+    # ★2026-10-21 v3 글 주소가 9/23부터 500(9999)만 돌려준다 → v2.1(balhaeng_geomsu 와 같은 주소)
+    tok = re.search(r"[?&]art=([^&#]+)", url)
+    a = 부르기(f"https://apis.naver.com/cafe-web/cafe-articleapi/v2.1/cafes/{gid}/articles/{art_id}"
+              f"?useCafeId=true&requestFrom=A" + (f"&art={tok.group(1)}" if tok else ""), url)
     r["글API"] = {"status": a.status_code}
     time.sleep(간격())
     if a.status_code == 200:

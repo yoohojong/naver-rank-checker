@@ -75,15 +75,26 @@ def char_count(prose_lines):
     return len(re.sub(r"\s", "", joined))
 
 
-def measure(title, body, keyword, stage=None, comments=None):
+def measure(title, body, keyword, stage=None, comments=None, 공백무시=False):
+    """공백무시=True 면 키워드를 띄어쓰기 없이 센다("두피 클렌징" = "두피클렌징").
+
+    ★2026-10-21 사장님 결정(발행 검수 판정 기준 ①): 발행 글 검수에서만 켠다.
+      시트 키워드 "두피 클렌징" + 글에 "두피클렌징" 6번 → 0번으로 세어 불합격시키던 오탐.
+      생성 원고 기준(위 '풀스트링 정확 일치')은 그대로 두려고 기본값은 끈다.
+    """
     prose, photos = strip_body_lines(body)
     chars = char_count(prose)
     lines = len(prose)
     longest = max((len(re.sub(r"\s", "", ln)) for ln in prose), default=0)
 
     title = title or ""
-    kw_title = title.count(keyword)
-    kw_body = "".join(prose).count(keyword)  # 본문만(제목 별도)
+    if 공백무시:
+        kw = re.sub(r"\s", "", keyword) or keyword
+        kw_title = re.sub(r"\s", "", title).count(kw)
+        kw_body = re.sub(r"\s", "", "".join(prose)).count(kw)
+    else:
+        kw_title = title.count(keyword)
+        kw_body = "".join(prose).count(keyword)  # 본문만(제목 별도)
     kw_total = kw_title + kw_body
 
     full = title + "\n" + "\n".join(prose)

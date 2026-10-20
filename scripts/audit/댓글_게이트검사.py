@@ -87,7 +87,8 @@ def split_blocks(text):
     return blocks
 
 
-def check(text, keyword, disease, product):
+def check(text, keyword, disease, product, 공백무시=False):
+    """공백무시=True 면 [3] 키워드 개수를 띄어쓰기 없이 센다(발행 검수 전용 — 원고_게이트검사.measure 와 같은 뜻)."""
     fails, warns = [], []
     blocks = split_blocks(text)
 
@@ -116,7 +117,13 @@ def check(text, keyword, disease, product):
             fails.append(f"[2] Tier1 고정문구 불일치 — {name}: `{phrase}` 가 그대로 들어있지 않음 (각색 금지)")
 
     # 3. 키워드 정확히 5회
-    kwc = joined.count(keyword)
+    if 공백무시:
+        # 댓글마다 따로 센다 — 합친 글에서 공백을 빼면 '…두피' + '클렌징…' 처럼
+        # 서로 다른 댓글의 끝과 앞이 붙어 한 번 더 세어진다(GPT 교차 검토 2026-10-21).
+        kw_n = re.sub(r"\s", "", keyword) or keyword
+        kwc = sum(re.sub(r"\s", "", b["text"]).count(kw_n) for b in blocks)
+    else:
+        kwc = joined.count(keyword)
     if kwc != 5:
         fails.append(f"[3] 키워드 '{keyword}' {kwc}회 — 정확히 5회여야 함 (A·B·ㄴD·F·ㄴ글쓴이)")
 

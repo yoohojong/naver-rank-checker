@@ -193,10 +193,13 @@ class CommentFetcher:
         #   부르면 회원 전용 카페에서 403 이 난다(2026-07-23 실측: 1,106개 중
         #   548개를 그렇게 놓쳤다). 댓글 받는 쪽은 붙이는데 여기만 빠져 있었다.
         #   그리고 회원 전용 카페가 곧 바이럴이 가장 많은 자리다.
+        # ★2026-10-21 — v3 글 주소가 9/23부터 500(9999)만 돌려줘 글쓴이를 하나도 못 얻었다
+        #   (실패하면 빈 값이라 조용했다). v2.1 은 nick·memberKey 가 그대로 온다(art 열쇠로
+        #   회원 전용 카페도 열림 — cantsb 실측). v3 '댓글' 주소는 지금도 정상이라 그대로 둔다.
         tok = _ART_TOKEN.search(url)
-        api = (f"https://apis.naver.com/cafe-web/cafe-articleapi/v3/cafes/{club}"
-               f"/articles/{m.group(2)}"
-               + (f"?art={tok.group(1)}" if tok else ""))
+        api = (f"https://apis.naver.com/cafe-web/cafe-articleapi/v2.1/cafes/{club}"
+               f"/articles/{m.group(2)}?useCafeId=true&requestFrom=A"
+               + (f"&art={tok.group(1)}" if tok else ""))
         try:
             r = self.s.get(api, headers={"Referer": url}, timeout=25)
             if r.status_code != 200:

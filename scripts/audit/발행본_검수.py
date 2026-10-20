@@ -144,10 +144,16 @@ def 로직검사(post, r) -> list[tuple[str, str, str]]:
     for name, (ok, msg) in (r.get("gate") or {}).items():
         if ok:
             continue
-        if name in ("글자수", "키워드", "줄"):
+        # ★2026-10-21 사장님 결정(판정 기준 ②·③):
+        #   · 줄 수(17~34)는 생성 원고 기준이다. 발행 글은 휴대폰용으로 짧게 끊어 올려
+        #     35~76줄이 보통이라, 그대로 대면 거의 다 걸렸다(판정 559건 중 '줄' 425건).
+        #     → 발행 글은 줄 수를 판정에서 빼고 글자수로 본다(측정 칸에는 계속 적는다).
+        #   · '사진 0장 = 주의'를 뺀다 — 7/23 원문 "사진 장수가 2개인지 … 상관없고".
+        #     ('사진 보이시죠' 문구가 있는데 사진이 없는 사고는 실수검사가 따로 잡는다.)
+        if name in ("줄", "사진"):
+            continue
+        if name in ("글자수", "키워드"):
             out.append((치명, 로직, f"{name}: {msg}"))
-        elif name == "사진":
-            out.append((주의, 로직, "본문에 사진이 없음"))
         elif name == "감정자음":
             # ★독립검증 M-1: '문맥 축에서 본다'고 주석만 달고 어디서도 안 봤다.
             #   ㅠ를 전부 지워도 지적이 0건이었다 — 정본 밴드(12~23)가 조용히 버려졌다.
@@ -157,7 +163,8 @@ def 로직검사(post, r) -> list[tuple[str, str, str]]:
 
     # 제목 (정본 #제목: 키워드 맨 앞 + 질문형 + 20자 안팎)
     if title and kw:
-        if not title.startswith(kw):
+        # ★2026-10-21 판정 기준 ①: 띄어쓰기 없이 맞춘다("두피클렌징 뭐부터…" + 키워드 "두피 클렌징")
+        if not re.sub(r"\s", "", title).startswith(re.sub(r"\s", "", kw)):
             out.append((치명, 로직, f"제목이 키워드로 시작하지 않음 — 정본은 맨 앞"))
         # 1차 관측: '이런가요/계신가요'의 '가요'가 빠져 131건(33%) 오탐이었다
         if not re.search(r"[?？]|가요|나요|까요|는지|계세요|있을까|어때|괜찮", title):
@@ -468,7 +475,9 @@ def 검수(post: dict) -> dict:
         findings.append((주의, 실수, "제목이 비어 있음 — 수집 누락 의심"))
 
     # 게이트로 숫자 측정 (키워드가 비면 count 가 쓰레기값이 되므로 대체값)
-    r = 원고게이트.measure(title, body, kw or "\x00없음\x00", stage=(stage if kw else None))
+    # 키워드는 띄어쓰기 없이 센다(2026-10-21 판정 기준 ① — 생성 원고 쪽은 그대로 정확 일치)
+    r = 원고게이트.measure(title, body, kw or "\x00없음\x00", stage=(stage if kw else None),
+                         공백무시=True)
     # ★독립검증 T-2: 시트에서 오는 값은 문자열이 기본이라 photos='2' 면 게이트 안에서
     #   비교하다 죽었다(배치 전체 중단). 숫자로 정규화하고, 숫자가 아니면 본문에서 센다.
     photos = post.get("photos")
@@ -502,7 +511,8 @@ def 검수(post: dict) -> dict:
         labeled = 댓글_라벨복원(comments, author if 글쓴이확인 else "")
         post["_댓글_라벨복원"] = labeled
         fails, warns = 댓글게이트.check(
-            labeled, kw, post.get("disease") or kw, post.get("product") or "샴푸")
+            labeled, kw, post.get("disease") or kw, post.get("product") or "샴푸",
+            공백무시=True)
         구조검사 = ("[1]", "[8]", "[9]", "[5]")
         for f in fails:
             # [4]는 생성 시점 검사다([제품명] 자리표시가 1~2회 있어야 한다는 뜻).

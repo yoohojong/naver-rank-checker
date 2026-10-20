@@ -155,7 +155,8 @@ def _가짜sc(탭들, 검수탭=None):
     def worksheet(이름):
         if 검수탭 is not None and 이름 == G.탭이름:
             return 검수탭
-        raise KeyError(이름)
+        import gspread       # 진짜 시트가 '탭 없음'일 때 내는 오류와 같게(2026-10-21)
+        raise gspread.exceptions.WorksheetNotFound(이름)
     return types.SimpleNamespace(spreadsheet=types.SimpleNamespace(
         worksheets=lambda exclude_hidden=True: 탭들, worksheet=worksheet))
 
