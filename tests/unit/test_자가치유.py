@@ -606,6 +606,34 @@ def test_GOYU_NOTIFY_OFF_면_안_보낸다(H, monkeypatch):
     assert H.텔레그램("시험") is False
 
 
+def _pytest_차단_걷기(H, monkeypatch):
+    """pytest 차단을 잠깐 걷고 보내는 자리(urlopen)를 가짜로 — 스위치 하나만 재기 위해.
+    (GPT 검토 10-21: 스위치를 지워도 pytest 차단에 걸려 위 시험이 그대로 통과했다.)"""
+    import sys as _s
+    부른것 = []
+    monkeypatch.delitem(_s.modules, "pytest", raising=False)
+    monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "가짜")
+    monkeypatch.setenv("TELEGRAM_CHAT_ID", "가짜")
+    monkeypatch.setattr(H.urllib.request, "urlopen", lambda *a, **k: 부른것.append(a) or None)
+    return 부른것
+
+
+def test_꺼짐_스위치_하나만으로_막힌다(H, monkeypatch):
+    부른것 = _pytest_차단_걷기(H, monkeypatch)
+    monkeypatch.setenv("GOYU_NOTIFY_OFF", "1")
+    H.텔레그램("시험")
+    assert 부른것 == [], "GOYU_NOTIFY_OFF=1 인데 보내는 자리까지 갔다"
+
+
+def test_꺼짐_스위치가_없으면_보내는_자리까지_간다(H, monkeypatch):
+    """위 시험이 '아무것도 안 보내는 가짜' 때문에 통과한 것이 아님을 보인다."""
+    부른것 = _pytest_차단_걷기(H, monkeypatch)
+    monkeypatch.delenv("GOYU_NOTIFY_OFF", raising=False)
+    H.텔레그램("시험")
+    assert len(부른것) == 1
+
+
 def test_조회_실패는_실패아님이_아니라_모름이다(H, monkeypatch):
     """팀 사본(2026-08-24)과 같게 — 못 본 것을 '평소 성공'으로 바꿔 말하지 않는다."""
     monkeypatch.setattr(H, "_api", lambda 경로, 방법="GET", **kw: None)

@@ -40,7 +40,9 @@ jobs:
   slot-rank-audit:
     runs-on: ubuntu-latest
     timeout-minutes: 40
-    continue-on-error: true   # 이 job 실패가 순위체킹·아카이빙에 영향 없음
+    # ★job 단위 continue-on-error 를 뺐다(2026-10-21 GPT 검토). 이 워크플로는 job 이 하나라
+    #   그 줄은 순위체킹을 지켜 주지 않고 **실패를 '성공'으로 바꿔 적기만** 했다 — 그래서
+    #   자가치유의 연속 실패 셈이 늘 1 이었고, 아침 건강 보고(실행 결과를 읽음)에도 안 떴다.
 
     steps:
       - name: Checkout
