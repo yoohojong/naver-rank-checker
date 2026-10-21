@@ -34,6 +34,9 @@ def H(monkeypatch):
     monkeypatch.setenv("WORKFLOW_FILE", "rank-check.yml")
     monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "t")
     monkeypatch.setenv("TELEGRAM_CHAT_ID", "c")
+    # CI 안에서 돌면 이 값들이 진짜로 들어 있다 — 검사가 그 값에 따라 갈리지 않게 비운다.
+    monkeypatch.delenv("GITHUB_EVENT_NAME", raising=False)
+    monkeypatch.delenv("GITHUB_REF_NAME", raising=False)
     return mod
 
 
@@ -132,13 +135,16 @@ class Test전체_흐름:
         H.main(["--이름", "상위노출 순위검사", "--결과", "success"])
         assert 보낸것 == [], "하루 수십 통이면 아무도 안 본다"
 
-    def test_실패_뒤_성공이면_복구를_알리고_이슈를_닫는다(self, H, monkeypatch):
+    def test_실패_뒤_성공이면_문자_대신_아침보고로_넘기고_이슈를_닫는다(self, H, monkeypatch, capsys):
+        """★2026-10-21 사장님 "이상한 보고가 너무 많아 진짜" — '복구됐습니다' 문자는 보내지 않고
+        팀 저장소의 아침 건강 보고(system_health)가 한 줄로 싣는다."""
         보낸것 = self._스파이(H, monkeypatch)
         닫힌것 = []
         monkeypatch.setattr(H, "_api", lambda *a, **k: _runs("failure", "failure"))
         monkeypatch.setattr(H, "이슈_닫기", lambda *a: 닫힌것.append(a))
         H.main(["--이름", "상위노출 순위검사", "--결과", "success"])
-        assert len(보낸것) == 1 and "복구" in 보낸것[0]
+        assert 보낸것 == [], "복구 문자는 아침 건강 보고로 옮겼다"
+        assert "아침 건강 보고" in capsys.readouterr().out
         assert 닫힌것, "나은 이슈를 계속 띄워두면 아무도 안 본다"
 
     def test_한계를_아예_못_알아내면_알리지_않는다(self, H, monkeypatch):
@@ -214,7 +220,7 @@ class Test전체_흐름:
     def test_임계_넘으면_이슈를_연다(self, H, monkeypatch):
         보낸것 = self._스파이(H, monkeypatch)
         연것 = []
-        monkeypatch.setattr(H, "연속실패_횟수", lambda *a: 3)
+        monkeypatch.setattr(H, "연속실패_재기", lambda *a, **k: {"연속": 3, "이상": False, "직전실패시각": ""})
         monkeypatch.setattr(H, "실패로그_원인",
                             lambda *a: ("우리 코드 문제", "고쳐야 합니다", "AttributeError"))
         monkeypatch.setattr(H, "이슈_열기",
@@ -226,7 +232,7 @@ class Test전체_흐름:
     def test_임계_전이면_이슈를_안_연다(self, H, monkeypatch):
         self._스파이(H, monkeypatch)
         연것 = []
-        monkeypatch.setattr(H, "연속실패_횟수", lambda *a: 1)
+        monkeypatch.setattr(H, "연속실패_재기", lambda *a, **k: {"연속": 1, "이상": False, "직전실패시각": ""})
         monkeypatch.setattr(H, "실패로그_원인", lambda *a: ("상대 서버", "곧 풉니다", ""))
         monkeypatch.setattr(H, "이슈_열기", lambda *a: 연것.append(a) or "")
         H.main(["--이름", "상위노출 순위검사", "--결과", "failure"])
@@ -360,9 +366,17 @@ class Test알림_폭주_방지:
     def test_처음_세_번은_매번_알린다(self, H):
         assert all(H.알릴차례인가(n) for n in (1, 2, 3))
 
-    def test_그_뒤로는_띄엄띄엄(self, H):
-        보냄 = [n for n in range(4, 40) if H.알릴차례인가(n)]
-        assert 보냄 == [12, 24, 36], f"너무 자주 보낸다: {보냄}"
+    def test_그_뒤로는_하루_한_통(self, H):
+        """★2026-10-21: '12의 배수'만 보내면 연속 수가 31에서 멈췄을 때 영영 안 보냈다.
+        네 번째부터는 횟수가 아니라 날짜로 — 그날(한국 시각) 첫 실패에서만 보낸다."""
+        from datetime import datetime, timezone
+        지금 = datetime(2026, 10, 21, 1, 0, tzinfo=timezone.utc)        # KST 10/21 10:00
+        어제 = "2026-10-20T13:00:00Z"                                   # KST 10/20 22:00
+        오늘아침 = "2026-10-20T22:30:00Z"                               # KST 10/21 07:30
+        assert H.알릴차례인가(31, 어제, 지금) is True, "31회째도 하루 한 번은 알려야 한다"
+        assert H.알릴차례인가(145, 어제, 지금) is True
+        assert H.알릴차례인가(32, 오늘아침, 지금) is False, "같은 날 두 번째는 안 보낸다"
+        assert H.알릴차례인가(5, 오늘아침, 지금) is False
 
 
 class Test시간한계를_모든_워크플로에서_알아내는가:
@@ -403,5 +417,196 @@ def test_두_저장소_사본이_안_갈라졌다():
     assert m, "버전 표시가 사라졌다"
     저쪽 = pathlib.Path(HERE, "..", "..", "team project", "cafe-external", "자가치유.py")
     if 저쪽.exists():
-        assert m.group(1) in 저쪽.read_text(encoding="utf-8"), \
+        저쪽글 = 저쪽.read_text(encoding="utf-8")
+        assert m.group(1) in 저쪽글, \
             "두 저장소의 자가치유.py 버전이 다르다 — 한쪽만 고쳤다"
+        # ★2026-10-21: 버전 글자만 대조하던 구멍. 두 사본이 같은 '2026-10-21.1' 을 달고도
+        #   직전 실패 시각(시작 vs 끝)·복구 알림 길·시간 한계 읽는 순서가 달랐다.
+        #   **내용 전체**를 견준다(read_text 가 줄 끝 글자는 맞춰 준다).
+        assert 한쪽 == 저쪽글, \
+            "두 저장소의 자가치유.py 내용이 다르다 — 같은 버전 표시를 달고 갈라졌다"
+
+
+# ── 연속 실패 셈의 두 구멍 (2026-10-21 · 진단 `4_실패3곳_진단.md`) ───────────────
+#
+# 실측(margin-guard 로그 원문): 9/9 첫 실패가 '11회 연속', 12를 건너뛰고 13, 9/15 21,
+#   10/20 '31회 연속 — 알림은 띄엄띄엄'. 정기 144회가 실패하는 동안 알림이 한 통도 안 갔다.
+#   ① 최근 실행을 30개 한 장만 물어서 31(이번 것 + 30)에서 멈췄다.
+#   ② 알림은 '1·2·3회째와 12의 배수'에만 — 31은 둘 다 아니라 영영 차례가 안 왔다.
+#   ③ 알림 단계는 정기 실행에서만 도는데, 셈에는 코드 올림(push) 실행까지 섞였다.
+
+def _쪽(결론들, 시작id=100, 시각="2026-10-20T13:00:00Z"):
+    return [{"id": 시작id + i, "conclusion": c, "run_started_at": 시각}
+            for i, c in enumerate(결론들)]
+
+
+def _쪽나눠주는_api(전부, 본경로=None, 쪽크기=100):
+    """GitHub 처럼 page·per_page 로 잘라 준다. 물은 경로는 본경로에 쌓는다."""
+    import re as _re
+
+    def api(경로, 방법="GET", 본문=None, raw=False):
+        if 본경로 is not None:
+            본경로.append(경로)
+        m = _re.search(r"[?&]page=(\d+)", 경로)
+        쪽 = int(m.group(1)) if m else 1
+        m2 = _re.search(r"[?&]per_page=(\d+)", 경로)
+        크기 = int(m2.group(1)) if m2 else 쪽크기
+        return {"workflow_runs": 전부[(쪽 - 1) * 크기: 쪽 * 크기]}
+    return api
+
+
+class Test긴_연속실패:
+    def test_30개가_넘어도_실제_연속_수를_센다(self, H, monkeypatch):
+        """45회 실패 뒤 성공 — 옛 코드는 31 에서 멈췄다."""
+        monkeypatch.setattr(H, "_api", _쪽나눠주는_api(_쪽(["failure"] * 45 + ["success"])))
+        assert H.연속실패_횟수("r", "w", "999", "failure") == 46
+
+    def test_한_쪽을_넘기는_연속도_센다(self, H, monkeypatch):
+        monkeypatch.setattr(H, "_api", _쪽나눠주는_api(_쪽(["failure"] * 150 + ["success"])))
+        assert H.연속실패_횟수("r", "w", "999", "failure") == 151
+
+    def test_다_못_세면_이상이라고_표시한다(self, H, monkeypatch):
+        """끝까지 성공을 못 만나면 센 만큼이 '하한'이다 — 정확한 수인 척하지 않는다."""
+        monkeypatch.setattr(H, "_api", _쪽나눠주는_api(_쪽(["failure"] * 900)))
+        r = H.연속실패_재기("r", "w", "999", "failure")
+        assert r["이상"] is True and r["연속"] > 30
+        s = H.문장_만들기("구좌순위 화면대조", "failure", r["연속"], "우리 코드 문제", "",
+                      "", "", "", 이상=r["이상"])
+        assert f"{r['연속']}회 이상" in s
+
+    def test_30개_딱_맞게_끝나면_정확한_수다(self, H, monkeypatch):
+        monkeypatch.setattr(H, "_api", _쪽나눠주는_api(_쪽(["failure"] * 30)))
+        r = H.연속실패_재기("r", "w", "999", "failure")
+        assert r == {**r, "연속": 31, "이상": False}
+
+    def test_정기_실행이면_정기_실행만_센다(self, H, monkeypatch):
+        """★③: push 실행 실패가 섞여 9/9 첫 정기 실패가 '11회 연속'으로 보고됐다."""
+        본경로 = []
+        monkeypatch.setenv("GITHUB_EVENT_NAME", "schedule")
+        monkeypatch.setattr(H, "_api", _쪽나눠주는_api(_쪽(["success"]), 본경로))
+        H.연속실패_횟수("r", "w", "999", "failure")
+        assert 본경로 and all("event=schedule" in p for p in 본경로), 본경로
+        본경로.clear()
+        H.직전이_실패였나("r", "w", "999")
+        assert 본경로 and all("event=schedule" in p for p in 본경로), 본경로
+
+    def test_직전_실패_시각을_돌려준다(self, H, monkeypatch):
+        monkeypatch.setattr(H, "_api", _쪽나눠주는_api(
+            _쪽(["failure"] * 3 + ["success"], 시각="2026-10-19T01:00:00Z")))
+        assert H.연속실패_재기("r", "w", "999", "failure")["직전실패시각"] == "2026-10-19T01:00:00Z"
+
+
+class Test긴_연속실패_전체흐름:
+    def _스파이(self, H, monkeypatch):
+        보낸것 = []
+        monkeypatch.setattr(H, "텔레그램", lambda s: 보낸것.append(s) or True)
+        monkeypatch.setattr(H, "이슈_열기", lambda *a: "http://issue")
+        monkeypatch.setattr(H, "실패로그_원인", lambda *a: ("우리 코드 문제", "고쳐야 합니다", ""))
+        return 보낸것
+
+    def test_31회째_정기_실패도_그날_첫_실패면_알린다(self, H, monkeypatch, capsys):
+        보낸것 = self._스파이(H, monkeypatch)
+        monkeypatch.setenv("GITHUB_EVENT_NAME", "schedule")
+        monkeypatch.setattr(H, "_api", _쪽나눠주는_api(
+            _쪽(["failure"] * 30, 시각="2020-01-01T00:00:00Z")))
+        H.main(["--이름", "상위노출 순위검사", "--결과", "failure"])
+        assert len(보낸것) == 1 and "31회 연속" in 보낸것[0], 보낸것
+        assert "31회" in capsys.readouterr().out, "로그에 연속 수 줄이 있어야 다음 회차에 확인한다"
+
+    def test_검사만_실패하는_작업은_문자를_안_보낸다(self, H, monkeypatch, capsys):
+        """★2026-10-21 사장님 "이상한 보고가 너무 많아 진짜" — 검사만 실패하고 수집·보고는
+        그대로 도는 곳은 Claude 가 고칠 일이라, 문자 대신 아침 건강 보고에 한 줄."""
+        보낸것 = self._스파이(H, monkeypatch)
+        monkeypatch.setenv("WORKFLOW_FILE", "slot-rank-audit.yml")
+        monkeypatch.setenv("GITHUB_EVENT_NAME", "schedule")
+        monkeypatch.setattr(H, "_api", _쪽나눠주는_api(_쪽(["success"])))
+        H.main(["--이름", "구좌순위 화면대조", "--결과", "failure"])
+        assert 보낸것 == []
+        assert "아침 건강 보고" in capsys.readouterr().out
+
+    def test_검사만_실패하는_작업은_시간초과도_문자를_안_보낸다(self, H, monkeypatch):
+        보낸것 = self._스파이(H, monkeypatch)
+        monkeypatch.setenv("WORKFLOW_FILE", "slot-rank-audit.yml")
+        monkeypatch.setenv("TIMEOUT_MIN", "10")
+        monkeypatch.setattr(H, "_경과분", lambda *a: 99.0)
+        H.main(["--이름", "구좌순위 화면대조", "--결과", "cancelled"])
+        assert 보낸것 == []
+
+    def test_수집_실패는_그대로_바로_보낸다(self, H, monkeypatch):
+        보낸것 = self._스파이(H, monkeypatch)
+        monkeypatch.setenv("WORKFLOW_FILE", "rank-check.yml")
+        monkeypatch.setattr(H, "_api", _쪽나눠주는_api(_쪽(["success"])))
+        H.main(["--이름", "상위노출 순위검사", "--결과", "failure"])
+        assert len(보낸것) == 1
+
+
+def test_아침보고로_옮긴_작업_목록():
+    """판정표(2_판정표.md) '옮김' 칸 그대로. 수집·자료가 안 쌓이는 곳은 여기 넣지 않는다."""
+    H = _load()
+    assert set(H.아침보고로_옮김) == {
+        "utm-guard.yml", "ext-guard.yml", "margin-guard.yml", "slot-rank-audit.yml",
+        "cafe-folder-guard.yml", "cafe-weekly-audit.yml", "sheet-slim-guard.yml"}
+    for 바로 in ("rank-check.yml", "clarity-daily.yml", "competitor-comments.yml",
+                "obsidian-autolink.yml"):
+        assert 바로 not in H.아침보고로_옮김
+
+
+def test_옮긴_작업의_이름이_워크플로에_적힌_이름과_같다():
+    """아침 보고가 이 이름으로 줄을 쓴다 — 워크플로 쪽 이름과 갈라지면 사장님은 두 이름을 보신다."""
+    import re
+    H = _load()
+    p = 저장소루트 / ".github" / "workflows" / "slot-rank-audit.yml"
+    m = re.search(r'자가치유\.py --이름 "([^"]+)"', p.read_text(encoding="utf-8"))
+    assert m and m.group(1) == H.아침보고로_옮김["slot-rank-audit.yml"]
+
+
+# ── GPT 교차 검토(10-21) 가 잡은 구멍 ─────────────────────────────────────────
+def test_자정_직전에_정하고_자정_뒤에_끝난_회차_뒤로도_그날_첫_실패는_알린다(H, monkeypatch):
+    """★GPT 2차 검토(10-21): 끝난 시각으로 보면 23:59:50 에 '어제 이미 알림 → 안 보냄'으로
+    정하고 00:00:10 에 끝난 회차 뒤로, 그날 모든 회차가 '오늘 이미 실패가 있었다'로 보고
+    하루가 통째로 조용했다. 시작 시각으로 본다 — 자정을 걸친 날 한 통 더 가는 것은 받아들인다."""
+    from datetime import datetime, timezone
+    monkeypatch.setattr(H, "_api", _쪽나눠주는_api([
+        {"id": 1, "conclusion": "failure", "run_started_at": "2026-10-20T14:59:00Z",
+         "updated_at": "2026-10-20T15:00:10Z"}] + _쪽(["failure"] * 5, 시작id=10)))
+    셈 = H.연속실패_재기("r", "w", "999", "failure")
+    assert 셈["직전실패시각"] == "2026-10-20T14:59:00Z"
+    지금 = datetime(2026, 10, 20, 15, 5, tzinfo=timezone.utc)          # KST 10/21 00:05
+    assert H.알릴차례인가(셈["연속"], 셈["직전실패시각"], 지금) is True
+
+
+
+def test_오늘_시작한_실패가_앞에_있으면_같은_날_두_번째는_안_보낸다(H, monkeypatch):
+    from datetime import datetime, timezone
+    monkeypatch.setattr(H, "_api", _쪽나눠주는_api([
+        {"id": 1, "conclusion": "failure", "run_started_at": "2026-10-20T15:01:00Z",
+         "updated_at": "2026-10-20T15:02:00Z"}] + _쪽(["failure"] * 5, 시작id=10)))
+    셈 = H.연속실패_재기("r", "w", "999", "failure")
+    지금 = datetime(2026, 10, 20, 15, 6, tzinfo=timezone.utc)          # KST 10/21 00:06
+    assert H.알릴차례인가(셈["연속"], 셈["직전실패시각"], 지금) is False
+
+
+def test_첫_쪽을_못_읽으면_못_셌다고_말한다(H, monkeypatch):
+    monkeypatch.setattr(H, "_api", lambda *a, **k: None)
+    셈 = H.연속실패_재기("r", "w", "999", "failure")
+    assert 셈["연속"] == 1 and 셈["못셈"] is True
+    s = H.문장_만들기("상위노출 순위검사", "failure", 1, "알 수 없음", "", "", "", "", 못셈=True)
+    assert "못 셌습니다" in s
+
+
+def test_직전_실패_시각을_모르면_보낸다(H):
+    """횟수 규칙으로 떨어지면 셈이 상한에 걸릴 때 또 영영 조용해진다."""
+    assert H.알릴차례인가(301, "") is True
+    assert H.알릴차례인가(300, "알수없는값") is True
+
+
+def test_GOYU_NOTIFY_OFF_면_안_보낸다(H, monkeypatch):
+    """이 사본에만 차단 스위치가 없었다(2026-10-21) — 손으로 돌려 보면 진짜 문자가 나갔다."""
+    monkeypatch.setenv("GOYU_NOTIFY_OFF", "1")
+    assert H.텔레그램("시험") is False
+
+
+def test_조회_실패는_실패아님이_아니라_모름이다(H, monkeypatch):
+    """팀 사본(2026-08-24)과 같게 — 못 본 것을 '평소 성공'으로 바꿔 말하지 않는다."""
+    monkeypatch.setattr(H, "_api", lambda 경로, 방법="GET", **kw: None)
+    assert H.직전이_실패였나("o/r", "w.yml", "1") is None
