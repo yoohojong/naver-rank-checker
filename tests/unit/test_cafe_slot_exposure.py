@@ -199,6 +199,7 @@ def test_archive_migration_widens_grid_before_writing_6col_header():
     from src.archive import _get_or_create_archive_ws, ARCHIVE_HEADER
     ws = _FakeWs5col()
     _get_or_create_archive_ws(_FakeClient(ws), "상위노출_이력")
-    assert ws.added_cols == [1]           # 5→6, add_cols(1) 먼저 호출
-    assert ws.col_count == 6
-    assert ws.header == ARCHIVE_HEADER     # 그 다음 6열 헤더 기록
+    # 5열 → 헤더 폭(2026-10-21 링크 추가로 7열)까지 add_cols 먼저 호출
+    assert ws.added_cols == [len(ARCHIVE_HEADER) - 5]
+    assert ws.col_count == len(ARCHIVE_HEADER)
+    assert ws.header == ARCHIVE_HEADER     # 그 다음 헤더 기록

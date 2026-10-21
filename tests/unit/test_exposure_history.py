@@ -50,3 +50,40 @@ def test_cohort_evolution_tracks_publish_cohort():
 
 def test_cohort_evolution_empty_when_no_archive():
     assert cohort_evolution([], {"tabs": {}}, n_cohorts=3) == []
+
+class _WsVals:
+    def __init__(self, vals):
+        self._vals = vals
+
+    def get_all_values(self):
+        return [list(r) for r in self._vals]
+
+
+class _SS:
+    def __init__(self, ws):
+        self._ws = ws
+
+    def worksheet(self, title):
+        return self._ws
+
+
+class _Client:
+    def __init__(self, ws):
+        self.spreadsheet = _SS(_WsVals(ws))
+
+
+def test_read_archive_rows_reads_7col_tab_with_old_6col_rows():
+    """2026-10-21 링크(7번째 칸) 추가 뒤: 7칸 헤더 + 옛 6칸 줄 + 새 7칸 줄이 섞여도 같은 5칸 튜플."""
+    from src.archive import ARCHIVE_HEADER
+    from src.exposure_history import read_archive_rows
+    vals = [
+        list(ARCHIVE_HEADER),
+        ["2026-10-20", "샴푸 카외", "비듬샴푸", "AB", "5", "1"],                         # 옛 줄
+        ["2026-10-21", "샴푸 카외", "비듬샴푸", "AB", "5", "1", "https://cafe.naver.com/a/1"],
+    ]
+    rows = read_archive_rows(_Client(vals))
+    assert rows == [
+        ("2026-10-20", "샴푸 카외", "비듬샴푸", "AB", "1"),
+        ("2026-10-21", "샴푸 카외", "비듬샴푸", "AB", "1"),
+    ]
+    assert list(daily_trend(rows).values())[-1]["합계"] == 1

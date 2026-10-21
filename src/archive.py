@@ -17,15 +17,18 @@ from __future__ import annotations
 
 import gspread
 
-from src.sheets import HEADER_KEYWORD
+from src.sheets import HEADER_KEYWORD, HEADER_LINK
 from src.snapshot_diff import field_value as _default_field_value
 from src.snapshot_diff import k_base_of as _default_k_base_of
 from src.snapshot_diff import rank_of as _default_rank_of
 from src.transitions import cafe_slot_rank_value
 
-# 아카이브 탭 스키마 (고정). 날짜/탭/키워드/노출영역/통합순위/카페구좌순위.
+# 아카이브 탭 스키마 (고정). 날짜/탭/키워드/노출영역/통합순위/카페구좌순위/링크.
 # 카페구좌순위 = 사장님 2026-07-28: 구좌 4위 이하 제외한 '진짜 상위노출' 판정용(트렌드·코호트 정합).
-ARCHIVE_HEADER = ["날짜", "탭", "키워드", "노출영역", "통합순위", "카페구좌순위"]
+# 링크 = 2026-10-21: 그 줄이 판정한 우리 카페 글 주소(시트 '링크' 칸). 같은 키워드라도 글이 바뀌면
+#   어느 글이 노출됐는지 남아야 카페별 '글 하나당 노출일'을 셀 수 있다. 옛 줄(6칸)은 이 칸이 빈칸.
+#   ★새 칸은 반드시 맨 뒤에 붙인다 — 자리(열 번호)로 읽는 바깥 코드가 앞 6칸을 그대로 쓴다.
+ARCHIVE_HEADER = ["날짜", "탭", "키워드", "노출영역", "통합순위", "카페구좌순위", "링크"]
 ARCHIVE_TAB_NAME = "상위노출_이력"
 
 _H_CAFE_SLOT = "노출여부(카페구좌순위)"
@@ -36,12 +39,18 @@ def _default_cafe_slot_of(row):
     return cafe_slot_rank_value(_default_field_value(row, _H_CAFE_SLOT))
 
 
+def _default_link_of(row) -> str:
+    """행 → 그 줄의 링크(시트 '링크' 칸 값 그대로, 앞뒤 공백 제거). 없으면 ""."""
+    return str(row.get(HEADER_LINK, "") or "").strip()
+
+
 def _ensure_archive_cols(ws) -> None:
     """헤더 열 수만큼 그리드 폭을 먼저 확보한다 (2026-07-28 독립검토 HIGH).
 
     gspread values.update 는 그리드 밖 열에 400 'exceeds grid limits' 를 반환하고 열을
     자동 확장하지 않는다. 6열 헤더(카페구좌순위 추가)를 5열 그리드(기존 라이브 탭)에 쓰면
     조용히 실패 → 아카이빙 영구 중단. 헤더를 쓰기 전에 add_cols 로 넓힌다.
+    (2026-10-21 링크 추가로 7열 — 6열 라이브 탭은 여기서 1열 넓어진다.)
     (sheets.py 의 stale-formula 헤더 확장과 동일 가드.)
     col_count 를 못 읽으면(테스트 fake 등) 건드리지 않는다.
     """
@@ -60,10 +69,11 @@ def build_archive_rows(
     k_base_of=_default_k_base_of,
     rank_of=_default_rank_of,
     cafe_slot_of=_default_cafe_slot_of,
+    link_of=_default_link_of,
 ) -> list[list]:
     """탭별 행 dict → 시트 append 용 2D 리스트(헤더 제외) · 순수함수.
 
-    각 탭·각 행마다 [date_str, tab_name, 키워드, 노출영역(k_base), 통합순위, 카페구좌순위] 생성.
+    각 탭·각 행마다 [date_str, tab_name, 키워드, 노출영역(k_base), 통합순위, 카페구좌순위, 링크] 생성.
 
     Args:
         tabs: {탭이름: [row_dict, ...]}. row_dict = 헤더명 키(백업/시트 read 형식 동일).
@@ -72,11 +82,12 @@ def build_archive_rows(
         rank_of: 행 → 통합순위 int/None 추출 함수(기본 snapshot_diff).
         cafe_slot_of: 행 → 카페구좌순위 int/None 추출 함수(사장님 2026-07-28: 구좌 4위
             이하 제외 판정용. 트렌드·코호트가 헤드라인과 같은 정의를 쓰게 함).
+        link_of: 행 → 그 줄이 판정한 글 주소(기본 = 시트 '링크' 칸). 2026-10-21 추가.
 
     Returns:
-        2D 리스트. 각 행 = [date_str, tab_name, keyword, area, rank_str, slot_str].
+        2D 리스트. 각 행 = [date_str, tab_name, keyword, area, rank_str, slot_str, link].
         - 키워드 공백/빈칸 행은 스킵(작업자 미기입 행 = 아카이브 의미 없음).
-        - rank/slot None → 빈 문자열 "".
+        - rank/slot None → 빈 문자열 "". 링크 없음 → "".
     """
     out: list[list] = []
     for tab_name, rows in (tabs or {}).items():
@@ -89,7 +100,8 @@ def build_archive_rows(
             rank_str = "" if rank is None else str(rank)
             slot = cafe_slot_of(row)
             slot_str = "" if slot is None else str(slot)
-            out.append([date_str, tab_name, keyword, area, rank_str, slot_str])
+            link = str(link_of(row) or "").strip()
+            out.append([date_str, tab_name, keyword, area, rank_str, slot_str, link])
     return out
 
 
@@ -108,9 +120,10 @@ def _get_or_create_archive_ws(client, tab_name: str):
             _ensure_archive_cols(ws)
             ws.update("A1", [ARCHIVE_HEADER], value_input_option="RAW")
         elif existing != ARCHIVE_HEADER:
-            # 스키마 확장(2026-07-28 카페구좌순위 추가) 시 헤더행만 갱신. 데이터행은 보존 —
-            # 옛 행의 새 열은 빈칸(= 구좌 미상 → 노출 판정 자격 있음으로 처리, 과거 집계 유지).
-            # ★그리드가 좁으면(5열) 먼저 넓힌다 — 안 하면 A1:F1 write 가 400 으로 조용히 실패.
+            # 스키마 확장(2026-07-28 카페구좌순위 · 2026-10-21 링크 추가) 시 헤더행만 갱신.
+            # 데이터행은 보존 — 옛 행의 새 열은 빈칸(구좌 미상 → 노출 판정 자격 있음으로 처리,
+            # 링크 미상 → 글 단위 집계에서 빠짐). 과거 집계 유지.
+            # ★그리드가 좁으면(5·6열) 먼저 넓힌다 — 안 하면 A1:G1 write 가 400 으로 조용히 실패.
             _ensure_archive_cols(ws)
             ws.update("A1", [ARCHIVE_HEADER], value_input_option="RAW")
         return ws, False

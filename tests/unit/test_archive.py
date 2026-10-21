@@ -18,13 +18,16 @@ from src.archive import (
 )
 
 
-def _row(kw, area, l="", m=""):
-    return {
+def _row(kw, area, l="", m="", link=None):
+    row = {
         "키워드": kw,
         "노출영역": area,
         "노출여부(통합탭 순위)": l,
         "노출여부(카페구좌순위)": m,
     }
+    if link is not None:
+        row["링크"] = link
+    return row
 
 
 # ----- build_archive_rows -----
@@ -43,11 +46,71 @@ def test_build_archive_rows_multiple_tabs_and_states():
     rows = build_archive_rows(tabs, "2026-07-02")
 
     assert rows == [
-        ["2026-07-02", "샴푸 카외", "비듬샴푸", "AB", "5", "2"],
-        ["2026-07-02", "샴푸 카외", "탈모샴푸", "누락", "", ""],
-        ["2026-07-02", "토닉 카외", "두피토닉", "삭제", "", ""],
-        ["2026-07-02", "토닉 카외", "모발토닉", "미노출", "", ""],
+        ["2026-07-02", "샴푸 카외", "비듬샴푸", "AB", "5", "2", ""],
+        ["2026-07-02", "샴푸 카외", "탈모샴푸", "누락", "", "", ""],
+        ["2026-07-02", "토닉 카외", "두피토닉", "삭제", "", "", ""],
+        ["2026-07-02", "토닉 카외", "모발토닉", "미노출", "", "", ""],
     ]
+
+
+# ----- 7번째 칸 = 링크 (2026-10-21) -----
+
+def test_archive_header_link_is_7th_and_first_six_unchanged():
+    """링크는 맨 뒤(7번째)에만 붙는다 — 자리로 읽는 바깥 코드(r[:6] 등)가 안 깨지게."""
+    assert ARCHIVE_HEADER == ["날짜", "탭", "키워드", "노출영역", "통합순위", "카페구좌순위", "링크"]
+    assert ARCHIVE_HEADER.index("링크") == 6
+
+
+def test_build_archive_rows_writes_row_link_as_7th():
+    link = "https://cafe.naver.com/dandruffcafe/12345"
+    tabs = {"샴푸 카외": [_row("비듬샴푸", "AB (6/19 13:00~)", "5", "1", link=link)]}
+    rows = build_archive_rows(tabs, "2026-10-21")
+    assert rows == [["2026-10-21", "샴푸 카외", "비듬샴푸", "AB", "5", "1", link]]
+    assert len(rows[0]) == len(ARCHIVE_HEADER) == 7
+
+
+def test_build_archive_rows_link_blank_or_missing_becomes_empty():
+    tabs = {"샴푸 카외": [
+        _row("a", "AB", "1", "1", link="  https://cafe.naver.com/x/1  "),  # 앞뒤 공백 제거
+        _row("b", "AB", "1", "1", link=""),        # 빈 링크
+        _row("c", "AB", "1", "1", link=None),      # 링크 키 자체가 없음(옛 형식)
+        {"키워드": "d", "노출영역": "AB", "링크": None},  # None 값
+    ]}
+    rows = build_archive_rows(tabs, "2026-10-21")
+    assert [r[6] for r in rows] == ["https://cafe.naver.com/x/1", "", "", ""]
+    assert all(len(r) == 7 for r in rows)
+
+
+def test_build_archive_rows_link_is_per_row_not_per_keyword():
+    """같은 키워드라도 줄마다 그 줄의 글 주소가 남아야 '글 하나당 노출일'을 셀 수 있다."""
+    tabs = {"샴푸 카외": [
+        _row("비듬샴푸", "AB", "1", "1", link="https://cafe.naver.com/a/1"),
+        _row("비듬샴푸", "미노출", "", "", link="https://cafe.naver.com/b/2"),
+    ]}
+    rows = build_archive_rows(tabs, "2026-10-21")
+    assert [(r[3], r[6]) for r in rows] == [
+        ("AB", "https://cafe.naver.com/a/1"),
+        ("미노출", "https://cafe.naver.com/b/2"),
+    ]
+
+
+def test_append_daily_archive_widens_6col_live_tab_to_7_and_keeps_old_rows():
+    """라이브 탭(6열 헤더 · 6칸 옛 줄)에 7칸 줄을 넣는다: 헤더만 7칸으로 바꾸고 옛 줄은 그대로."""
+    old_header = ARCHIVE_HEADER[:6]
+    ws = FakeWorksheet([old_header, ["2026-10-20", "샴푸 카외", "비듬샴푸", "AB", "5", "1"]])
+    ws.col_count = 6
+    added = []
+    ws.add_cols = lambda n: (added.append(n), setattr(ws, "col_count", ws.col_count + n))
+    client = FakeClient(FakeSpreadsheet({ARCHIVE_TAB_NAME: ws}))
+    new_rows = build_archive_rows(
+        {"샴푸 카외": [_row("비듬샴푸", "AB", "5", "1", link="https://cafe.naver.com/a/1")]},
+        "2026-10-21")
+    res = append_daily_archive(client, new_rows, "2026-10-21")
+    assert "error" not in res, res
+    assert added == [1] and ws.col_count == 7     # 헤더 쓰기 전에 6→7 로 넓힘
+    assert ws.values[0] == ARCHIVE_HEADER
+    assert ws.values[1] == ["2026-10-20", "샴푸 카외", "비듬샴푸", "AB", "5", "1"]  # 옛 줄 보존
+    assert ws.values[2][6] == "https://cafe.naver.com/a/1"
 
 
 def test_build_archive_rows_skips_blank_keyword():
@@ -85,8 +148,9 @@ def test_build_archive_rows_injectable_helpers():
         k_base_of=lambda r: "CUSTOM",
         rank_of=lambda r: 7,
         cafe_slot_of=lambda r: 4,
+        link_of=lambda r: "L",
     )
-    assert rows[0] == ["2026-07-02", "t", "kw", "CUSTOM", "7", "4"]
+    assert rows[0] == ["2026-07-02", "t", "kw", "CUSTOM", "7", "4", "L"]
 
 
 def test_build_archive_rows_empty_tabs():
