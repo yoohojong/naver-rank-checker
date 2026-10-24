@@ -36,7 +36,7 @@ import requests
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from src.comment_brand import (extract_candidates, is_asking, normalize_name,  # noqa: E402
-                               strip_generic_tail, tally)
+                               strip_generic_tail, tally, 이름_다듬기)
 from src import brand_verdicts  # noqa: E402
 from src import brand_from_comments  # noqa: E402
 from src import comment_reads  # noqa: E402
@@ -610,7 +610,8 @@ def 표시할_브랜드명(m: dict, verdicts: dict, unified: dict | None = None)
     name = (unified or {}).get(name, name)   # 흐트러뜨린 표기를 정식 브랜드명 하나로
     if not is_real_brand(name):        # 마지막 그물 — 종류 이름·장소가 판정을 뚫어도 여기서 막는다
         return None
-    return name
+    # ★2026-10-24 — 판정이 되살린 이름에 점·띄어쓰기가 남아('클모.엔') 그대로 표에 올랐다.
+    return 이름_다듬기(name) or name
 
 
 def confirmed_rows(mentions: list, verdicts: dict, unified: dict | None = None) -> list:
@@ -757,7 +758,7 @@ def viral_accounts(mentions: list, verdicts: dict, unified: dict | None = None,
         a = 묶음.setdefault(키, {
             "계정": str(m.get("글쓴이") or ""), "계정키": 키,
             "카페": str(m.get("카페") or ""), "카페번호": str(m.get("카페번호") or ""),
-            "_언급": [], "_글": [], "_제품": []})
+            "_언급": [], "_글": [], "_제품": [], "_제품열쇠": set()})
         a["_언급"].append(m)
         link = m.get("글")
         if link and link not in a["_글"]:
@@ -775,7 +776,14 @@ def viral_accounts(mentions: list, verdicts: dict, unified: dict | None = None,
             continue
         이름 = brand_verdicts.display_name(verdicts, pk, m.get("표시") or "")
         이름 = (unified or {}).get(이름, 이름)
-        if 이름 and is_real_brand(이름) and 이름 not in a["_제품"]:
+        if not 이름 or not is_real_brand(이름):
+            continue
+        # ★경쟁사 표(confirmed_rows)와 **같은 이름 · 같은 열쇠**로 묶는다(2026-10-24).
+        #   전에는 글자 그대로 견줘서 '라보 h' 와 '라보H', '클모.엔' 이 따로 남았다.
+        이름 = 이름_다듬기(이름) or 이름
+        열쇠 = strip_generic_tail(이름) or normalize_name(이름)
+        if 열쇠 not in a["_제품열쇠"]:
+            a["_제품열쇠"].add(열쇠)
             a["_제품"].append(이름)
 
     rows = []
@@ -803,6 +811,8 @@ def viral_accounts(mentions: list, verdicts: dict, unified: dict | None = None,
             "글수": len(a["_글"]), "글들": a["_글"],
             "순위별": 순위별, "최고순위": 최고, "평균순위": 평균,
             "미는제품": a["_제품"],
+            # 2026-10-24 사장님 "바이럴 계정은 아예 그 프로필 링크까지 연결해줘봐"
+            "프로필": 프로필주소(a["카페번호"], a["계정키"]),
         })
     # ★우리를 이긴 계정이 먼저다(사장님 정정) — 그다음이 넓이, 그다음이 성적.
     #   키워드 수만으로 줄 세우면 우리를 못 이기는 계정이 위로 올라온다.
@@ -1035,8 +1045,28 @@ def _prev_counts(values: list) -> tuple:
             raw = str(row[i]).strip() if i < len(row) else ""
             if raw.isdigit() and int(raw) > 0:
                 per[day] = int(raw)
-        out[(str(row[ip]).strip(), str(row[ib]).strip())] = per
+        # 같은 (제품군, 경쟁사) 줄이 둘이면 날짜별로 더한다 — 이름을 다듬어 합친 줄이 그렇다.
+        묶음 = out.setdefault((str(row[ip]).strip(), str(row[ib]).strip()), {})
+        for day, n in per.items():
+            묶음[day] = 묶음.get(day, 0) + n
     return out, [d for _, d in date_cols]
+
+
+def _지난표_이름_다듬기(values: list) -> list:
+    """지난 표의 '경쟁사' 칸을 이름_다듬기 로 고친 사본 · 순수함수(원본은 안 건드린다)."""
+    if not values or len(values) < 2:
+        return values
+    head = [str(c).strip() for c in values[0]]
+    if "경쟁사" not in head:
+        return values
+    ib = head.index("경쟁사")
+    out = [values[0]]
+    for row in values[1:]:
+        if len(row) > ib and str(row[ib]).strip():
+            row = list(row)
+            row[ib] = 이름_다듬기(row[ib]) or str(row[ib]).strip()
+        out.append(row)
+    return out
 
 
 # 집 PC 도구(cafe-external/경쟁사_검색량.py)가 채우는 칸들. 이 배치는 지키기만 한다.
@@ -1086,6 +1116,10 @@ def _prev_volumes(values: list) -> dict:
         brand = str(row[ib]).strip()
         if not brand:
             continue
+        # ★오늘 이름과 같은 모양으로 — 제품군 재배치(run_from_sheet)가 이 표를 build_table
+        #   보다 먼저 읽는다. '클모.엔' 열쇠로 두면 오늘의 '클모엔' 이 파는 제품군을 못 찾아
+        #   두 줄로 갈라졌다(2026-10-24 GPT 검토 지적).
+        brand = 이름_다듬기(brand) or brand
         칸 = {이름: row[i] for 이름, i in 자리.items()
              if i < len(row) and str(row[i]).strip()}
         if not 칸:
@@ -1221,7 +1255,7 @@ def _prev_extras(values: list) -> dict:
         칸 = {이름: row[i] for 이름, i in 자리.items()
              if i < len(row) and str(row[i]).strip()}
         if 칸:
-            out[(제품, 경쟁)] = 칸
+            out.setdefault((제품, 경쟁), 칸)   # 합친 줄이 둘이면 위(먼저) 줄 성적을 쓴다
     return out
 
 
@@ -1283,6 +1317,9 @@ def build_table(prev_values: list, today_rows: list, today: str,
         없는 통이 생기면, 그 제품군을 오늘 훑은 적이 없는데도 '봤다' 가 되어
         그 통의 다른 경쟁사들에 0 이 찍힌다('오늘은 못 봄' 이어야 할 자리에).
     """
+    # ★2026-10-24 — 지난 표의 이름도 오늘과 같은 모양('클모.엔' → '클모엔')으로 읽는다.
+    #   안 그러면 어제 줄 '클모.엔' 과 오늘 줄 '클모엔' 이 한 브랜드인데 두 줄로 갈라진다.
+    prev_values = _지난표_이름_다듬기(prev_values)
     지킨칸 = _prev_volumes(prev_values)
     파는제품군 = _prev_families(prev_values)
     prev, _ = _prev_counts(prev_values)
