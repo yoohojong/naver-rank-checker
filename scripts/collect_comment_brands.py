@@ -196,6 +196,15 @@ class CommentFetcher:
         # ★2026-10-21 — v3 글 주소가 9/23부터 500(9999)만 돌려줘 글쓴이를 하나도 못 얻었다
         #   (실패하면 빈 값이라 조용했다). v2.1 은 nick·memberKey 가 그대로 온다(art 열쇠로
         #   회원 전용 카페도 열림 — cantsb 실측). v3 '댓글' 주소는 지금도 정상이라 그대로 둔다.
+        w = self._글쓴이_원자료(url, m, club)
+        if w is None:
+            return {}
+        return {"닉": str(w.get("nick") or w.get("nickName") or "").strip(),
+                "키": str(w.get("memberKey") or "").strip(),
+                "카페번호": str(club)}
+
+    def _글쓴이_원자료(self, url: str, m, club: str):
+        """v2.1 글 주소의 writer 칸 그대로. 못 받으면 None."""
         tok = _ART_TOKEN.search(url)
         api = (f"https://apis.naver.com/cafe-web/cafe-articleapi/v2.1/cafes/{club}"
                f"/articles/{m.group(2)}?useCafeId=true&requestFrom=A"
@@ -203,14 +212,36 @@ class CommentFetcher:
         try:
             r = self.s.get(api, headers={"Referer": url}, timeout=25)
             if r.status_code != 200:
-                return {}
+                return None
             res = r.json().get("result", {})
         except Exception:
-            return {}
-        w = ((res.get("article") or res) or {}).get("writer") or {}
-        return {"닉": str(w.get("nick") or w.get("nickName") or "").strip(),
-                "키": str(w.get("memberKey") or "").strip(),
-                "카페번호": str(club)}
+            return None
+        w = ((res.get("article") or res) or {}).get("writer")
+        return w if isinstance(w, dict) else {}
+
+    def 회원여부(self, url: str) -> str:
+        """그 글을 쓴 사람이 지금 그 카페 회원인가 → '회원' / '탈퇴' / ''(확인 못 함).
+
+        ★2026-10-24 사장님: "탈퇴멤버면 글 삭제 요청해야하고 탈퇴 아닌 멤버는 신고해야함"
+          → 기준은 writer.isCafeMember(거짓 = 탈퇴 · 사장님 확정 "탈퇴임").
+          실측(계정 40개 첫 글): 회원 21 · 회원 아님 4 · 401(로그인 필요한 카페) 15.
+          못 연 글 · 칸이 없는 글은 '확인 못 함' — 지어내지 않는다.
+        """
+        m = _CAFE_URL.search(url or "")
+        if not m:
+            return ""
+        처음 = m.group(1) not in self._club
+        club = self._club_id(url, m.group(1))
+        if not club:
+            return ""
+        if 처음:
+            time.sleep(0.5)          # 카페번호를 방금 물었다 — 바로 또 묻지 않는다
+        v = (self._글쓴이_원자료(url, m, club) or {}).get("isCafeMember")
+        if v is True:
+            return "회원"
+        if v is False:
+            return "탈퇴"
+        return ""
 
     def comments(self, url: str) -> list:
         m = _CAFE_URL.search(url)
@@ -462,7 +493,8 @@ def _후보탭_갱신(client, by_product: dict, today: str) -> int:
 
 def extract_brands(mentions: list, *, verdict_path: str = brand_verdicts.DEFAULT_PATH,
                    today: str = "", reads_path: str = comment_reads.DEFAULT_PATH,
-                   max_batches: int | None = None) -> tuple:
+                   max_batches: int | None = None,
+                   깎음언급: list | None = None) -> tuple:
     """★새 구조(2026-07-24) — 댓글 원문을 AI 가 읽어 이름을 뽑고, 검색으로 확인한다.
 
     (브랜드가 붙은 mentions, 판정표, 통계) 를 돌려준다.
@@ -488,30 +520,56 @@ def extract_brands(mentions: list, *, verdict_path: str = brand_verdicts.DEFAULT
 
     reads = comment_reads.load(reads_path)
     캐시뽑힘: dict = {}
-    안읽은: list = []                       # [(원문들 index, 원문)]
+    캐시깎음: dict = {}
+    안읽은: list = []                       # [(원문들 index, 원문)] — 처음 보는 댓글
+    다시읽을: list = []                     # 깎음 칸이 생기기 전에 읽은 옛 항목(이름 있는 것만)
     for i, t in enumerate(원문들):
-        기억 = comment_reads.get(reads, t)
+        기억 = comment_reads.get_full(reads, t)
         if 기억 is None:
             안읽은.append((i, t))
-        else:
-            if 기억:
-                캐시뽑힘[i] = 기억
-            comment_reads.touch(reads, t, today)   # 오늘도 보였다 — 청소에서 살린다
+            continue
+        # ★옛 항목은 다시 읽기 전까지 옛 이름을 그대로 쓴다 — 예산이 모자라 못 다시 읽은
+        #   날 경쟁사 표가 갑자기 비지 않게. 다시 읽으면 아래에서 새 결과가 덮는다.
+        if 기억["이름"]:
+            캐시뽑힘[i] = 기억["이름"]
+        if 기억["깎음"]:
+            캐시깎음[i] = 기억["깎음"]
+        if comment_reads.needs_reread(기억):
+            다시읽을.append((i, t))
+        comment_reads.touch(reads, t, today)   # 오늘도 보였다 — 청소에서 살린다
 
+    # 처음 보는 댓글을 먼저 보낸다 — 회차 예산이 모자라면 다시 읽기가 밀리고 새 댓글은 안 밀린다.
+    보낼 = 안읽은 + 다시읽을
     새뽑힘, stat = brand_from_comments.read_all(
-        [t for _, t in 안읽은], max_batches=max_batches)
+        [t for _, t in 보낼], max_batches=max_batches)
     읽은자리 = stat.pop("읽은자리", set())
+    답한자리 = stat.pop("답한자리", None)       # 없으면(옛 모양) 읽은 자리 전부를 답한 것으로
+    새깎음 = stat.pop("깎음", None) or {}
+    # ★GPT 검토 10-24: 다시 읽은 옛 항목인데 AI 답에서 그 줄이 빠졌으면 읽은 것이 아니다 —
+    #   옛 이름을 빈 결과로 덮지 않고 다음 회차에 다시 읽는다(처음 보는 댓글은 지금처럼 둔다).
+    if 답한자리 is not None:
+        읽은자리 = {j for j in 읽은자리 if j < len(안읽은) or j in 답한자리}
     뽑힘 = dict(캐시뽑힘)
-    for j, names in (새뽑힘 or {}).items():
-        뽑힘[안읽은[j][0]] = names
+    깎힘 = dict(캐시깎음)
     for j in 읽은자리:                      # 성공한 자리만 남긴다(빈 결과 포함) — 실패는 내일 다시
-        _, t = 안읽은[j]
-        comment_reads.put(reads, t, 새뽑힘.get(j) or [], today)
+        i, t = 보낼[j]
+        뽑힘.pop(i, None)
+        깎힘.pop(i, None)
+        if 새뽑힘.get(j):
+            뽑힘[i] = 새뽑힘[j]
+        if 새깎음.get(j):
+            깎힘[i] = 새깎음[j]
+        comment_reads.put(reads, t, 새뽑힘.get(j) or [], today, 깎음=새깎음.get(j) or [])
+    for j, names in (새뽑힘 or {}).items():   # 읽은자리를 안 싣는 옛 모양 통계도 받는다
+        if j not in 읽은자리:
+            뽑힘[보낼[j][0]] = names
     comment_reads.save(comment_reads.prune(reads, today), reads_path)
     stat["캐시읽음"] = len(원문들) - len(안읽은)
+    stat["다시읽기대상"] = len(다시읽을)
+    stat["다시읽음"] = len([j for j in 읽은자리 if j >= len(안읽은)])
 
-    이름들 = sorted({n for names in 뽑힘.values() for n in names})
-    stat["뽑은이름"] = len(이름들)          # 캐시로 되살린 이름까지 합친 수
+    이름들 = sorted({n for names in list(뽑힘.values()) + list(깎힘.values()) for n in names})
+    stat["뽑은이름"] = len({n for names in 뽑힘.values() for n in names})  # 캐시로 되살린 이름까지
 
     # 한 번 확인한 이름은 다시 검색하지 않는다(파일에 쌓인다).
     cached = brand_verdicts.load(verdict_path)
@@ -525,13 +583,20 @@ def extract_brands(mentions: list, *, verdict_path: str = brand_verdicts.DEFAULT
         brand_verdicts.save(verdicts, verdict_path)
 
     # 뽑힌 이름을 원래 언급 자리에 붙인다 — 키워드·글 링크가 살아 있어야 집계가 된다.
+    # ★깎은 이름은 out 에 넣지 않는다 — 경쟁사 표·계정의 '미는제품'은 out 만 센다.
+    #   (2026-10-24 사장님 "아니 경쟁사 말한거임 경쟁사" — 깎으려고 꺼낸 대안 제품은 경쟁사가 아니다)
+    #   부르는 쪽이 `깎음언급` 에 목록을 주면 같은 모양({**m, 표시, 키, 종류="깎음"})으로 채운다.
     out: list = []
     for m in mentions or []:
         t = str(m.get("댓글") or "").strip()
         i = 자리.get(t)
         for name in (뽑힘.get(i) or []) if i is not None else []:
             out.append({**m, "표시": name, "키": name, "종류": "제품"})
+        if 깎음언급 is not None and i is not None:
+            for name in 깎힘.get(i) or []:
+                깎음언급.append({**m, "표시": name, "키": name, "종류": "깎음"})
     stat["언급"] = len(out)
+    stat["깎음언급"] = sum(len(v) for v in 깎힘.values())
     stat["확정이름"] = len({m["키"] for m in out
                         if brand_verdicts.is_product(verdicts, m["키"])})
     return out, verdicts, stat
@@ -824,6 +889,79 @@ def viral_accounts(mentions: list, verdicts: dict, unified: dict | None = None,
     for r in rows:
         r["못묶은언급"] = 버린언급
     return rows
+
+
+def 깎인제품_집계(깎음언급: list, 민언급: list, verdicts: dict,
+                unified: dict | None = None) -> list:
+    """깎음 언급 → [{이름, 댓글수, 글수, 함께민제품}] · 순수함수. 댓글 많은 순.
+
+    ★2026-10-24 사장님: "이거는 니조랄 바이럴이 아니라 안티트로가 본인 바이럴 하기 위한
+      대안제거임" — 경쟁사 셈에서는 빼고(extract_brands 가 out 에 안 넣음), 화면이
+      따로 보여 줄 수 있게 여기서 묶는다. 함께민제품 = 같은 글에서 **민** 제품.
+    """
+    민: dict = {}
+    for m in 민언급 or []:
+        이름 = 표시할_브랜드명(m, verdicts, unified)
+        if 이름 and m.get("글"):
+            민.setdefault(m["글"], [])
+            if 이름 not in 민[m["글"]]:
+                민[m["글"]].append(이름)
+    모음: dict = {}
+    for m in 깎음언급 or []:
+        이름 = 표시할_브랜드명(m, verdicts, unified)
+        if not 이름 or any(h in 이름 for h in OUR_PRODUCT_HINTS):
+            continue
+        b = 모음.setdefault(이름, {"이름": 이름, "댓글수": 0, "_글": [], "_함께": []})
+        b["댓글수"] += 1
+        글 = m.get("글")
+        if 글 and 글 not in b["_글"]:
+            b["_글"].append(글)
+        for p in 민.get(글) or []:
+            if p != 이름 and p not in b["_함께"]:
+                b["_함께"].append(p)
+    out = [{"이름": b["이름"], "댓글수": b["댓글수"], "글수": len(b["_글"]),
+            "함께민제품": b["_함께"][:8]} for b in 모음.values()]
+    out.sort(key=lambda x: (-x["댓글수"], x["이름"]))
+    return out
+
+
+회원_기억_날 = 7          # 회원 여부는 이 날수 동안 다시 묻지 않는다
+회원_회차_상한 = 400      # 한 회차에 새로 물어볼 계정 수 상한(네이버 부담 · 시간)
+
+
+def 회원_붙이기(계정줄: list, 묻기, 기억: dict, today: str,
+              상한: int = 회원_회차_상한) -> dict:
+    """계정마다 '회원' 칸('회원'/'탈퇴'/'') 을 붙인다. 묻기(글주소) → 그 값.
+
+    기억 = {"카페번호:계정키": {"회원": …, "날": …}} — 7일 안이면 다시 묻지 않는다.
+    상한을 넘는 계정은 묻지 않고 기억값(없으면 '')으로 둔다. 통계를 돌려준다.
+    """
+    from datetime import date as _d
+    stat = {"물음": 0, "기억": 0, "못물음": 0}
+    for a in 계정줄 or []:
+        열 = f'{a.get("카페번호") or ""}:{a.get("계정키") or ""}'
+        e = (기억 or {}).get(열) or {}
+        try:
+            묵은날 = (_d.fromisoformat(today) - _d.fromisoformat(str(e.get("날") or ""))).days
+        except ValueError:
+            묵은날 = None
+        if e and 묵은날 is not None and 0 <= 묵은날 < 회원_기억_날:
+            a["회원"] = e.get("회원") or ""
+            stat["기억"] += 1
+            continue
+        글 = next((g for g in a.get("글들") or [] if g), "")
+        if not 글 or stat["물음"] >= 상한:
+            a["회원"] = e.get("회원") or ""
+            stat["못물음"] += 1
+            continue
+        try:
+            값 = 묻기(글) or ""
+        except Exception:
+            값 = ""
+        stat["물음"] += 1
+        a["회원"] = 값
+        기억[열] = {"회원": 값, "날": today}
+    return stat
 
 
 def 프로필주소(카페번호: str, 계정키: str) -> str:
@@ -1358,7 +1496,9 @@ def build_table(prev_values: list, today_rows: list, today: str,
         #   0 은 '댓글이 없었다' 는 뜻이고, 안 본 것은 '모른다' 다.
         #   (2026-09-05 검수 심각 2: 안 본 경쟁사에 '▼ -5' 가 찍혔다.)
         #   봤는데 안 나온 것은 그대로 0 이다 — 그건 진짜 0 이다.
-        counts = [(per.get(d, 0) if (d != today or 제품군을봄) else "") for d in dates]
+        # ★같은 날 다시 돌린 회차: 오늘 칸은 이번에 센 값이다 — 아까 센 값이 남지 않게(GPT 검토 10-24).
+        counts = [(per.get(d, 0) if d != today
+                   else (per.get(d, 0) if 오늘봄 else (0 if 제품군을봄 else ""))) for d in dates]
         total = sum(c for c in counts if isinstance(c, int))
         r = extra.get((product, brand), {})
         try:
@@ -1546,14 +1686,16 @@ def run_from_sheet(args) -> int:
     jstat = {"댓글": 0, "묶음": 0, "못읽은묶음": 0, "뽑은이름": 0, "캐시읽음": 0,
              "검색확인": 0, "검색통과": 0, "검색막힘": 0, "탈": []}
     branded: dict = {}
+    깎음언급: list = []          # 2026-10-24 — 깎으려고 꺼낸 대안 제품(경쟁사로 세지 않음)
     for product, mentions in by_product.items():
-        ms2, v, stat = extract_brands(mentions, today=today, max_batches=남은예산)
+        ms2, v, stat = extract_brands(mentions, today=today, max_batches=남은예산,
+                                      깎음언급=깎음언급)
         if 남은예산 is not None:
             남은예산 = max(0, 남은예산 - int(stat.get("예산사용", 0) or 0))
         branded[product] = ms2
         verdicts.update(v)
         for k in ("댓글", "묶음", "못읽은묶음", "뽑은이름", "캐시읽음",
-                  "검색확인", "검색통과", "검색막힘"):
+                  "검색확인", "검색통과", "검색막힘", "다시읽기대상", "다시읽음", "깎음언급"):
             jstat[k] = jstat.get(k, 0) + int(stat.get(k, 0) or 0)
         jstat["탈"] = sorted(set(jstat["탈"]) | set(stat.get("탈", [])))
     all_mentions = [m for ms in branded.values() for m in ms]
@@ -1679,8 +1821,35 @@ def run_from_sheet(args) -> int:
             자리 = os.path.join(os.path.dirname(os.path.dirname(
                 os.path.abspath(__file__))), "data", "viral_accounts.json")
             os.makedirs(os.path.dirname(자리), exist_ok=True)
+            # ★2026-10-24 — 탈퇴면 글 삭제 요청, 회원이면 신고(사장님). 기억은 따로 둔다.
+            회원자리 = os.path.join(os.path.dirname(자리), "cafe_member_status.json")
+            try:
+                with open(회원자리, encoding="utf-8") as f:
+                    회원기억 = json.load(f)
+                if not isinstance(회원기억, dict):
+                    회원기억 = {}
+            except (OSError, ValueError):
+                회원기억 = {}
+
+            def _묻기(글):
+                try:
+                    return fetcher.회원여부(글)
+                finally:
+                    time.sleep(0.5)      # 네이버 부담 줄이기 — 실패해도 쉰다
+            회원통계 = 회원_붙이기(계정줄, _묻기, 회원기억, today)
+            with open(회원자리, "w", encoding="utf-8") as f:
+                json.dump(회원기억, f, ensure_ascii=False, indent=0, sort_keys=True)
+            세기: dict = {}
+            for x in 계정줄:
+                k = x.get("회원") or "확인 못 함"
+                세기[k] = 세기.get(k, 0) + 1
+            print(f"회원 여부: {세기} (새로 물음 {회원통계['물음']} · 기억 {회원통계['기억']} "
+                  f"· 상한으로 못 물음 {회원통계['못물음']})")
+            깎인 = 깎인제품_집계(깎음언급, all_mentions, verdicts, unified)
+            print(f"깎아내린 제품 {len(깎인)}종(경쟁사 셈에서 뺌) · 다시 읽은 옛 댓글 "
+                  f"{jstat.get('다시읽음', 0)}/{jstat.get('다시읽기대상', 0)}")
             with open(자리, "w", encoding="utf-8") as f:
-                json.dump({"때": today, "계정": 계정줄}, f,
+                json.dump({"때": today, "계정": 계정줄, "깎인제품": 깎인}, f,
                           ensure_ascii=False, indent=1)
             못잼 = sum(1 for x in 계정줄 if x.get("이긴것을_못잼"))
             if 못잼:

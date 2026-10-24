@@ -150,10 +150,10 @@ jobs:
       - name: 판정·읽기 기억 저장
         if: always()
         run: |
-          if [ -n "$(git status --porcelain data/brand_verdicts.json data/comment_reads.json data/viral_accounts.json)" ]; then
+          if [ -n "$(git status --porcelain data/brand_verdicts.json data/comment_reads.json data/viral_accounts.json data/cafe_member_status.json)" ]; then
             git config user.name  "github-actions[bot]"
             git config user.email "github-actions[bot]@users.noreply.github.com"
-            git add data/brand_verdicts.json data/comment_reads.json data/viral_accounts.json
+            git add data/brand_verdicts.json data/comment_reads.json data/viral_accounts.json data/cafe_member_status.json
             git commit -m "chore(경쟁사): 판정·읽기 기억 + 바이럴 계정 갱신 [skip ci]"
             git pull --rebase --autostash origin main || true
             git push origin HEAD:main || true

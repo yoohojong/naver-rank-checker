@@ -86,7 +86,16 @@ SYSTEM = (
     "   앞글자가 잘린 것 같으면 아예 뽑지 않는다.\n"
     "5. 확실하지 않으면 뽑지 않는다. 지어내지 마라.\n"
     "6. 제품 언급이 없는 댓글은 빈 배열.\n"
-    '출력은 JSON 만: {"결과":[{"n":1,"제품":["안티트로"]},{"n":2,"제품":[]}]}\n'
+    "7. 이름마다 **그 댓글이 그 제품을 어떻게 말했나**로 두 칸에 나눠 적는다.\n"
+    "   '제품' = 권하거나, 좋게 말하거나, 그냥 썼다고만 말한 제품.\n"
+    "   '깎음' = 써 봤는데 효과 없다·그때뿐이다·자극이 강하다·냄새·내성·뻑뻑해진다처럼\n"
+    "   **나쁘게 말해 다른 제품으로 넘어가게 하는** 대상.\n"
+    "   예) '니조랄 써봤는데 진짜 그때뿐이더라구요' → 깎음 [니조랄]\n"
+    "   예) '니조랄 쓰고 머리뻑뻑해지는 건 어쩔 수 없어요! 어니스트맘 샴푸가 부드럽게' →\n"
+    "       제품 [어니스트맘], 깎음 [니조랄]\n"
+    "   한 댓글에서 한 이름은 두 칸 중 하나에만 넣는다.\n"
+    '출력은 JSON 만: {"결과":[{"n":1,"제품":["안티트로"],"깎음":["니조랄"]},'
+    '{"n":2,"제품":[],"깎음":[]}]}\n'
     "다른 말은 절대 하지 않는다."
 )
 
@@ -167,9 +176,50 @@ def _read_json(content: str):
     return None
 
 
+def _hangul_key(name) -> str:
+    return _hangul(name) or str(name or "").strip().lower()
+
+
+def 칸_나누기(제품: list, 깎음: list, text: str) -> tuple:
+    """AI 가 낸 두 칸 → (제품, 깎음) · 순수함수.
+
+    · 두 칸 모두 환각 거르기(grounded)를 똑같이 건다.
+    · 한 댓글에서 한 이름은 한 칸에만 — AI 가 둘 다에 넣으면 **깎음** 쪽에 남긴다
+      (AI 가 깎는 말이 있다고 본 이름을 경쟁사로 세지 않는다 · GPT 검토 10-24 두 번 지적).
+    · 같은 칸 안에 겹친 이름은 하나로.
+    """
+    def 거름(xs):
+        out, seen = [], set()
+        for x in xs if isinstance(xs, list) else []:
+            n = str(x or "").strip()
+            k = _hangul_key(n)
+            if not n or k in seen or not grounded(n, text):
+                continue
+            seen.add(k)
+            out.append(n)
+        return out
+
+    깎 = 거름(깎음)
+    깎열쇠 = [k for k in (_hangul_key(n) for n in 깎) if k]
+    # '니조랄' 과 '니조랄 샴푸' 처럼 한쪽이 다른 쪽을 품으면 같은 제품으로 본다.
+    def 깎인것(n):
+        k = _hangul_key(n)
+        return bool(k) and any(k == c or c in k or k in c for c in 깎열쇠)
+    민 = [n for n in 거름(제품) if not 깎인것(n)]
+    return 민, 깎
+
+
 def read_batch(texts: list, *, timeout: int = 60, sleep=time.sleep,
-               errors: list | None = None) -> dict | None:
-    """댓글 묶음 → {댓글 번호(0부터): [브랜드명]}. 실패하면 None(판정 안 함)."""
+               errors: list | None = None, 깎음: dict | None = None,
+               답한: set | None = None) -> dict | None:
+    """댓글 묶음 → {댓글 번호(0부터): [브랜드명]}. 실패하면 None(판정 안 함).
+
+    돌려주는 이름은 **'제품'(권하거나 좋게·중립으로 말한 것)만**이다 — 경쟁사 셈의 재료.
+    ★2026-10-24 사장님: "이거는 니조랄 바이럴이 아니라 안티트로가 본인 바이럴 하기 위한
+      대안제거임" — 나쁘게 말해 넘어가게 하는 대상은 '깎음' 칸으로 따로 받는다.
+      `깎음` 에 dict 를 주면 {댓글 번호: [깎은 이름]} 을 채운다(안 주면 버린다).
+    `답한` 에 set 을 주면 AI 답에 줄이 실제로 온 댓글 번호를 넣는다(빠진 줄과 빈 결과를 가른다).
+    """
     texts = [str(t or "").strip() for t in (texts or [])]
     texts = [t for t in texts if t]
     if not texts:
@@ -198,7 +248,8 @@ def read_batch(texts: list, *, timeout: int = 60, sleep=time.sleep,
             errors.append("JSON 아님")
         return None
 
-    out: dict = {}
+    # 같은 번호가 두 번 오면 두 줄을 합친 뒤 한 번에 가른다(앞줄 '제품' · 뒷줄 '깎음'이 따로 남지 않게).
+    모음: dict = {}
     for r in rows:
         if not isinstance(r, dict):
             continue
@@ -208,11 +259,25 @@ def read_batch(texts: list, *, timeout: int = 60, sleep=time.sleep,
             continue
         if not 1 <= n <= len(texts):
             continue
-        # ★뽑은 이름이 실제로 그 댓글 글자에 있는 것만 남긴다 — AI 환각 거르기.
-        names = [str(x).strip() for x in (r.get("제품") or []) if str(x).strip()
-                 and grounded(str(x).strip(), texts[n - 1])]
+        m = 모음.setdefault(n - 1, {"제품": [], "깎음": [], "두칸": False})
+        제품칸, 깎음칸 = r.get("제품"), r.get("깎음")
+        if isinstance(제품칸, list):
+            m["제품"] += 제품칸
+        if isinstance(깎음칸, list):
+            m["깎음"] += 깎음칸
+        # 두 칸이 다 온 줄만 '답한 줄' — 한 칸이 빠진 답으로 옛 이름을 덮지 않는다(GPT 검토 10-24).
+        if isinstance(제품칸, list) and isinstance(깎음칸, list):
+            m["두칸"] = True
+    out: dict = {}
+    for i, m in 모음.items():
+        if 답한 is not None and m["두칸"]:
+            답한.add(i)
+        # ★뽑은 이름이 실제로 그 댓글 글자에 있는 것만 남긴다 — AI 환각 거르기(두 칸 모두).
+        names, 깎은 = 칸_나누기(m["제품"], m["깎음"], texts[i])
         if names:
-            out[n - 1] = names
+            out[i] = names
+        if 깎은 and 깎음 is not None:
+            깎음[i] = 깎은
     return out
 
 
@@ -248,6 +313,7 @@ def read_all(texts: list, *, batch: int = BATCH, timeout: int = 60,
              max_consecutive_fail: int = 5,
              max_한도대기: int = 20) -> tuple:
     """댓글 전체 → ({댓글 index: [브랜드명]}, 통계). 못 읽은 묶음은 통계에 남긴다.
+    깎은 이름은 통계의 '깎음'({댓글 index: [이름]})에 실린다 — 돌려주는 이름은 '제품'만.
 
     ★멈출 줄 안다 (2026-08-20):
       · max_batches — 한 회차가 부를 수 있는 묶음 수. 넘치면 멈춘다.
@@ -264,6 +330,8 @@ def read_all(texts: list, *, batch: int = BATCH, timeout: int = 60,
     전체묶음 = (len(texts) + batch - 1) // batch if batch else 0
     out: dict = {}
     읽은자리: set = set()
+    답한자리: set = set()                 # AI 답에 줄이 실제로 온 자리(다시 읽기 판정용)
+    깎은자리: dict = {}
     errors: list = []
     연속실패 = 0          # 진짜 고장(다시 해도 안 됨)
     한도대기 = 0          # 기다리면 풀리는 것
@@ -282,7 +350,10 @@ def read_all(texts: list, *, batch: int = BATCH, timeout: int = 60,
         stat["묶음"] += 1
         stat["예산사용"] += 1
         앞사유 = len(errors)
-        got = read_batch(chunk, timeout=timeout, sleep=sleep, errors=errors)
+        묶음깎음: dict = {}
+        묶음답한: set = set()
+        got = read_batch(chunk, timeout=timeout, sleep=sleep, errors=errors, 깎음=묶음깎음,
+                         답한=묶음답한)
         if got is None:
             stat["못읽은묶음"] += 1
             새사유 = errors[앞사유:]
@@ -295,8 +366,11 @@ def read_all(texts: list, *, batch: int = BATCH, timeout: int = 60,
             continue
         연속실패 = 한도대기 = 0
         읽은자리.update(range(start, start + len(chunk)))   # 빈 결과도 '읽은 자리'다
+        답한자리.update(start + i for i in 묶음답한)
         for i, names in got.items():
             out[start + i] = names
+        for i, names in 묶음깎음.items():
+            깎은자리[start + i] = names
     if 중단:
         남은 = 전체묶음 - stat["묶음"]
         stat["묶음"] += 남은
@@ -305,4 +379,6 @@ def read_all(texts: list, *, batch: int = BATCH, timeout: int = 60,
     stat["탈"] = sorted(set(errors))
     stat["뽑은이름"] = len({n for names in out.values() for n in names})
     stat["읽은자리"] = 읽은자리
+    stat["답한자리"] = 답한자리
+    stat["깎음"] = 깎은자리            # {댓글 index: [깎은 이름]} — 부르는 쪽이 pop 한다
     return out, stat

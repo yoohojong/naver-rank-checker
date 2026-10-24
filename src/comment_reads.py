@@ -11,8 +11,15 @@
   (brand_verdicts 가 '판정'에 하는 일을 '읽기'에도 한다 — 같은 무늬).
 
 파일 모양 (data/comment_reads.json) — 원문 대신 지문(해시)만 남긴다(크기 억제):
-  {"a1b2c3d4e5f6": {"이름": ["안티트로"], "날": "2026-08-20"},
-   "f6e5d4c3b2a1": {"이름": [], "날": "2026-08-20"}}   ← 제품 없던 댓글도 '읽었다'로 기억
+  {"a1b2c3d4e5f6": {"이름": ["안티트로"], "깎음": ["니조랄"], "날": "2026-08-20"},
+   "f6e5d4c3b2a1": {"이름": [], "깎음": [], "날": "2026-08-20"}}   ← 제품 없던 댓글도 '읽었다'로 기억
+  · 이름 = 권하거나 좋게·중립으로 말한 제품(경쟁사 셈의 재료)
+  · 깎음 = 나쁘게 말해 다른 제품으로 넘어가게 한 대상(2026-10-24 — 경쟁사로 세지 않는다)
+
+★2026-10-24 옛 항목 다시 읽기: '깎음' 칸이 생기기 전에 읽은 항목은 이름이 '미는 것'인지
+  '깎는 것'인지 모른다. 그중 **이름이 비지 않은 것만**(약 7,707개) 다시 읽을 대상으로 친다
+  (needs_reread). 이름이 빈 옛 항목은 깎을 것도 없었을 확률이 높아 다시 읽지 않는다(비용).
+  다시 읽기 전까지는 옛 이름을 그대로 쓴다 — 예산이 모자라 못 다시 읽은 날 표가 비지 않게.
 
 안전
 - 실패한 읽기는 남기지 않는다 — '읽었는데 없음' 과 '못 읽음' 을 섞으면
@@ -52,7 +59,10 @@ def load(path: str = DEFAULT_PATH) -> dict:
     out = {}
     for k, v in data.items():
         if isinstance(v, dict) and isinstance(v.get("이름"), list):
-            out[str(k)] = {"이름": [str(n) for n in v["이름"]], "날": str(v.get("날") or "")}
+            e = {"이름": [str(n) for n in v["이름"]], "날": str(v.get("날") or "")}
+            if isinstance(v.get("깎음"), list):      # 없으면 옛 항목 — 키를 만들어 넣지 않는다
+                e["깎음"] = [str(n) for n in v["깎음"]]
+            out[str(k)] = e
     return out
 
 
@@ -62,8 +72,28 @@ def get(reads: dict, text) -> list | None:
     return list(e["이름"]) if e else None
 
 
-def put(reads: dict, text, names, today: str) -> None:
-    reads[key_of(text)] = {"이름": [str(n) for n in (names or [])], "날": str(today)}
+def get_full(reads: dict, text) -> dict | None:
+    """이 댓글을 읽은 적 있나 — 있으면 {"이름": [...], "깎음": [...] 또는 None}, 없으면 None.
+    '깎음' 이 None 이면 그 칸이 생기기 전에 읽은 옛 항목이다."""
+    e = (reads or {}).get(key_of(text))
+    if not e:
+        return None
+    깎 = e.get("깎음")
+    return {"이름": list(e["이름"]), "깎음": list(깎) if isinstance(깎, list) else None}
+
+
+def needs_reread(entry: dict | None) -> bool:
+    """옛 항목 중 다시 읽을 것인가 — 이름이 비지 않았고 '깎음' 칸이 없는 것만.
+
+    get_full 이 돌려준 모양({"깎음": None})과 파일 모양(키 없음) 둘 다 받는다."""
+    if not entry:
+        return False
+    return bool(entry.get("이름")) and not isinstance(entry.get("깎음"), list)
+
+
+def put(reads: dict, text, names, today: str, 깎음=None) -> None:
+    reads[key_of(text)] = {"이름": [str(n) for n in (names or [])],
+                           "깎음": [str(n) for n in (깎음 or [])], "날": str(today)}
 
 
 def touch(reads: dict, text, today: str) -> None:
