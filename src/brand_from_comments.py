@@ -79,6 +79,7 @@ SYSTEM = (
     "규칙:\n"
     "1. 상점에서 그 이름으로 살 수 있는 제품만. 증상·성분·장소·일반명사는 뽑지 않는다.\n"
     "   (지루성·비듬·각질·어성초·약국·병원·피부과·올리브영·공홈 → 뽑지 않음)\n"
+    "   단, 아래 8번 '종류' 칸은 예외다.\n"
     "2. 검열을 피하려 글자를 흐트러뜨린 이름이 많다(안ㅌ티트로, 맥단ㅂI, 뽀.ㅇ얀).\n"
     "   **원래 브랜드명으로 되살려서** 적는다. 되살릴 수 없으면 뽑지 않는다.\n"
     "3. 브랜드까지만 적는다. 제품 종류는 뺀다('맥단비 탈모샴푸' → '맥단비').\n"
@@ -94,8 +95,15 @@ SYSTEM = (
     "   예) '니조랄 쓰고 머리뻑뻑해지는 건 어쩔 수 없어요! 어니스트맘 샴푸가 부드럽게' →\n"
     "       제품 [어니스트맘], 깎음 [니조랄]\n"
     "   한 댓글에서 한 이름은 두 칸 중 하나에만 넣는다.\n"
-    '출력은 JSON 만: {"결과":[{"n":1,"제품":["안티트로"],"깎음":["니조랄"]},'
-    '{"n":2,"제품":[],"깎음":[]}]}\n'
+    "8. '종류' = 상표가 아니라 **종류**(약 · 병원 · 시술 · 제품 종류)를 써 봤는데 그때뿐 ·\n"
+    "   효과 없다 · 부작용이 있다고 깎아 다른 것으로 넘어가게 하는 대상. 약국 · 병원 · 피부과도\n"
+    "   깎는 대상이면 이 칸에는 적는다. 댓글에 있는 말 그대로 짧게 적는다. 깎는 말이 없으면 적지 않는다.\n"
+    "   예) '스테로이드 처방도 받아봤지만 그때뿐' → 종류 [스테로이드]\n"
+    "   예) '약산성샴푸 웬만한거 다 써봤는데 진짜 그때뿐' → 종류 [약산성샴푸]\n"
+    "   예) '두피 스케일링 받을 때만 시원하고 금방 다시 제자리' → 종류 [두피 스케일링]\n"
+    "   상표는 '깎음' 칸, 종류는 '종류' 칸 — 한 말은 한 칸에만.\n"
+    '출력은 JSON 만: {"결과":[{"n":1,"제품":["안티트로"],"깎음":["니조랄"],"종류":["스테로이드"]},'
+    '{"n":2,"제품":[],"깎음":[],"종류":[]}]}\n'
     "다른 말은 절대 하지 않는다."
 )
 
@@ -188,6 +196,20 @@ def 칸_나누기(제품: list, 깎음: list, text: str) -> tuple:
       (AI 가 깎는 말이 있다고 본 이름을 경쟁사로 세지 않는다 · GPT 검토 10-24 두 번 지적).
     · 같은 칸 안에 겹친 이름은 하나로.
     """
+    민, 깎, _종 = 세칸_나누기(제품, 깎음, None, text)
+    return 민, 깎
+
+
+def 세칸_나누기(제품: list, 깎음: list, 종류, text: str) -> tuple:
+    """AI 가 낸 세 칸 → (제품, 깎음, 종류) · 순수함수. 종류가 None 이면 그 칸을 안 받은 것.
+
+    ★2026-10-25 사장님: "경쟁사 댓글은 그떄분이라고하는건 자기 제품 바이럴 하기 위해서 상징적인
+      제품들을 일부로 이용하는거에요 나중에 시장 조사할떄 대안이 무엇이 있나를 찾아봐야할떄
+      활용하는거는 무조건 필요해요" — 상표가 아닌 종류(스테로이드 · 피부과 · 스케일링)도 받는다.
+    · 종류 칸도 환각 거르기를 건다.
+    · 종류 칸은 제품 칸을 **건드리지 않는다** — 경쟁사 셈('제품')은 이 칸이 생기기 전과 같아야 한다.
+      (종류는 상표가 아니라 경쟁사 표에 오를 일이 없고, 오르더라도 NOT_A_BRAND 가 막는다.)
+    """
     def 거름(xs):
         out, seen = [], set()
         for x in xs if isinstance(xs, list) else []:
@@ -205,13 +227,15 @@ def 칸_나누기(제품: list, 깎음: list, text: str) -> tuple:
     def 깎인것(n):
         k = _hangul_key(n)
         return bool(k) and any(k == c or c in k or k in c for c in 깎열쇠)
+    # 같은 말이 '깎음'(상표)과 '종류' 두 칸에 다 오면 상표 칸에만 둔다 — 한 대상이 두 줄로 세이지 않게.
+    종 = [n for n in 거름(종류) if not 깎인것(n)] if isinstance(종류, list) else None
     민 = [n for n in 거름(제품) if not 깎인것(n)]
-    return 민, 깎
+    return 민, 깎, 종
 
 
 def read_batch(texts: list, *, timeout: int = 60, sleep=time.sleep,
                errors: list | None = None, 깎음: dict | None = None,
-               답한: set | None = None) -> dict | None:
+               답한: set | None = None, 종류: dict | None = None) -> dict | None:
     """댓글 묶음 → {댓글 번호(0부터): [브랜드명]}. 실패하면 None(판정 안 함).
 
     돌려주는 이름은 **'제품'(권하거나 좋게·중립으로 말한 것)만**이다 — 경쟁사 셈의 재료.
@@ -219,6 +243,8 @@ def read_batch(texts: list, *, timeout: int = 60, sleep=time.sleep,
       대안제거임" — 나쁘게 말해 넘어가게 하는 대상은 '깎음' 칸으로 따로 받는다.
       `깎음` 에 dict 를 주면 {댓글 번호: [깎은 이름]} 을 채운다(안 주면 버린다).
     `답한` 에 set 을 주면 AI 답에 줄이 실제로 온 댓글 번호를 넣는다(빠진 줄과 빈 결과를 가른다).
+    `종류` 에 dict 를 주면 AI 답에 '종류' 칸이 온 댓글만 {댓글 번호: [깎은 종류]}(빈 목록 포함)를
+    채운다 — 칸이 안 온 댓글은 넣지 않는다('안 봄' 과 '없음' 을 가른다 · 2026-10-25).
     """
     texts = [str(t or "").strip() for t in (texts or [])]
     texts = [t for t in texts if t]
@@ -259,12 +285,14 @@ def read_batch(texts: list, *, timeout: int = 60, sleep=time.sleep,
             continue
         if not 1 <= n <= len(texts):
             continue
-        m = 모음.setdefault(n - 1, {"제품": [], "깎음": [], "두칸": False})
-        제품칸, 깎음칸 = r.get("제품"), r.get("깎음")
+        m = 모음.setdefault(n - 1, {"제품": [], "깎음": [], "두칸": False, "종류": None})
+        제품칸, 깎음칸, 종류칸 = r.get("제품"), r.get("깎음"), r.get("종류")
         if isinstance(제품칸, list):
             m["제품"] += 제품칸
         if isinstance(깎음칸, list):
             m["깎음"] += 깎음칸
+        if isinstance(종류칸, list):
+            m["종류"] = (m["종류"] or []) + 종류칸
         # 두 칸이 다 온 줄만 '답한 줄' — 한 칸이 빠진 답으로 옛 이름을 덮지 않는다(GPT 검토 10-24).
         if isinstance(제품칸, list) and isinstance(깎음칸, list):
             m["두칸"] = True
@@ -273,11 +301,13 @@ def read_batch(texts: list, *, timeout: int = 60, sleep=time.sleep,
         if 답한 is not None and m["두칸"]:
             답한.add(i)
         # ★뽑은 이름이 실제로 그 댓글 글자에 있는 것만 남긴다 — AI 환각 거르기(두 칸 모두).
-        names, 깎은 = 칸_나누기(m["제품"], m["깎음"], texts[i])
+        names, 깎은, 종 = 세칸_나누기(m["제품"], m["깎음"], m["종류"], texts[i])
         if names:
             out[i] = names
         if 깎은 and 깎음 is not None:
             깎음[i] = 깎은
+        if 종 is not None and 종류 is not None and m["두칸"]:
+            종류[i] = 종
     return out
 
 
@@ -332,6 +362,7 @@ def read_all(texts: list, *, batch: int = BATCH, timeout: int = 60,
     읽은자리: set = set()
     답한자리: set = set()                 # AI 답에 줄이 실제로 온 자리(다시 읽기 판정용)
     깎은자리: dict = {}
+    종류자리: dict = {}                   # {댓글 index: [깎은 종류]} — '종류' 칸이 온 자리만
     errors: list = []
     연속실패 = 0          # 진짜 고장(다시 해도 안 됨)
     한도대기 = 0          # 기다리면 풀리는 것
@@ -352,8 +383,9 @@ def read_all(texts: list, *, batch: int = BATCH, timeout: int = 60,
         앞사유 = len(errors)
         묶음깎음: dict = {}
         묶음답한: set = set()
+        묶음종류: dict = {}
         got = read_batch(chunk, timeout=timeout, sleep=sleep, errors=errors, 깎음=묶음깎음,
-                         답한=묶음답한)
+                         답한=묶음답한, 종류=묶음종류)
         if got is None:
             stat["못읽은묶음"] += 1
             새사유 = errors[앞사유:]
@@ -371,6 +403,8 @@ def read_all(texts: list, *, batch: int = BATCH, timeout: int = 60,
             out[start + i] = names
         for i, names in 묶음깎음.items():
             깎은자리[start + i] = names
+        for i, names in 묶음종류.items():
+            종류자리[start + i] = names
     if 중단:
         남은 = 전체묶음 - stat["묶음"]
         stat["묶음"] += 남은
@@ -381,4 +415,5 @@ def read_all(texts: list, *, batch: int = BATCH, timeout: int = 60,
     stat["읽은자리"] = 읽은자리
     stat["답한자리"] = 답한자리
     stat["깎음"] = 깎은자리            # {댓글 index: [깎은 이름]} — 부르는 쪽이 pop 한다
+    stat["종류"] = 종류자리            # {댓글 index: [깎은 종류]} — 칸이 온 자리만 · 부르는 쪽이 pop
     return out, stat

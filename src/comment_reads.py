@@ -15,6 +15,8 @@
    "f6e5d4c3b2a1": {"이름": [], "깎음": [], "날": "2026-08-20"}}   ← 제품 없던 댓글도 '읽었다'로 기억
   · 이름 = 권하거나 좋게·중립으로 말한 제품(경쟁사 셈의 재료)
   · 깎음 = 나쁘게 말해 다른 제품으로 넘어가게 한 대상(2026-10-24 — 경쟁사로 세지 않는다)
+  · 종류 = 상표가 아닌 깎인 종류(스테로이드 · 피부과 · 스케일링 · 약산성샴푸 — 2026-10-25).
+           칸이 없으면 그 칸이 생기기 전에 읽은 항목이다('봤는데 없음' 은 []).
 
 ★2026-10-24 옛 항목 다시 읽기: '깎음' 칸이 생기기 전에 읽은 항목은 이름이 '미는 것'인지
   '깎는 것'인지 모른다. 그중 **이름이 비지 않은 것만**(약 7,707개) 다시 읽을 대상으로 친다
@@ -62,6 +64,8 @@ def load(path: str = DEFAULT_PATH) -> dict:
             e = {"이름": [str(n) for n in v["이름"]], "날": str(v.get("날") or "")}
             if isinstance(v.get("깎음"), list):      # 없으면 옛 항목 — 키를 만들어 넣지 않는다
                 e["깎음"] = [str(n) for n in v["깎음"]]
+            if isinstance(v.get("종류"), list):      # 2026-10-25 — 없으면 '종류' 칸 전에 읽은 항목
+                e["종류"] = [str(n) for n in v["종류"]]
             out[str(k)] = e
     return out
 
@@ -91,9 +95,24 @@ def needs_reread(entry: dict | None) -> bool:
     return bool(entry.get("이름")) and not isinstance(entry.get("깎음"), list)
 
 
-def put(reads: dict, text, names, today: str, 깎음=None) -> None:
-    reads[key_of(text)] = {"이름": [str(n) for n in (names or [])],
-                           "깎음": [str(n) for n in (깎음 or [])], "날": str(today)}
+def get_종류(reads: dict, text) -> list | None:
+    """이 댓글에서 깎은 종류(약 · 병원 · 시술 · 제품 종류) — 칸이 생기기 전에 읽었으면 None.
+
+    get_full 의 모양은 그대로 두고 따로 꺼낸다(부르는 쪽 · 시험이 그 모양을 믿는다)."""
+    e = (reads or {}).get(key_of(text))
+    if not e:
+        return None
+    종 = e.get("종류")
+    return list(종) if isinstance(종, list) else None
+
+
+def put(reads: dict, text, names, today: str, 깎음=None, 종류=None) -> None:
+    """종류가 None 이면 '종류' 칸을 안 봤다는 뜻이라 키를 만들지 않는다([] 은 '봤는데 없음')."""
+    e = {"이름": [str(n) for n in (names or [])],
+         "깎음": [str(n) for n in (깎음 or [])], "날": str(today)}
+    if isinstance(종류, list):
+        e["종류"] = [str(n) for n in 종류]
+    reads[key_of(text)] = e
 
 
 def touch(reads: dict, text, today: str) -> None:

@@ -521,6 +521,7 @@ def extract_brands(mentions: list, *, verdict_path: str = brand_verdicts.DEFAULT
     reads = comment_reads.load(reads_path)
     캐시뽑힘: dict = {}
     캐시깎음: dict = {}
+    캐시종류: dict = {}                     # 2026-10-25 — 깎은 종류(약 · 병원 · 시술 · 제품 종류)
     안읽은: list = []                       # [(원문들 index, 원문)] — 처음 보는 댓글
     다시읽을: list = []                     # 깎음 칸이 생기기 전에 읽은 옛 항목(이름 있는 것만)
     for i, t in enumerate(원문들):
@@ -534,6 +535,9 @@ def extract_brands(mentions: list, *, verdict_path: str = brand_verdicts.DEFAULT
             캐시뽑힘[i] = 기억["이름"]
         if 기억["깎음"]:
             캐시깎음[i] = 기억["깎음"]
+        종 = comment_reads.get_종류(reads, t)
+        if 종:
+            캐시종류[i] = 종
         if comment_reads.needs_reread(기억):
             다시읽을.append((i, t))
         comment_reads.touch(reads, t, today)   # 오늘도 보였다 — 청소에서 살린다
@@ -545,24 +549,34 @@ def extract_brands(mentions: list, *, verdict_path: str = brand_verdicts.DEFAULT
     읽은자리 = stat.pop("읽은자리", set())
     답한자리 = stat.pop("답한자리", None)       # 없으면(옛 모양) 읽은 자리 전부를 답한 것으로
     새깎음 = stat.pop("깎음", None) or {}
+    새종류 = stat.pop("종류", None) or {}    # '종류' 칸이 온 자리만 들어 있다(빈 목록 포함)
     # ★GPT 검토 10-24: 다시 읽은 옛 항목인데 AI 답에서 그 줄이 빠졌으면 읽은 것이 아니다 —
     #   옛 이름을 빈 결과로 덮지 않고 다음 회차에 다시 읽는다(처음 보는 댓글은 지금처럼 둔다).
     if 답한자리 is not None:
         읽은자리 = {j for j in 읽은자리 if j < len(안읽은) or j in 답한자리}
     뽑힘 = dict(캐시뽑힘)
     깎힘 = dict(캐시깎음)
+    종힘 = dict(캐시종류)
     for j in 읽은자리:                      # 성공한 자리만 남긴다(빈 결과 포함) — 실패는 내일 다시
         i, t = 보낼[j]
         뽑힘.pop(i, None)
         깎힘.pop(i, None)
+        종힘.pop(i, None)
         if 새뽑힘.get(j):
             뽑힘[i] = 새뽑힘[j]
         if 새깎음.get(j):
             깎힘[i] = 새깎음[j]
-        comment_reads.put(reads, t, 새뽑힘.get(j) or [], today, 깎음=새깎음.get(j) or [])
+        if 새종류.get(j):
+            종힘[i] = 새종류[j]
+        # 종류 칸이 안 온 자리는 None 으로 남긴다 — '봤는데 없음'([])과 섞지 않는다.
+        comment_reads.put(reads, t, 새뽑힘.get(j) or [], today, 깎음=새깎음.get(j) or [],
+                          종류=새종류.get(j) if j in 새종류 else None)
     for j, names in (새뽑힘 or {}).items():   # 읽은자리를 안 싣는 옛 모양 통계도 받는다
         if j not in 읽은자리:
             뽑힘[보낼[j][0]] = names
+    # '일부만 셈' 재료(2026-10-25) — 오늘 본 댓글 중 '종류' 칸을 아직 못 본 것.
+    #   종류 칸 하나 때문에 옛 댓글을 다시 읽지는 않는다(다시 읽기 속도는 그대로 · 카드 범위).
+    stat["종류칸없음"] = sum(1 for t in 원문들 if comment_reads.get_종류(reads, t) is None)
     comment_reads.save(comment_reads.prune(reads, today), reads_path)
     stat["캐시읽음"] = len(원문들) - len(안읽은)
     stat["다시읽기대상"] = len(다시읽을)
@@ -595,8 +609,12 @@ def extract_brands(mentions: list, *, verdict_path: str = brand_verdicts.DEFAULT
         if 깎음언급 is not None and i is not None:
             for name in 깎힘.get(i) or []:
                 깎음언급.append({**m, "표시": name, "키": name, "종류": "깎음"})
+            # 깎은 종류(상표 아님) — 제품 판정 · 검색 확인을 거치지 않는다(이름들에 안 넣음).
+            for name in 종힘.get(i) or []:
+                깎음언급.append({**m, "표시": name, "키": name, "종류": "깎은종류"})
     stat["언급"] = len(out)
     stat["깎음언급"] = sum(len(v) for v in 깎힘.values())
+    stat["종류언급"] = sum(len(v) for v in 종힘.values())
     stat["확정이름"] = len({m["키"] for m in out
                         if brand_verdicts.is_product(verdicts, m["키"])})
     return out, verdicts, stat
@@ -891,37 +909,177 @@ def viral_accounts(mentions: list, verdicts: dict, unified: dict | None = None,
     return rows
 
 
+# ── 깎인 대상(시장 조사 때 '대안이 무엇이 있나') ──────────────────────────────────
+# ★2026-10-25 사장님: "경쟁사 댓글은 그떄분이라고하는건 자기 제품 바이럴 하기 위해서 상징적인 제품들을
+#   일부로 이용하는거에요 나중에 시장 조사할떄 대안이 무엇이 있나를 찾아봐야할떄 활용하는거는 무조건
+#   필요해요" — 써 봤는데 그때뿐 · 효과 없다 · 부작용으로 깎아 넘기게 한 대상이면 **상표든 종류든**
+#   모으고, 그 글이 경쟁 글 / 우리 글 / 바이럴 아님(같은 글에서 민 제품 없음) 중 어디인지 가른다.
+# 종류 갈래 글자 무늬 — 새로 만들지 않고 이미 쓰던 것에서 가져왔다(순서대로 본다).
+#   약·연고 = team project/cafe-external/_극단_묶기.py:17 '약·연고 실패' + NOT_A_BRAND 의 '약국'
+#   시술    = 같은 파일 :19 '돈 낭비' 의 '스케일링'
+#   병원    = 같은 파일 :16 '병원 순례' 의 낱말(대학병원 · 상급병원 · 피부과 · 병원 · 한의원 · 응급실)
+#   그 밖   = 제품 종류(약산성샴푸 · 보습 샴푸 — 경쟁사_안티트로_설득구조_분석.md:165 '대안 제거' 의 '보습')
+깎은종류_갈래 = (
+    ("약·연고", re.compile(r"스테로이드|연고|처방|약용샴푸|항생제|먹는\s*약|바르는\s*약|리바운드|약국")),
+    ("시술", re.compile(r"스케일링")),
+    ("병원", re.compile(r"대학병원|상급병원|피부과|병원|한의원|응급실")),
+)
+깎은종류_그밖 = "제품 종류"
+예시댓글_길이 = 120
+# 예시 댓글은 깎는 말이 든 것부터 고른다 — 판정기 지시문 7번의 낱말 + _극단_묶기.py:18 '끊으면 도로'.
+#   (2026-10-25 실측: 글 주소 순으로만 고르니 니조랄 예시가 '사서 샴푸하면 싹 낫습니다' 로 나왔다.)
+_깎는말 = re.compile(r"그때\s*뿐|효과\s*(?:없|못)|소용\s*없|내성|반동|리바운드|자극|뻑뻑|냄새|재발|"
+                   r"다시\s*(?:올라|돌아|제자리)|잠깐")
+
+
+def 종류_갈래(name: str) -> str | None:
+    """깎인 이름 → 종류 갈래(약·연고 / 시술 / 병원). 무늬에 안 걸리면 None · 순수함수."""
+    s = str(name or "")
+    for 갈래, rx in 깎은종류_갈래:
+        if rx.search(s):
+            return 갈래
+    return None
+
+
+def 글_열쇠(url) -> str:
+    """글 주소 → 같은 글 열쇠. 검색 화면이 키워드마다 다른 '?art=' 꼬리를 붙여 같은 글이
+    키워드 수만큼 따로 세였다(니조랄 글 71 = 서로 다른 글 30 · 2026-10-25 실측)."""
+    return str(url or "").split("?")[0].split("#")[0].rstrip("/")
+
+
+_연락처 = re.compile(r"\d{2,4}[-.\s]?\d{3,4}[-.\s]?\d{4}")
+_메일 = re.compile(r"[\w.+-]+@[\w-]+\.[\w.]+")
+_주소 = re.compile(r"(?:https?://|www\.)\S+|\b\S+\.(?:com|net|kr|me|ly)\S*", re.I)
+_아이디 = re.compile(r"@[\w.]+|\b[A-Za-z]+\d+[\w.]*|\b(?:카톡|카카오|오픈채팅|아이디|id|ID)\s*[:：]?\s*\S+")
+_님 = re.compile(r"[가-힣A-Za-z0-9_]{1,12}님")
+# 사람을 가리키지 않는 '○님' — 지우면 문맥이 사라진다('교수님이 약용샴푸는 단기 증상만').
+_님_그대로 = {"교수님", "선생님", "원장님", "의사님", "약사님", "고객님", "회원님", "작성자님", "글쓴이님",
+            "사장님", "언니님", "형님", "부모님", "엄마님", "아버님", "어머님", "선배님", "님"}
+
+
+def 개인정보_지우기(text, 글쓴이: str = "", 길이: int = 예시댓글_길이) -> str:
+    """예시 댓글 → 연락처 · 메일 · 주소 · 아이디 · '○○님' 부름 · 글쓴이 닉네임을 지운 한 줄(길이 자 안).
+
+    읽기 기억은 일부러 원문을 안 남긴다(comment_reads.key_of — 크기 · 사생활). 여기서도 한 줄만,
+    지운 뒤에 남긴다. 줄바꿈은 띄어쓰기로."""
+    s = re.sub(r"\s+", " ", str(text or "")).strip()
+    닉 = str(글쓴이 or "").strip()
+    if len(닉) >= 2:
+        s = s.replace(닉, "○○")
+    for rx in (_메일, _주소, _연락처, _아이디):
+        s = rx.sub("○○", s)
+    s = _님.sub(lambda mm: mm.group(0) if mm.group(0) in _님_그대로 else "○○님", s)
+    return s[:길이]
+
+
 def 깎인제품_집계(깎음언급: list, 민언급: list, verdicts: dict,
-                unified: dict | None = None) -> list:
-    """깎음 언급 → [{이름, 댓글수, 글수, 함께민제품}] · 순수함수. 댓글 많은 순.
+                unified: dict | None = None, 셈상태: dict | None = None) -> list:
+    """깎인 언급 → 대상마다 한 줄 · 순수함수. 서로 다른 댓글 많은 순.
+
+    한 줄 = {이름, 종류('상표'/'종류'), 종류갈래, 제품판정, 댓글수(서로 다른 댓글), 글수(서로 다른 글),
+             끌어온경쟁계정수, 글쓴이갈래{경쟁글·우리글·바이럴아님}, 예시댓글, 예시글, 함께민제품, 일부만셈}
+    옛 칸(이름 · 댓글수 · 글수 · 함께민제품)은 이름 그대로 — margin-auto 스냅샷이 그대로 읽는다.
 
     ★2026-10-24 사장님: "이거는 니조랄 바이럴이 아니라 안티트로가 본인 바이럴 하기 위한
-      대안제거임" — 경쟁사 셈에서는 빼고(extract_brands 가 out 에 안 넣음), 화면이
-      따로 보여 줄 수 있게 여기서 묶는다. 함께민제품 = 같은 글에서 **민** 제품.
+      대안제거임" — 경쟁사 셈에서는 빼고(extract_brands 가 out 에 안 넣음) 여기서 따로 묶는다.
+    ★2026-10-25 바꾼 것(대조 보고 ②③④⑤):
+      · 셈 — 같은 댓글이 키워드마다 한 번씩 더해졌다(니조랄 161 = 서로 다른 댓글 70). (글, 댓글) 로 한 번.
+      · 상표만 → 종류도 — 제품 판정을 통과 못 한 깎인 이름(스테로이드 · 크레오신티)과 '종류' 칸을
+        버리지 않는다. 경쟁사 셈 길(표시할_브랜드명 → confirmed_rows)은 그대로다.
+      · 글쓴이 갈래 — 같은 글에서 민 제품이 우리 것뿐이면 우리 글, 남의 것이 하나라도 있으면 경쟁 글,
+        없으면 바이럴 아님(스냅샷 우리_계정_거르기 와 같은 잣대 — 섞어 민 것은 경쟁 쪽).
+      · 버리던 재료 — 끌어온 경쟁 계정 수(글쓴이키) · 예시 댓글 한 줄(개인 정보 지움)을 남긴다.
+    셈상태 = {"다시안읽은옛댓글": n, "종류칸못본댓글": n} — 0 이 아니면 그 갈래 줄에 일부만셈=True.
     """
-    민: dict = {}
+    셈상태 = 셈상태 or {}
+    민: dict = {}                               # 글 열쇠 → 같은 글에서 민 제품(표에 올릴 이름)
     for m in 민언급 or []:
         이름 = 표시할_브랜드명(m, verdicts, unified)
-        if 이름 and m.get("글"):
-            민.setdefault(m["글"], [])
-            if 이름 not in 민[m["글"]]:
-                민[m["글"]].append(이름)
+        글 = 글_열쇠(m.get("글"))
+        if 이름 and 글:
+            민.setdefault(글, [])
+            if 이름 not in 민[글]:
+                민[글].append(이름)
+
+    def 대상(m):
+        """언급 → (이름, 종류, 종류갈래, 제품판정) 또는 None(우리 것 · 빈 이름)."""
+        if m.get("종류") == "깎은종류":
+            이름 = 이름_다듬기(m.get("표시") or m.get("키") or "")
+            if not 이름 or 우리제품인가(이름):
+                return None
+            return 이름, "종류", 종류_갈래(이름) or 깎은종류_그밖, ""
+        이름 = 표시할_브랜드명(m, verdicts, unified)
+        if 이름:
+            if any(h in 이름 for h in OUR_PRODUCT_HINTS):
+                return None
+            return 이름, "상표", "", "통과"
+        # 제품 판정을 못 넘은 깎인 이름 — 예전엔 여기서 버렸다. 종류 무늬면 종류로, 아니면 상표로 남긴다.
+        날것 = 이름_다듬기(m.get("표시") or m.get("키") or "")
+        if len(normalize_name(날것)) < 2 and len(날것) < 2:
+            return None
+        if 우리제품인가(날것):
+            return None
+        갈래 = 종류_갈래(날것)
+        if 갈래:
+            return 날것, "종류", 갈래, ""
+        # '아님'(판정이 제품 아니라 함)과 '미판정'(판정표에 없음 · 검색이 막힌 날)을 섞지 않는다.
+        if m.get("키") not in (verdicts or {}):
+            판정 = "미판정"
+        else:
+            판정 = "통과" if brand_verdicts.is_product(verdicts, m.get("키")) else "아님"
+        return 날것, "상표", "", 판정
+
     모음: dict = {}
     for m in 깎음언급 or []:
-        이름 = 표시할_브랜드명(m, verdicts, unified)
-        if not 이름 or any(h in 이름 for h in OUR_PRODUCT_HINTS):
+        d = 대상(m)
+        if not d:
             continue
-        b = 모음.setdefault(이름, {"이름": 이름, "댓글수": 0, "_글": [], "_함께": []})
-        b["댓글수"] += 1
-        글 = m.get("글")
+        이름, 종류, 갈래, 판정 = d
+        b = 모음.setdefault((종류, 이름), {
+            "이름": 이름, "종류": 종류, "종류갈래": 갈래, "제품판정": 판정,
+            "_댓글": set(), "_글": {}, "_함께": []})
+        글 = 글_열쇠(m.get("글"))
+        댓글 = str(m.get("댓글") or "").strip()
+        b["_댓글"].add((글, 댓글))
         if 글 and 글 not in b["_글"]:
-            b["_글"].append(글)
+            b["_글"][글] = m
         for p in 민.get(글) or []:
             if p != 이름 and p not in b["_함께"]:
                 b["_함께"].append(p)
-    out = [{"이름": b["이름"], "댓글수": b["댓글수"], "글수": len(b["_글"]),
-            "함께민제품": b["_함께"][:8]} for b in 모음.values()]
-    out.sort(key=lambda x: (-x["댓글수"], x["이름"]))
+        b.setdefault("_예시", []).append((글, 댓글, m))
+
+    갈래_순서 = {"경쟁글": 0, "바이럴아님": 1, "우리글": 2}
+    out = []
+    for b in 모음.values():
+        갈래수 = {"경쟁글": 0, "우리글": 0, "바이럴아님": 0}
+        글갈래: dict = {}
+        경쟁계정: set = set()
+        for 글, m in b["_글"].items():
+            민것 = [p for p in 민.get(글) or [] if p != b["이름"]]
+            if not 민것:
+                g = "바이럴아님"
+            elif all(우리제품인가(p) for p in 민것):
+                g = "우리글"
+            else:
+                g = "경쟁글"
+            글갈래[글] = g
+            갈래수[g] += 1
+            키 = str(m.get("글쓴이키") or "").strip()
+            if g == "경쟁글" and 키:
+                경쟁계정.add(키)
+        # 예시는 경쟁 글 먼저 — 시장 조사에서 보려는 것이 '경쟁 글이 어떻게 깎았나' 다. 같은 입력이면 같은 예시.
+        예 = min(b["_예시"], key=lambda x: (갈래_순서[글갈래.get(x[0], "바이럴아님")],
+                                           not _깎는말.search(x[1]), x[0], x[1]))
+        일부 = bool(셈상태.get("종류칸못본댓글") if b["종류"] == "종류"
+                  else 셈상태.get("다시안읽은옛댓글"))
+        out.append({
+            "이름": b["이름"], "종류": b["종류"], "종류갈래": b["종류갈래"], "제품판정": b["제품판정"],
+            "댓글수": len(b["_댓글"]), "글수": len(b["_글"]),
+            "끌어온경쟁계정수": len(경쟁계정), "글쓴이갈래": 갈래수,
+            "예시댓글": 개인정보_지우기(예[1], 예[2].get("글쓴이") or ""), "예시글": 예[0],
+            "함께민제품": b["_함께"][:8], "일부만셈": 일부,
+        })
+    out.sort(key=lambda x: (-x["댓글수"], x["종류"], x["이름"]))
     return out
 
 
@@ -1695,7 +1853,8 @@ def run_from_sheet(args) -> int:
         branded[product] = ms2
         verdicts.update(v)
         for k in ("댓글", "묶음", "못읽은묶음", "뽑은이름", "캐시읽음",
-                  "검색확인", "검색통과", "검색막힘", "다시읽기대상", "다시읽음", "깎음언급"):
+                  "검색확인", "검색통과", "검색막힘", "다시읽기대상", "다시읽음", "깎음언급",
+                  "종류언급", "종류칸없음"):
             jstat[k] = jstat.get(k, 0) + int(stat.get(k, 0) or 0)
         jstat["탈"] = sorted(set(jstat["탈"]) | set(stat.get("탈", [])))
     all_mentions = [m for ms in branded.values() for m in ms]
@@ -1852,9 +2011,15 @@ def run_from_sheet(args) -> int:
                 세기[k] = 세기.get(k, 0) + 1
             print(f"회원 여부: {세기} (새로 물음 {회원통계['물음']} · 기억 {회원통계['기억']} "
                   f"· 상한으로 못 물음 {회원통계['못물음']})")
-            깎인 = 깎인제품_집계(깎음언급, all_mentions, verdicts, unified)
-            print(f"깎아내린 제품 {len(깎인)}종(경쟁사 셈에서 뺌) · 다시 읽은 옛 댓글 "
-                  f"{jstat.get('다시읽음', 0)}/{jstat.get('다시읽기대상', 0)}")
+            # '일부만 셈' — 옛 댓글을 다 다시 읽기 전(상표) · 종류 칸을 못 본 댓글이 남은 동안(종류).
+            셈상태 = {"다시안읽은옛댓글": max(0, int(jstat.get("다시읽기대상", 0) or 0)
+                                         - int(jstat.get("다시읽음", 0) or 0)),
+                     "종류칸못본댓글": int(jstat.get("종류칸없음", 0) or 0)}
+            깎인 = 깎인제품_집계(깎음언급, all_mentions, verdicts, unified, 셈상태=셈상태)
+            종류줄 = sum(1 for x in 깎인 if x.get("종류") == "종류")
+            print(f"깎인 대상 {len(깎인)}개(상표 {len(깎인) - 종류줄} · 종류 {종류줄} · 경쟁사 셈에서 뺌) "
+                  f"· 다시 읽은 옛 댓글 {jstat.get('다시읽음', 0)}/{jstat.get('다시읽기대상', 0)} "
+                  f"· 종류 칸 못 본 댓글 {셈상태['종류칸못본댓글']}")
             with open(자리, "w", encoding="utf-8") as f:
                 json.dump({"때": today, "계정": 계정줄, "깎인제품": 깎인}, f,
                           ensure_ascii=False, indent=1)
