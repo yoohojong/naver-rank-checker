@@ -117,11 +117,93 @@ _UNIFY_SYSTEM = (
 )
 
 
-def unify(names: list, *, timeout: int = 30, sleep=time.sleep) -> dict:
+# ── 이름 묶기 거름 (2026-10-26) ─────────────────────────────────────────────
+# ★10-25 밤 실행: AI 가 '닥터그루트'(LG생활건강)를 '고루트'(다른 회사 어성초 샴푸)로,
+#   '헤드어택'(중심얼얼 쿨샴푸)을 '헤드앤숄더'로 묶었다. 받은 묶음을 **글자를 안 보고**
+#   그대로 믿어서 경쟁사 셈 · 바이럴 계정 '미는제품' · 깎인 대상이 모두 남의 이름을 달았다.
+#   지시문은 '흐트러뜨린 표기'(글자가 끼거나 빠지거나 한 글자 틀린 것)를 묶으라는 것이다 —
+#   그렇다면 묶인 두 이름은 **글자로도 닮아 있어야 한다.** 안 닮았으면 AI 연상이지 흐트러뜨림이 아니다.
+#   그래서 AI 답은 '묶어도 될 후보'로만 받고, 글자가 닮은 것만 묶는다.
+#   못 묶어 두 줄로 남는 쪽이 남의 상표로 합치는 쪽보다 안전하다(적게 묶는 오류 > 지어내는 오류).
+_영문_읽기 = {
+    "a": "에이", "b": "비", "c": "씨", "d": "디", "e": "이", "f": "에프", "g": "지",
+    "h": "에이치", "i": "아이", "j": "제이", "k": "케이", "l": "엘", "m": "엠", "n": "엔",
+    "o": "오", "p": "피", "q": "큐", "r": "알", "s": "에스", "t": "티", "u": "유",
+    "v": "브이", "w": "더블유", "x": "엑스", "y": "와이", "z": "제트",
+}
+# 한 글자 틀린 것으로 볼 한도 — 자모 7개(한글 약 2~3글자)마다 1개까지.
+#   '클모앤'↔'클모엔'(자모 8개 중 1개) · '헤드엔숄더'↔'헤드앤숄더' 는 묶이고,
+#   '고루트'↔'그루트'(자모 6개 중 1개)처럼 짧은 이름의 한 글자 차이는 다른 상표일 수 있어 안 묶는다.
+_자모_한도_단위 = 7
+
+
+def _소리열쇠(name) -> str:
+    """이름 → 견줄 글자(한글만). 영문 글자는 읽는 소리로('라보H' → '라보에이치')."""
+    from .comment_brand import strip_generic_tail
+    s = "".join(_영문_읽기.get(ch, ch) for ch in str(name or "").lower())
+    s = "".join(ch for ch in s if "가" <= ch <= "힣")
+    return strip_generic_tail(s) or s
+
+
+def _자모(s: str) -> list:
+    out = []
+    for ch in s:
+        c = ord(ch) - 0xAC00
+        if 0 <= c < 11172:
+            out.append(c // 588)                     # 첫소리
+            out.append(100 + (c % 588) // 28)        # 가운뎃소리
+            if c % 28:
+                out.append(200 + c % 28)             # 끝소리
+        else:
+            out.append(ch)
+    return out
+
+
+def _거리(a: list, b: list) -> int:
+    prev = list(range(len(b) + 1))
+    for i, x in enumerate(a, 1):
+        cur = [i]
+        for j, y in enumerate(b, 1):
+            cur.append(min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + (x != y)))
+        prev = cur
+    return prev[-1]
+
+
+def 글자가_닮았나(a, b) -> bool:
+    """두 브랜드 이름이 '같은 이름의 흐트러뜨린 표기'로 볼 만큼 글자가 닮았나 · 순수함수.
+
+    닮음 = ① 견줄 글자가 같다('클모.엔'·'클모엔', '라보H'·'라보에이치', '로마샴푸'·'로마')
+           ② 한쪽이 다른 쪽 앞머리다('안티트'·'안티트로', '아모스녹차실감'·'아모스')
+              — 조사를 떼고 봐도 된다('닥터포만 써요' 의 '닥터포만' → '닥터포'·'닥터포헤어')
+           ③ 3글자 넘는 쪽이 다른 쪽 안에 통째로 있다('바디샵'·'더바디샵')
+           ④ 자모가 한두 개만 다르다('헤드엔숄더'·'헤드앤숄더', '존슨앤존스'·'존슨앤존슨')
+    '닥터그루트'·'고루트', '헤드어택'·'헤드앤숄더' 는 어디에도 안 걸린다.
+    """
+    from .comment_brand import strip_josa
+    ka, kb = _소리열쇠(a), _소리열쇠(b)
+    if not ka or not kb:
+        return False
+    if ka == kb:
+        return True
+    for x in {ka, strip_josa(ka)}:
+        for y in {kb, strip_josa(kb)}:
+            짧, 긴 = sorted((x, y), key=len)
+            if len(짧) >= 2 and 긴.startswith(짧):
+                return True
+            if len(짧) >= 3 and 짧 in 긴:
+                return True
+    ja, jb = _자모(ka), _자모(kb)
+    return _거리(ja, jb) <= min(len(ja), len(jb)) // _자모_한도_단위
+
+
+def unify(names: list, *, timeout: int = 30, sleep=time.sleep,
+          거절: list | None = None) -> dict:
     """브랜드명 목록 → {이름: 대표이름}. 실패하면 빈 dict(그대로 둔다).
 
     같은 브랜드가 표에 여러 줄로 남지 않게 하는 마지막 관문이다.
     이름만 보내므로 한 번 호출로 끝난다(싸다).
+    ★AI 가 묶었어도 글자가 안 닮았으면 묶지 않는다(위 '이름 묶기 거름').
+      `거절` 목록을 주면 안 묶은 (이름, AI 가 준 대표) 를 담아 준다 — 기록에 남기라고.
     """
     names = [str(n).strip() for n in (names or []) if str(n).strip()]
     if not _api_key() or len(names) < 2:
@@ -146,8 +228,13 @@ def unify(names: list, *, timeout: int = 30, sleep=time.sleep) -> dict:
             continue
         for alias in [rep] + list(g.get("별칭") or []):
             real = known.get(_key(alias))
-            if real:                        # 보내지 않은 이름을 지어내면 무시한다
-                out[real] = rep
+            if not real:                    # 보내지 않은 이름을 지어내면 무시한다
+                continue
+            if real != rep and not 글자가_닮았나(real, rep):
+                if 거절 is not None and (real, rep) not in 거절:
+                    거절.append((real, rep))
+                continue                    # 제 이름 그대로 둔다
+            out[real] = rep
     return out
 
 

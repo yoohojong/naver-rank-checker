@@ -1701,11 +1701,18 @@ def run_from_sheet(args) -> int:
     all_mentions = [m for ms in branded.values() for m in ms]
 
     # 같은 브랜드가 여러 표기로 흩어져 있으면 정식 이름 하나로 묶는다(호출 1회).
-    unified = comment_brand_llm.unify(brand_names(all_mentions, verdicts))
+    # ★2026-10-26 — 예전 기록은 묶인 이름 3개만, 그것도 **어디로** 묶였는지 없이 찍었다.
+    #   그래서 '닥터그루트 → 고루트' 같은 잘못 묶음이 밤마다 표에 들어가도 기록에서 안 보였다.
+    #   지금은 묶은 것 전부와, 글자가 안 닮아 안 묶은 AI 답을 '→' 로 다 남긴다.
+    묶기거절: list = []
+    unified = comment_brand_llm.unify(brand_names(all_mentions, verdicts), 거절=묶기거절)
     if unified:
         merged = {a: r for a, r in unified.items() if a != r}
         print(f"이름 묶기: {len(merged)}개를 정식 브랜드명으로 통일"
-              + (f" (예: {', '.join(list(merged)[:3])})" if merged else ""))
+              + (f" ({' · '.join(f'{a}→{r}' for a, r in merged.items())})" if merged else ""))
+    if 묶기거절:
+        print(f"이름 묶기: AI 가 묶자고 했지만 글자가 안 닮아 안 묶은 것 {len(묶기거절)}개 "
+              f"({' · '.join(f'{a}→{r}' for a, r in 묶기거절)})")
 
     # ★어제까지의 '경쟁사' 표를 **여기서** 읽는다(쓰기 직전이 아니라).
     #   오늘 언급을 어느 제품군에 놓을지가 그 표의 '파는 제품군' 칸에 적혀 있다 —
