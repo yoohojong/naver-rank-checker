@@ -96,8 +96,7 @@ with sync_playwright() as pw:
                         data = None
                         open("out/xlsx_head.txt", "w", encoding="utf-8").write(json.dumps(rows[:8], ensure_ascii=False, default=str))
                 except Exception as e:
-                    open("out/xlsx_err.txt", "a", encoding="utf-8").write(repr(e) + "
-")
+                    open("out/xlsx_err.txt", "a", encoding="utf-8").write(repr(e) + chr(10))
             if data is None:
                 # 결과 화면은 값을 window.$DATALAB 안에 담는다(10-26 실측) — 거기서 period 가 든 배열을 찾는다
                 dl = p.evaluate("""() => { const seen = new Set(); const out = [];
