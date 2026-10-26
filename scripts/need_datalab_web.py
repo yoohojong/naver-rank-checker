@@ -45,10 +45,35 @@ with sync_playwright() as pw:
             m = re.search(r"N_[0-9a-f]{20,}", txt)
             if not m:
                 raise RuntimeError("hashKey 없음: " + txt[:200])
+            caught = []
+            def _on(r):
+                try:
+                    if r.request.resource_type in ("xhr", "fetch"):
+                        caught.append((r.url, r.text()))
+                except Exception:
+                    pass
+            p.on("response", _on)
             p.goto(f"https://datalab.naver.com/keyword/trendResult.naver?hashKey={m.group(0)}",
                    wait_until="networkidle", timeout=60000)
-            g = p.eval_on_selector("input#graphData, input[name=graphData]", "e => e.value")
-            data = json.loads(g)
+            p.wait_for_timeout(3000)
+            p.remove_listener("response", _on)
+            g = p.eval_on_selector("input#graphData, input[name=graphData]", "e => e.value") or ""
+            data = None
+            if g.strip():
+                data = json.loads(g)
+            else:
+                for u, t in caught:
+                    if '"period"' in t:
+                        j = json.loads(t)
+                        data = j.get("results") or j.get("result") or j.get("data") or j
+                        break
+            if raw_first is None:
+                open("out/caught_first.json", "w", encoding="utf-8").write(
+                    json.dumps([(u, t[:3000]) for u, t in caught], ensure_ascii=False, indent=1))
+            if data is None:
+                raise RuntimeError("값 자리 못 찾음 · 잡힌 요청 " + ", ".join(u for u, _ in caught)[:400])
+            if isinstance(data, dict):
+                data = data.get("results") or data.get("data") or [data]
             if raw_first is None:
                 raw_first = data
             series = {}
