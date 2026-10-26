@@ -71,6 +71,19 @@ with sync_playwright() as pw:
                 open("out/caught_first.json", "w", encoding="utf-8").write(
                     json.dumps([(u, t[:3000]) for u, t in caught], ensure_ascii=False, indent=1))
             if data is None:
+                # 결과 화면은 값을 그래프(billboard.js) 안에 담는다 — 그래프에서 바로 읽는다
+                bbd = p.evaluate("""() => (window.bb && bb.instance || []).map(c => c.data().map(d => ({
+                    title: d.id, data: d.values.map(v => ({period: (v.x instanceof Date ? v.x.toISOString() : String(v.x)), value: v.value}))})))""")
+                bbd = [x for x in bbd if x]
+                if bbd:
+                    data = bbd[0]
+                    names_order = names
+                    # 그래프 id 가 data1.. 같은 이름이면 넣은 순서대로 붙인다
+                    if all(grp["title"] not in names_order for grp in data) and len(data) == len(names_order):
+                        for grp, n in zip(data, names_order):
+                            grp["title"] = n
+            if data is None:
+                open("out/full_page.html", "w", encoding="utf-8").write(p.content())
                 raise RuntimeError("값 자리 못 찾음 · 잡힌 요청 " + ", ".join(u for u, _ in caught)[:400])
             if isinstance(data, dict):
                 data = data.get("results") or data.get("data") or [data]
