@@ -42,6 +42,8 @@ with sync_playwright() as pw:
         try:
             txt = p.evaluate(FETCH_JS, {"queryGroups": groups_str(names), "startDate": START, "endDate": END,
                                         "timeUnit": "date", "gender": "", "age": "", "device": ""})
+            if raw_first is None and i == 0:
+                open("out/qchash_first.txt", "w", encoding="utf-8").write(txt[:200000])
             m = re.search(r"N_[0-9a-f]{20,}", txt)
             if not m:
                 raise RuntimeError("hashKey 없음: " + txt[:200])
@@ -83,6 +85,8 @@ with sync_playwright() as pw:
                         for grp, n in zip(data, names_order):
                             grp["title"] = n
             if data is None:
+                st = p.evaluate("() => JSON.stringify({s: Object.entries(sessionStorage).map(([k,v])=>[k,v.slice(0,3000)]), l: Object.entries(localStorage).map(([k,v])=>[k,v.slice(0,3000)]), w: Object.keys(window).filter(k=>/data|graph|chart|bb|trend/i.test(k))})")
+                open("out/storage.json", "w", encoding="utf-8").write(st)
                 open("out/full_page.html", "w", encoding="utf-8").write(p.content())
                 raise RuntimeError("값 자리 못 찾음 · 잡힌 요청 " + ", ".join(u for u, _ in caught)[:400])
             if isinstance(data, dict):
