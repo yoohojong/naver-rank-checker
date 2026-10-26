@@ -73,6 +73,17 @@ with sync_playwright() as pw:
                 open("out/caught_first.json", "w", encoding="utf-8").write(
                     json.dumps([(u, t[:3000]) for u, t in caught], ensure_ascii=False, indent=1))
             if data is None:
+                # 결과 화면은 값을 window.$DATALAB 안에 담는다(10-26 실측) — 거기서 period 가 든 배열을 찾는다
+                dl = p.evaluate("""() => { const seen = new Set(); const out = [];
+                    function walk(o, path, d) { if (!o || typeof o !== 'object' || seen.has(o) || d > 6) return; seen.add(o);
+                      if (Array.isArray(o) && o.length && o[0] && typeof o[0] === 'object' && ('period' in o[0])) { out.push([path, o.slice(0, 2000)]); return; }
+                      for (const k of Object.keys(o)) { try { walk(o[k], path + '.' + k, d + 1); } catch (e) {} } }
+                    walk(window.$DATALAB, '$DATALAB', 0); return JSON.stringify({keys: Object.keys(window.$DATALAB || {}), found: out}); }""")
+                open("out/datalab_obj.json", "w", encoding="utf-8").write(dl)
+                found = json.loads(dl).get("found") or []
+                if found:
+                    data = [{"title": path, "data": arr} for path, arr in found]
+            if data is None:
                 # 결과 화면은 값을 그래프(billboard.js) 안에 담는다 — 그래프에서 바로 읽는다
                 bbd = p.evaluate("""() => (window.bb && bb.instance || []).map(c => c.data().map(d => ({
                     title: d.id, data: d.values.map(v => ({period: (v.x instanceof Date ? v.x.toISOString() : String(v.x)), value: v.value}))})))""")
