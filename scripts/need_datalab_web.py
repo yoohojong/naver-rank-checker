@@ -41,7 +41,7 @@ with sync_playwright() as pw:
         names = [ANCHOR] + chunk
         try:
             txt = p.evaluate(FETCH_JS, {"queryGroups": groups_str(names), "startDate": START, "endDate": END,
-                                        "timeUnit": "month", "gender": "", "age": "", "device": ""})
+                                        "timeUnit": "date", "gender": "", "age": "", "device": ""})
             m = re.search(r"N_[0-9a-f]{20,}", txt)
             if not m:
                 raise RuntimeError("hashKey 없음: " + txt[:200])
@@ -55,7 +55,12 @@ with sync_playwright() as pw:
             for grp in data:
                 title = grp.get("title") or grp.get("keyword") or grp.get("name")
                 rows = grp.get("data") or grp.get("datas") or []
-                series[title] = {str(r.get("period"))[:7]: float(r.get("value", r.get("ratio", 0)) or 0) for r in rows}
+                # 달마다 단위는 이 화면에서 받지 않아(INVALID_PARAMS) 날마다 값을 받아 달 평균으로 묶는다
+                acc = {}
+                for r in rows:
+                    d = re.sub(r"\D", "", str(r.get("period")))
+                    acc.setdefault(f"{d[:4]}-{d[4:6]}", []).append(float(r.get("value", r.get("ratio", 0)) or 0))
+                series[title] = {k: round(sum(v) / len(v), 3) for k, v in acc.items()}
             base = series.get(ANCHOR, {})
             for w in chunk:
                 result[w] = [{"달": k, "원값": v, "기준대비": round(v / base[k], 4) if base.get(k) else None}
