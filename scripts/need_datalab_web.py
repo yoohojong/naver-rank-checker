@@ -73,6 +73,32 @@ with sync_playwright() as pw:
                 open("out/caught_first.json", "w", encoding="utf-8").write(
                     json.dumps([(u, t[:3000]) for u, t in caught], ensure_ascii=False, indent=1))
             if data is None:
+                # 결과 화면의 '다운로드' 단추로 엑셀을 받아 읽는다(값이 화면 코드 안에 갇혀 있어서 · 10-26)
+                try:
+                    import openpyxl
+                    with p.expect_download(timeout=30000) as dl_info:
+                        p.click("text=다운로드")
+                    path = f"out/xlsx_{i // 4}.xlsx"
+                    dl_info.value.save_as(path)
+                    ws = openpyxl.load_workbook(path, data_only=True).active
+                    rows = [list(r) for r in ws.iter_rows(values_only=True)]
+                    hi = next(k for k, r in enumerate(rows) if r and any(str(c or "").strip() in names for c in r))
+                    head = rows[hi]
+                    data = []
+                    for col, h in enumerate(head):
+                        h = str(h or "").strip()
+                        if h in names:
+                            dcol = col - 1
+                            vals = [{"period": str(r[dcol]), "value": r[col]} for r in rows[hi + 1:]
+                                    if r and len(r) > col and r[col] is not None and r[dcol] is not None]
+                            data.append({"title": h, "data": vals})
+                    if not data:
+                        data = None
+                        open("out/xlsx_head.txt", "w", encoding="utf-8").write(json.dumps(rows[:8], ensure_ascii=False, default=str))
+                except Exception as e:
+                    open("out/xlsx_err.txt", "a", encoding="utf-8").write(repr(e) + "
+")
+            if data is None:
                 # 결과 화면은 값을 window.$DATALAB 안에 담는다(10-26 실측) — 거기서 period 가 든 배열을 찾는다
                 dl = p.evaluate("""() => { const seen = new Set(); const out = [];
                     function walk(o, path, d) { if (!o || typeof o !== 'object' || seen.has(o) || d > 6) return; seen.add(o);
