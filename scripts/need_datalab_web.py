@@ -1,0 +1,80 @@
+"""욕구 검색어의 달마다 검색 흐름 받기 — 네이버 데이터랩 공개 화면(로그인 없음) · GitHub 서버 전용.
+
+2026-10-26 노력 욕구 창. 공식 API 열쇠에 데이터랩 권한이 없어(024) 공개 화면 길로 받는다.
+한 번에 묶음 5개(기준 1 + 검색어 4). 결과: out/need_datalab_web.json
+"""
+import json, os, re, sys, time
+from playwright.sync_api import sync_playwright
+
+ANCHOR = os.environ.get("ANCHOR") or "다이어트"
+START = (os.environ.get("START") or "2023-10-01").replace("-", "")
+END = (os.environ.get("END") or "2026-09-30").replace("-", "")
+words, seen = [], set()
+for w in (os.environ.get("KEYWORDS") or "").replace("\n", ",").split(","):
+    w = w.strip()
+    if w and w != ANCHOR and w not in seen:
+        seen.add(w)
+        words.append(w)
+if not words:
+    sys.exit("검색어 없음")
+os.makedirs("out", exist_ok=True)
+SEARCH = "https://datalab.naver.com/keyword/trendSearch.naver"
+FETCH_JS = """async (f) => {
+  const r = await fetch('/qcHash.naver', {method: 'POST',
+    headers: {'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8', 'X-Requested-With': 'XMLHttpRequest'},
+    body: new URLSearchParams(f).toString()});
+  return await r.text();
+}"""
+
+
+def groups_str(names):
+    return "__OUML__".join(f"{n}__SZLIG__{n}" for n in names)
+
+
+result, failed, raw_first = {}, [], None
+with sync_playwright() as pw:
+    b = pw.chromium.launch()
+    p = b.new_page(locale="ko-KR")
+    p.goto(SEARCH, wait_until="networkidle", timeout=60000)
+    for i in range(0, len(words), 4):
+        chunk = words[i:i + 4]
+        names = [ANCHOR] + chunk
+        try:
+            txt = p.evaluate(FETCH_JS, {"queryGroups": groups_str(names), "startDate": START, "endDate": END,
+                                        "timeUnit": "month", "gender": "", "age": "", "device": ""})
+            m = re.search(r"N_[0-9a-f]{20,}", txt)
+            if not m:
+                raise RuntimeError("hashKey 없음: " + txt[:200])
+            p.goto(f"https://datalab.naver.com/keyword/trendResult.naver?hashKey={m.group(0)}",
+                   wait_until="networkidle", timeout=60000)
+            g = p.eval_on_selector("input#graphData, input[name=graphData]", "e => e.value")
+            data = json.loads(g)
+            if raw_first is None:
+                raw_first = data
+            series = {}
+            for grp in data:
+                title = grp.get("title") or grp.get("keyword") or grp.get("name")
+                rows = grp.get("data") or grp.get("datas") or []
+                series[title] = {str(r.get("period"))[:7]: float(r.get("value", r.get("ratio", 0)) or 0) for r in rows}
+            base = series.get(ANCHOR, {})
+            for w in chunk:
+                result[w] = [{"달": k, "원값": v, "기준대비": round(v / base[k], 4) if base.get(k) else None}
+                             for k, v in sorted(series.get(w, {}).items())]
+            print(f"{min(i + 4, len(words))}/{len(words)}", flush=True)
+            p.goto(SEARCH, wait_until="domcontentloaded", timeout=60000)
+            time.sleep(1.0)
+        except Exception as e:  # 한 묶음이 실패해도 나머지는 받는다
+            print("실패", chunk, e, file=sys.stderr)
+            failed += chunk
+            if raw_first is None and i == 0:
+                try:
+                    open("out/first_fail_page.txt", "w", encoding="utf-8").write(p.content()[:200000])
+                except Exception:
+                    pass
+    b.close()
+
+json.dump({"기준": ANCHOR, "기간": [START, END], "검색어": result, "실패": failed, "원자료_첫묶음": raw_first},
+          open("out/need_datalab_web.json", "w", encoding="utf-8"), ensure_ascii=False, indent=1)
+print(f"받음 {len(result)} · 실패 {len(failed)}")
+if not result:
+    sys.exit(1)
