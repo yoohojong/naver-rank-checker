@@ -1,0 +1,74 @@
+name: competitor-post-bodies
+# 경쟁사 블로그 · 카페 글 본문 받기 — 글마다 사업자 표기 · 광고 표시 · 판매처 주소를 가른다.
+# 2026-10-26 ⑥ 경쟁사 신고 프로그램 창 · 사장님 '그래 가자'(순위체커 저장소에 새 실행 파일만 더하기 · 기존 코드 안 고침).
+# 결과물 이름 competitor-post-bodies — 받는 명령: gh run download <실행번호> -R yoohojong/naver-rank-checker -n competitor-post-bodies
+# 예약(cron) 없음: 손으로 부를 때만 돈다.
+on:
+  push:
+    branches: [feat/competitor-post-bodies]
+    paths:
+      - scripts/competitor_post_bodies.py
+      - .github/workflows/competitor-post-bodies.yml
+  workflow_dispatch:
+    inputs:
+      blogs:
+        description: '쉼표로 가른 블로그 아이디'
+        required: false
+        default: ''
+      cafes:
+        description: '쉼표로 가른 카페 주소 이름'
+        required: false
+        default: ''
+      markers:
+        description: '쉼표로 가른 찾을 낱말'
+        required: false
+        default: ''
+      shop_query:
+        description: '쉼표로 가른 쇼핑 검색어'
+        required: false
+        default: ''
+      max_posts:
+        description: '블로그 · 카페마다 글 수 상한'
+        required: false
+        default: '60'
+
+concurrency:
+  group: competitor-post-bodies
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  fetch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6.0.2
+        with:
+          token: ${{ github.token }}
+
+      - name: Setup Python 3.13
+        uses: actions/setup-python@v6.2.0
+        with:
+          python-version: '3.13'
+
+      - name: Fetch
+        env:
+          NAVER_OPENAPI_CLIENT_ID: ${{ secrets.NAVER_OPENAPI_CLIENT_ID }}
+          NAVER_OPENAPI_CLIENT_SECRET: ${{ secrets.NAVER_OPENAPI_CLIENT_SECRET }}
+          BLOGS: ${{ github.event.inputs.blogs }}
+          CAFES: ${{ github.event.inputs.cafes }}
+          MARKERS: ${{ github.event.inputs.markers }}
+          SHOP_QUERY: ${{ github.event.inputs.shop_query }}
+          MAX_POSTS: ${{ github.event.inputs.max_posts }}
+        run: python scripts/competitor_post_bodies.py --out-dir out
+
+      - name: Upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: competitor-post-bodies
+          path: out/*.json
+          retention-days: 3
+          if-no-files-found: error
