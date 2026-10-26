@@ -15,6 +15,10 @@ on:
         description: '쉼표로 가른 키워드(10개까지)'
         required: false
         default: '딕션관리기,식스칙구균제,메아리셋,열보초크림'
+      probe:
+        description: '쇼핑 404 원인 진단만 돌리기(요청 8번)'
+        required: false
+        default: 'false'
 
 concurrency:
   group: keyword-surround-api
@@ -43,7 +47,7 @@ jobs:
           NAVER_OPENAPI_CLIENT_ID: ${{ secrets.NAVER_OPENAPI_CLIENT_ID }}
           NAVER_OPENAPI_CLIENT_SECRET: ${{ secrets.NAVER_OPENAPI_CLIENT_SECRET }}
           KEYWORDS: ${{ github.event.inputs.keywords }}
-        run: python scripts/keyword_surround_api.py --out-dir out
+        run: python scripts/keyword_surround_api.py --out-dir out ${{ github.event.inputs.probe == 'true' && '--probe' || '' }}
 
       - name: Upload
         uses: actions/upload-artifact@v4
@@ -51,4 +55,4 @@ jobs:
           name: gapmap-keyword-surround
           path: out/*.json
           retention-days: 14
-          if-no-files-found: error
+          if-no-files-found: ignore

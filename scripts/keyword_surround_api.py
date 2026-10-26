@@ -61,9 +61,13 @@ def fetch(source: str, keyword: str, cid: str, csec: str, opener=urllib.request.
     try:
         with opener(req, timeout=20) as r:
             body = json.loads(r.read().decode("utf-8"))
-        items = body.get("items") or []
-        out.update(상태="성공", 검색결과수=body.get("total"), 개수=len(items),
-                   항목들=[item_row(source, it) for it in items])
+        items = body.get("items") if isinstance(body, dict) else None
+        if not isinstance(items, list):  # 200 인데 오류 글이거나 items 칸이 없으면 정상 0건이 아니라 실패
+            why = f"200 응답인데 items 칸이 없음: errorCode={body.get('errorCode')} errorMessage={body.get('errorMessage')}"                 if isinstance(body, dict) else f"200 응답이 JSON 객체가 아님({type(body).__name__})"
+            out.update(상태="실패 items 없음", 까닭=why[:300], 개수=0, 항목들=[])
+        else:
+            out.update(상태="성공", 검색결과수=body.get("total"), 개수=len(items),
+                       항목들=[item_row(source, it) for it in items])
     except urllib.error.HTTPError as e:
         out.update(상태=f"실패 HTTP {e.code}", 까닭=e.read().decode("utf-8", "replace")[:300], 개수=0, 항목들=[])
     except Exception as e:  # 연결 오류도 칸에 남기고 다음 키워드로 간다
@@ -100,8 +104,39 @@ def count_table(result: dict) -> str:
     return "\n".join(lines)
 
 
+PROBES = [  # 쇼핑 404(SE05) 원인 가르기용 — 같은 열쇠로 주소·매개변수만 바꿔 본다(요청 8번)
+    ("쇼핑 현재와 같음", "shop.json", {"display": 30, "start": 1, "sort": "sim"}),
+    ("쇼핑 query만", "shop.json", {}),
+    ("쇼핑 display=10", "shop.json", {"display": 10, "start": 1, "sort": "sim"}),
+    ("쇼핑 sort=date", "shop.json", {"display": 10, "start": 1, "sort": "date"}),
+    ("쇼핑 xml", "shop.xml", {"display": 10, "start": 1, "sort": "sim"}),
+    ("대조 블로그", "blog.json", {"display": 10, "start": 1, "sort": "sim"}),
+    ("대조 웹문서", "webkr.json", {"display": 10}),
+    ("대조 백과", "encyc.json", {"display": 10}),
+]
+
+
+def probe(keyword: str, cid: str, csec: str, opener=urllib.request.urlopen) -> list[dict]:
+    """쇼핑이 왜 404 인지 가르는 진단. 열쇠 값은 찍지 않는다."""
+    res = []
+    for name, path, extra in PROBES:
+        url = "https://openapi.naver.com/v1/search/" + path + "?" + urllib.parse.urlencode({"query": keyword, **extra})
+        req = urllib.request.Request(url, headers={"X-Naver-Client-Id": cid, "X-Naver-Client-Secret": csec})
+        try:
+            with opener(req, timeout=20) as r:
+                code, text = r.status, r.read().decode("utf-8", "replace")
+        except urllib.error.HTTPError as e:
+            code, text = e.code, e.read().decode("utf-8", "replace")
+        except Exception as e:  # noqa: BLE001
+            code, text = 0, f"{type(e).__name__}: {e}"
+        res.append({"이름": name, "주소": url, "상태": code, "앞글": re.sub(r"\s+", " ", text)[:160]})
+        time.sleep(0.2)
+    return res
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser()
+    ap.add_argument("--probe", action="store_true", help="쇼핑 404 원인 진단(요청 8번)")
     ap.add_argument("--keywords", default=os.environ.get("KEYWORDS") or DEFAULT_KEYWORDS,
                     help="쉼표로 가른 키워드")
     ap.add_argument("--out-dir", default="out")
@@ -115,6 +150,10 @@ def main(argv=None) -> int:
         print("멈춤: NAVER_OPENAPI_CLIENT_ID/SECRET 이 이 실행에 없습니다")
         return 2
     keywords = [k.strip() for k in a.keywords.split(",") if k.strip()]
+    if a.probe:
+        for r in probe(keywords[0], cid, csec):
+            print(f"{r['상태']} | {r['이름']} | {r['주소'].split('?')[0]} | {r['앞글']}")
+        return 0
     result = run(keywords, cid, csec)
     Path(a.out_dir).mkdir(parents=True, exist_ok=True)
     name = f"키워드주변_{datetime.now(KST).strftime('%Y%m%d-%H%M')}.json"
