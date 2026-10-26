@@ -1,0 +1,22 @@
+name: datalab-web-probe
+# 데이터랩 공개 화면이 로그인 없이 열리는지 보기(읽기만 · 예약 없음) — 2026-10-26 노력 욕구 창.
+on:
+  push:
+    branches: [feat/need-datalab-monthly]
+    paths: [scripts/datalab_web_probe.py, .github/workflows/datalab-web-probe.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v6.0.2
+      - uses: actions/setup-python@v6.2.0
+        with: {python-version: '3.13'}
+      - run: pip install playwright && python -m playwright install --with-deps chromium
+      - run: python scripts/datalab_web_probe.py
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with: {name: datalab-web-probe, path: out/, retention-days: 7}
