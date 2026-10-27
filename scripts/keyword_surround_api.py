@@ -1,11 +1,11 @@
 """키워드 주변 정보 받기 — 네이버 공식 검색 API 부분 (2026-10-25 · ⑧ 디테일 코벤 창 · ④ 빈틈지도 창이 같이 씀).
 
-키워드마다 블로그 · 카페 · 지식인 · 쇼핑 상위 30개와 검색 결과 수를 받아 JSON 한 파일로 낸다.
+키워드마다 블로그 · 카페 · 지식인 상위 30개와(쇼핑은 API 종료로 받지 않음) 검색 결과 수를 받아 JSON 한 파일로 낸다.
 기존 코드는 부르지 않는 단독 파일이다(이 저장소에만 공식 검색 열쇠가 있어서 여기 둔다).
 네이버 요청은 GitHub 서버에서만 나간다 — 집 PC 에서 부르면 멈춘다.
 
 키: NAVER_OPENAPI_CLIENT_ID / NAVER_OPENAPI_CLIENT_SECRET (src/jisikin_collect.py 와 같은 열쇠).
-상한: 한 번에 키워드 10개 · 네이버 요청 40번.
+상한: 한 번에 키워드 10개 · 네이버 요청 40번(키워드당 3번).
 """
 from __future__ import annotations
 
@@ -25,7 +25,12 @@ from pathlib import Path
 KST = timezone(timedelta(hours=9))
 API = "https://openapi.naver.com/v1/search/{}.json"
 # 출처 이름 → API 이름. 표의 칸 순서도 이 순서다.
-SOURCES = {"블로그": "blog", "카페": "cafearticle", "지식인": "kin", "쇼핑": "shop"}
+SOURCES = {"블로그": "blog", "카페": "cafearticle", "지식인": "kin"}
+# 쇼핑: 네이버가 쇼핑 검색 API 를 2026-07-31 에 끝냄(대체 API 없음) → 요청 0번. 정상 0건과 구별되게 '받지 않음'으로 남긴다.
+# 쇼핑은 통합검색 화면 읽기(keyword_surround.py '쇼핑(화면)')로 받는다. 진단용 PROBES 는 지우지 않고 --probe 로만 돈다.
+_API_NAME = {**SOURCES, "쇼핑": "shop"}  # fetch 단독 호출(시험·진단)용 — run 은 SOURCES 만 돈다
+ENDED = {"쇼핑": "받지 않음 — 네이버 쇼핑 검색 API 종료(2026-07-31, 공지 32564)"}
+ALL_CELLS = tuple(SOURCES) + tuple(ENDED)
 DISPLAY = 30
 MAX_KEYWORDS = 10
 MAX_REQUESTS = 40
@@ -54,18 +59,21 @@ def item_row(source: str, it: dict) -> dict:
 
 
 def fetch(source: str, keyword: str, cid: str, csec: str, opener=urllib.request.urlopen) -> dict:
-    url = API.format(SOURCES[source]) + "?" + urllib.parse.urlencode(
+    url = API.format(_API_NAME[source]) + "?" + urllib.parse.urlencode(
         {"query": keyword, "display": DISPLAY, "start": 1, "sort": "sim"})
     req = urllib.request.Request(url, headers={"X-Naver-Client-Id": cid, "X-Naver-Client-Secret": csec})
     out = {"요청주소": url, "받은시각": datetime.now(KST).isoformat(timespec="seconds")}
     try:
         with opener(req, timeout=20) as r:
             body = json.loads(r.read().decode("utf-8"))
-        items = body.get("items") if isinstance(body, dict) else None
-        if not isinstance(items, list):  # 200 인데 오류 글이거나 items 칸이 없으면 정상 0건이 아니라 실패
-            why = f"200 응답인데 items 칸이 없음: errorCode={body.get('errorCode')} errorMessage={body.get('errorMessage')}"                 if isinstance(body, dict) else f"200 응답이 JSON 객체가 아님({type(body).__name__})"
-            out.update(상태="실패 items 없음", 까닭=why[:300], 개수=0, 항목들=[])
+        if not isinstance(body, dict):
+            out.update(상태="실패 items 없음", 까닭=f"200 응답이 JSON 객체가 아님({type(body).__name__})"[:300], 개수=0, 항목들=[])
+        elif body.get("errorCode") or body.get("errorMessage"):  # 200 이어도 오류 표시가 있으면 items 모양과 상관없이 실패
+            out.update(상태="실패 오류 응답", 까닭=f"200 응답인데 오류 표시: errorCode={body.get('errorCode')} errorMessage={body.get('errorMessage')}"[:300], 개수=0, 항목들=[])
+        elif not isinstance(body.get("items"), list):  # 오류 표시도 없는데 items 칸이 없거나 목록이 아니면 정상 0건이 아니라 실패
+            out.update(상태="실패 items 없음", 까닭=f"200 응답인데 items 칸이 없거나 목록이 아님(items={type(body.get('items')).__name__})"[:300], 개수=0, 항목들=[])
         else:
+            items = body["items"]
             out.update(상태="성공", 검색결과수=body.get("total"), 개수=len(items),
                        항목들=[item_row(source, it) for it in items])
     except urllib.error.HTTPError as e:
@@ -86,6 +94,9 @@ def run(keywords: list[str], cid: str, csec: str, opener=urllib.request.urlopen,
         for source in SOURCES:
             per[source] = fetch(source, kw, cid, csec, opener)
             time.sleep(pause)
+        for name, why in ENDED.items():
+            per[name] = {"요청주소": "", "받은시각": datetime.now(KST).isoformat(timespec="seconds"),
+                         "상태": "받지 않음", "까닭": why, "개수": 0, "항목들": []}
         rows.append({"키워드": kw, "출처": per})
     return {"받은시각": datetime.now(KST).isoformat(timespec="seconds"),
             "출처설명": "네이버 공식 검색 API(openapi.naver.com/v1/search) · 정확도순 상위 30개",
@@ -93,11 +104,11 @@ def run(keywords: list[str], cid: str, csec: str, opener=urllib.request.urlopen,
 
 
 def count_table(result: dict) -> str:
-    head = "| 키워드 | " + " | ".join(SOURCES) + " |"
-    lines = [head, "|" + "---|" * (len(SOURCES) + 1)]
+    head = "| 키워드 | " + " | ".join(ALL_CELLS) + " |"
+    lines = [head, "|" + "---|" * (len(ALL_CELLS) + 1)]
     for row in result["키워드들"]:
         cells = []
-        for s in SOURCES:
+        for s in ALL_CELLS:
             d = row["출처"][s]
             cells.append(f"{d['개수']} (전체 {d.get('검색결과수')})" if d["상태"] == "성공" else d["상태"])
         lines.append(f"| {row['키워드']} | " + " | ".join(cells) + " |")
