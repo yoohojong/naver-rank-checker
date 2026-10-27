@@ -31,6 +31,11 @@ on:
         description: '블로그 · 카페마다 글 수 상한'
         required: false
         default: '60'
+      mode:
+        description: '세기만 = 글 목록 · 글 수만 / 본문 = 본문까지'
+        type: choice
+        options: ['세기만', '본문']
+        default: '세기만'
 
 concurrency:
   group: competitor-post-bodies
@@ -63,6 +68,7 @@ jobs:
           MARKERS: ${{ github.event.inputs.markers }}
           SHOP_QUERY: ${{ github.event.inputs.shop_query }}
           MAX_POSTS: ${{ github.event.inputs.max_posts }}
+          MODE: ${{ github.event.inputs.mode }}
         run: python scripts/competitor_post_bodies.py --out-dir out
 
       - name: Upload
