@@ -9,6 +9,10 @@
   MARKERS    쉼표로 가른 찾을 낱말(사업자번호 · 상호 · 상품 이름)
   SHOP_QUERY 쉼표로 가른 쇼핑 검색어(공식 검색 API · 실패하면 응답 원문을 남긴다)
   MAX_POSTS  블로그 · 카페마다 받을 글 수 상한(기본 60)
+  MODE       '세기만'(기본) = 글 목록 · 전체 글 수만 받고 본문은 받지 않는다 / '본문' = 글마다 본문까지 받는다
+
+2026-10-27 기본을 '세기만'으로 바꿈 — 사장님 "글 몇개인지 파악하고 조금씩 넓혀가는단계로 해도 될 듯".
+먼저 글 수를 세고, 본문은 필요한 곳만 MODE=본문 으로 다시 부른다.
 """
 from __future__ import annotations
 
@@ -110,7 +114,7 @@ def blog_body(blog: str, log_no: str, markers: list[str]) -> dict:
     return row
 
 
-def cafe_posts(cafe: str, limit: int, markers: list[str]) -> dict:
+def cafe_posts(cafe: str, limit: int, markers: list[str], bodies: bool = True) -> dict:
     out = {"카페": cafe, "받은시각": now(), "글": []}
     code, body = get("https://apis.naver.com/cafe-web/cafe2/CafeGateInfo.json?cluburl=%s" % cafe,
                      {"Referer": "https://m.cafe.naver.com/%s" % cafe})
@@ -138,6 +142,9 @@ def cafe_posts(cafe: str, limit: int, markers: list[str]) -> dict:
         aid = a.get("articleId")
         row = {"주소": "https://cafe.naver.com/%s/%s" % (cafe, aid), "제목": a.get("subject"),
                "글쓴이": a.get("writerNickname"), "날짜": a.get("writeDateTimestamp")}
+        if not bodies:
+            out["글"].append(row)
+            continue
         c2, b2 = get("https://apis.naver.com/cafe-web/cafe-articleapi/v2.1/cafes/%s/articles/%s?useCafeId=true"
                      % (clubid, aid), {"Referer": "https://m.cafe.naver.com/%s/%s" % (cafe, aid)})
         row["응답"] = c2
@@ -183,15 +190,20 @@ def main(argv=None) -> int:
     a = ap.parse_args(argv)
     markers = split("MARKERS")
     limit = int(os.environ.get("MAX_POSTS") or 60)
-    result = {"받은시각": now(), "찾을낱말": markers, "블로그": [], "카페": [], "쇼핑": []}
+    mode = (os.environ.get("MODE") or "세기만").strip()
+    if mode not in ("세기만", "본문"):
+        print("MODE 는 '세기만' 또는 '본문'만 받습니다:", mode, file=sys.stderr)
+        return 2
+    bodies = mode == "본문"
+    result = {"받은시각": now(), "방식": mode, "찾을낱말": markers, "블로그": [], "카페": [], "쇼핑": []}
     for b in split("BLOGS"):
         posts, meta = blog_posts(b, limit)
-        meta["글"] = [{**p, **blog_body(b, p["logNo"], markers)} for p in posts]
+        meta["글"] = [{**p, **blog_body(b, p["logNo"], markers)} for p in posts] if bodies else posts
         result["블로그"].append(meta)
-        print(b, "목록", meta.get("목록응답"), "글", len(meta["글"]),
-              "낱말 걸린 글", sum(1 for g in meta["글"] if g.get("찾을낱말")), flush=True)
+        print(b, "목록", meta.get("목록응답"), "전체 글", meta.get("전체글수"), "받은 글", len(meta["글"]),
+              "낱말 걸린 글", sum(1 for g in meta["글"] if g.get("찾을낱말")) if bodies else "(세기만)", flush=True)
     for c in split("CAFES"):
-        r = cafe_posts(c, limit, markers)
+        r = cafe_posts(c, limit, markers, bodies)
         result["카페"].append(r)
         print(c, "카페", r.get("카페정보응답"), r.get("목록응답"), "글", len(r["글"]), flush=True)
     if split("SHOP_QUERY"):
@@ -208,3 +220,4 @@ def main(argv=None) -> int:
 
 if __name__ == "__main__":
     sys.exit(main())
+
