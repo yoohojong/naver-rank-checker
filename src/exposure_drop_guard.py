@@ -84,11 +84,14 @@ def evaluate(
     row_context: dict,
     allow: bool = False,
     threshold: float = DROP_RATIO_LIMIT,
+    cleanup_keys: Optional[set] = None,
 ) -> dict:
     """이번 회차가 쓰려는 줄의 노출 수를 쓰기 전 시트와 맞대 판정한다.
 
     tab_updates: {탭: [RowUpdate(row, columns)]}  — 시트에 쓰려는 값
     row_context: {(탭, 행): 시작 때 읽은 행 dict}  — 앞 회차가 써 놓은 값
+    cleanup_keys: {(탭, 행)} — 사람이 입력(키워드 · 링크)을 비운 줄의 K/L/M/O 비우기(D-034).
+                  이번 회차가 잰 노출이 아니라 정리라서 맞대기에서 빼고 줄 수만 남긴다.
     반환 dict 는 cycle_summary · 산출물에 그대로 남긴다.
     """
     result = {
@@ -100,6 +103,7 @@ def evaluate(
         "drop_ratio": None,
         "rows_compared": 0,
         "rows_unreadable": 0,
+        "rows_cleanup_excluded": 0,
         "threshold": threshold,
         "partial": False,
         "allow_switch": bool(allow),
@@ -116,9 +120,14 @@ def evaluate(
         current_exposed = 0
         compared = 0
         unreadable = 0
+        cleanup_excluded = 0
+        cleanup_keys = cleanup_keys or set()
         lost: list[dict] = []
         for tab_name, updates in (tab_updates or {}).items():
             for upd in updates:
+                if (tab_name, upd.row) in cleanup_keys:
+                    cleanup_excluded += 1
+                    continue
                 row = row_context.get((tab_name, upd.row))
                 prev_full = baseline_k_full(row) if row is not None else None
                 if prev_full is None:
@@ -146,6 +155,7 @@ def evaluate(
             drop_rows=baseline_exposed - current_exposed,
             rows_compared=compared,
             rows_unreadable=unreadable,
+            rows_cleanup_excluded=cleanup_excluded,
             prev_k_distribution=dict(prev_dist),
             cur_k_distribution=dict(cur_dist),
             lost_examples=lost,
@@ -154,10 +164,12 @@ def evaluate(
         # 못 읽은 줄이 있으면 어느 판정이든 꼬리에 붙인다 — 전체를 본 것처럼 말하지 않는다
         tail = f" · 일부 미확인 {unreadable}줄(기준 K 칸 못 읽음 — 읽은 {compared}줄끼리만 셈)" if unreadable else ""
         if compared == 0:
-            result["reason"] = (
-                f"기준 K 칸을 못 읽음(맞댈 줄 0 · 못 읽은 줄 {unreadable})"
-                if unreadable else "이번 회차에 쓸 줄이 없음"
-            )
+            if unreadable:
+                result["reason"] = f"기준 K 칸을 못 읽음(맞댈 줄 0 · 못 읽은 줄 {unreadable})"
+            elif cleanup_excluded:
+                result["reason"] = f"이번 회차에 잰 줄이 없음(입력 비운 줄 정리 {cleanup_excluded}줄만 — 맞대기에서 뺌)"
+            else:
+                result["reason"] = "이번 회차에 쓸 줄이 없음"
             return result
         if baseline_exposed == 0:
             result["reason"] = (

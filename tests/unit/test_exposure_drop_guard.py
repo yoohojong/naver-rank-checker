@@ -121,6 +121,17 @@ class Test판정:
         # K 분포는 기준을 읽은 같은 50줄끼리
         assert r["prev_k_distribution"] == {"AB": 50} and r["cur_k_distribution"] == {"AB": 50}
 
+    def test_입력_비운_줄_정리는_노출_감소로_세지_않는다(self):
+        """D-034 — 사람이 키워드 · 링크를 비운 줄의 K 비우기는 잰 값이 아니다. 맞대기에서 빼고 줄 수만 남긴다."""
+        tu, rc = _sample(30, 0)
+        keys = {("샴푸 카외", i + 2) for i in range(30)}
+        r = G.evaluate(tu, rc, cleanup_keys=keys)
+        assert r["status"] == G.STATUS_NO_COMPARE and r["rows_cleanup_excluded"] == 30
+        assert "입력 비운 줄 정리 30줄" in r["reason"]
+        # 정리 줄을 뺀 나머지는 그대로 판정(정리 10줄 + 잰 20줄 중 노출 0 → 멈춤)
+        r = G.evaluate(tu, rc, cleanup_keys=set(list(keys)[:10]))
+        assert r["status"] == G.STATUS_HOLD and r["rows_compared"] == 20
+
     def test_기준을_반만_읽어도_읽은_줄이_급감이면_멈춤(self):
         tu, rc = _sample(100, 0)
         for key in list(rc)[50:]:

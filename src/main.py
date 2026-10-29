@@ -695,6 +695,8 @@ def run_cycle() -> dict:
     url_alive_cache: dict[str, bool] = {}
     tab_updates: dict[str, list[RowUpdate]] = {}
     row_context: dict[tuple[str, int], dict] = {}
+    # D-034 입력 비운 줄 정리(K/L/M/O 비우기) — 잰 노출이 아니라 노출 급감 맞대기에서 뺀다(2026-10-30)
+    blank_cleanup_keys: set[tuple[str, int]] = set()
     circuit_breaker_tripped = False  # 2026-05-11 architect Major 1 fix
     # 운영 3 (2026-05-18): 네이버 차단 검출 카운터 — 사장님 메일 알림 강화.
     # CircuitBreakerOpen raise 시 = 그 시점 누적 연속 차단 + circuit_breaker_blocks += 1.
@@ -718,6 +720,7 @@ def run_cycle() -> dict:
                 cleanup_cols = _blank_input_stale_output_cleanup(row)
                 if cleanup_cols is not None:
                     updates.append(RowUpdate(row=row["_row"], columns=cleanup_cols))
+                    blank_cleanup_keys.add((tab_name, row["_row"]))
                     continue
 
                 cols = _process_row(
@@ -863,6 +866,7 @@ def run_cycle() -> dict:
         filtered_updates,
         row_context,
         allow=_env_truthy(exposure_drop_guard.ENV_ALLOW),
+        cleanup_keys=blank_cleanup_keys,
     )
     exposure_hold = exposure_drop["status"] == exposure_drop_guard.STATUS_HOLD
     print(exposure_drop_guard.summary_line(exposure_drop))
