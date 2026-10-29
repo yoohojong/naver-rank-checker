@@ -37,9 +37,16 @@
     (EXPOSURE_DROP_STATE_PATH — 워크플로가 GitHub Actions 캐시로 다음 회차에 넘긴다), 다음 회차가 읽는다.
       앞 회차 멈춤 + 이번도 같은 기준에서 20% 넘게 감소 → 급감 재확인(씀)
       앞 회차 멈춤 + 이번은 20% 이하                    → 통과 / 일부 미확인(한 번 튄 것)
-      기록 없음 · 못 읽음 · 24시간 지남 · 같은 실행의 기록 · 기준이 달라짐(시트가 그새 바뀜) → 지금처럼 멈춤(안전 쪽)
-    '같은 기준' = 이번 기준 노출 줄 수가 앞 회차 멈춤 때의 기준 쪽에 더 가깝다(멈춘 뒤 시트가 안 바뀌었다).
-    기록에는 실행 번호 · 시각 · 줄 수 · 비율만 넣는다 — 저장소가 공개라 키워드 · 링크 · 카페 · 탭 이름은 넣지 않는다.
+      기록 없음 · 못 읽음 · 24시간 지남 · 같은 실행의 기록 · 바로 앞 실행 기록이 아님(확인 못 함 포함)
+      · 기준이 달라짐(시트가 그새 바뀜) → 지금처럼 멈춤(안전 쪽)
+    '같은 기준' = 앞 멈춤 회차의 기준 노출 줄 수 == 이번 기준 노출 줄 수, 그리고 맞댄 줄 수(rows_compared)도 같음.
+                  하나라도 다르면 새 급감으로 보고 멈춤(그새 키워드가 늘면 한 회차 더 멈춤 — 안전 쪽, 2026-10-30 품질 3차 3-2).
+    '바로 앞 회차' = 기록이 아니라 실행 순서로 확인한다(품질 3차 3-1). 앞 멈춤 기록의 실행 번호 · 시도 번호가
+                  이 워크플로의 바로 앞 실행(src/exposure_prev_run.py 가 GitHub API 로 찾아 EXPOSURE_DROP_PREV_RUN 에 넣음)과
+                  같을 때만 재확인. 확인 못 함(조회 실패 · 값 없음 · 번호 다름 = 그 사이 기록 못 남긴 회차가 낌) → 멈춤.
+                  저장 실패 · 기록 전에 죽은 회차가 옛 기록을 남기지 않게: 저장이 실패하면 남은 옛 기록 파일을 지우고,
+                  워크플로는 이번 실행 · 이번 시도가 쓴 기록만 캐시에 보관한다(지우기가 실패해도 위 실행 순서 확인이 막는다).
+    기록에는 실행 번호 · 시도 번호 · 시각 · 줄 수 · 비율만 넣는다 — 저장소가 공개라 키워드 · 링크 · 카페 · 탭 이름은 넣지 않는다.
     EXPOSURE_DROP_STATE_PATH 가 없으면(로컬 실행 · 시험) 기록을 읽지도 쓰지도 않는다 → 예전과 같다(멈춤).
 
     2026-10-30 품질 1차 반려 고침: ① 예전엔 기준 노출 20줄 미만을 '비교 못 함'으로 넘겨 정상 기준 19→0 을
@@ -61,6 +68,7 @@ from collections import Counter
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
+from src.exposure_prev_run import ENV_PREV_RUN, ENV_PREV_RUN_WHY, format_prev, parse_prev
 from src.transitions import EXPOSED_VALUES, parse_K_with_stamp
 
 HEADER_AREA = "노출영역"
@@ -82,7 +90,7 @@ ENV_STATE_PATH = "EXPOSURE_DROP_STATE_PATH"
 RECONFIRM_NOTE = "두 회차 연속 같은 급감 — 실제 변화로 보고 썼음"
 
 # 앞 회차 기록(회차 사이 상태) — 숫자만
-STATE_VERSION = 1
+STATE_VERSION = 2   # 2 = run_attempt 칸 추가(바로 앞 실행 확인 · 2026-10-30). 1판 기록은 못 읽음 → 멈춤
 STATE_MAX_AGE = timedelta(hours=24)        # 이보다 오래된 기록은 무효
 STATE_FUTURE_SLACK = timedelta(minutes=10)  # 시계가 앞선 기록은 못 읽은 것으로 본다
 PREV_OFF = "꺼짐"            # 기록 경로가 없음(로컬 · 시험) — 읽지도 쓰지도 않음
@@ -91,6 +99,7 @@ PREV_HOLD = "멈춤"           # 바로 앞 회차가 멈춤
 PREV_NOT_HOLD = "멈춤 아님"
 PREV_UNREADABLE = "못 읽음"
 PREV_EXPIRED = "지남"
+PREV_NOT_ADJACENT = "바로 앞 아님"   # 멈춤 기록이지만 바로 앞 실행 것인지 확인 못 함 · 번호 다름
 _RUN_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,40}$")
 _STATE_INT_FIELDS = ("baseline_exposed", "current_exposed", "rows_compared", "rows_unreadable")
 
@@ -218,7 +227,7 @@ def evaluate(
         ratio = (baseline_exposed - current_exposed) / baseline_exposed
         result["drop_ratio"] = round(ratio, 4)
         if ratio > threshold:
-            prev_ok, prev_why = _prev_hold_same_baseline(prev, baseline_exposed)
+            prev_ok, prev_why = _prev_hold_same_baseline(prev, baseline_exposed, compared)
             if allow:
                 result["status"] = STATUS_RELEASED
                 result["reason"] = (
@@ -274,8 +283,18 @@ def state_path_from_env() -> Optional[str]:
     return p or None
 
 
-def load_prev_state(path: Optional[str], run_id: str = "", now: Optional[datetime] = None) -> dict:
-    """앞 회차 기록을 읽는다. 반환 {state, why, record}. 못 읽는 경우는 전부 '멈춤 쪽'(PREV_HOLD 아님)으로 남긴다."""
+def load_prev_state(
+    path: Optional[str],
+    run_id: str = "",
+    now: Optional[datetime] = None,
+    prev_run: Optional[str] = None,
+    prev_run_why: str = "",
+) -> dict:
+    """앞 회차 기록을 읽는다. 반환 {state, why, record}. 못 읽는 경우는 전부 '멈춤 쪽'(PREV_HOLD 아님)으로 남긴다.
+
+    prev_run: 이 워크플로의 바로 앞 실행 '<실행 id>:<시도 번호>'(src/exposure_prev_run.py · EXPOSURE_DROP_PREV_RUN).
+              멈춤 기록이 이것과 같은 실행 · 같은 시도일 때만 PREV_HOLD. 비었거나 다르면 PREV_NOT_ADJACENT(멈춤 쪽).
+    """
     if not path:
         return {"state": PREV_OFF, "why": "앞 회차 기록 꺼짐", "record": None}
     now = now or _now_utc()
@@ -294,6 +313,10 @@ def load_prev_state(path: Optional[str], run_id: str = "", now: Optional[datetim
         }
         if not _RUN_ID_RE.match(rec["run_id"]):
             raise ValueError("실행 번호 모양이 다름")
+        att = raw["run_attempt"]
+        if isinstance(att, bool) or not isinstance(att, int) or att < 1:
+            raise ValueError("run_attempt 가 1 이상 정수가 아님")
+        rec["run_attempt"] = att
         for k in _STATE_INT_FIELDS:
             v = raw[k]
             if isinstance(v, bool) or not isinstance(v, int) or v < 0:
@@ -314,16 +337,27 @@ def load_prev_state(path: Optional[str], run_id: str = "", now: Optional[datetim
         return {"state": PREV_EXPIRED, "why": f"앞 회차 기록이 {hours:.0f}시간 지나 무효", "record": rec}
     if run_id and rec["run_id"] == str(run_id):
         return {"state": PREV_UNREADABLE, "why": "앞 회차 기록이 이번 실행 것", "record": rec}
-    if rec["status"] == STATUS_HOLD:
-        return {"state": PREV_HOLD, "why": f"앞 회차(실행 {rec['run_id']}) 멈춤", "record": rec}
-    return {"state": PREV_NOT_HOLD, "why": f"앞 회차(실행 {rec['run_id']}) {rec['status']}", "record": rec}
+    if rec["status"] != STATUS_HOLD:
+        return {"state": PREV_NOT_HOLD, "why": f"앞 회차(실행 {rec['run_id']}) {rec['status']}", "record": rec}
+    # 멈춤 기록 — 바로 앞 실행 것인지 실행 순서로 확인한다(기록이 남아 있다고 바로 앞 회차라고 믿지 않는다)
+    mine = format_prev(rec["run_id"], rec["run_attempt"])
+    want = parse_prev(prev_run)
+    if want is None:
+        reason = prev_run_why or "바로 앞 실행 확인 값 없음"
+        return {"state": PREV_NOT_ADJACENT,
+                "why": f"앞 멈춤 기록(실행 {mine})이 바로 앞 실행 것인지 확인 못 함({reason})", "record": rec}
+    if (rec["run_id"], rec["run_attempt"]) != want:
+        return {"state": PREV_NOT_ADJACENT,
+                "why": f"앞 멈춤 기록(실행 {mine})이 바로 앞 실행({format_prev(*want)}) 것이 아님 — 그 사이 기록 못 남긴 회차가 있음",
+                "record": rec}
+    return {"state": PREV_HOLD, "why": f"바로 앞 회차(실행 {mine}) 멈춤", "record": rec}
 
 
-def _prev_hold_same_baseline(prev: dict, baseline_exposed: int) -> tuple[bool, str]:
-    """앞 회차가 멈춤이었고, 멈춘 뒤 시트가 그대로(같은 기준)인가.
+def _prev_hold_same_baseline(prev: dict, baseline_exposed: int, rows_compared: int) -> tuple[bool, str]:
+    """바로 앞 회차가 멈춤이었고, 멈춘 뒤 시트가 그대로(같은 기준)인가.
 
-    같은 기준 = 이번 기준 노출 줄 수가 앞 회차의 '기준'에 '이번 값'보다 더 가깝다.
-    (멈춘 회차는 시트를 안 바꿨으니 다음 회차 기준은 그 회차 기준과 같다. 그새 누가 썼으면 '이번 값' 쪽에 가깝다.)
+    같은 기준 = 앞 멈춤 회차의 기준 노출 줄 수 == 이번 기준 노출 줄 수, 그리고 맞댄 줄 수도 같음(정확히 같음).
+    하나라도 다르면 새 급감으로 보고 멈춤 — 그새 키워드가 늘어도 한 회차 더 멈춘다(안전 쪽, 품질 3차 3-2).
     """
     state = prev.get("state")
     why = str(prev.get("why") or "")
@@ -332,36 +366,58 @@ def _prev_hold_same_baseline(prev: dict, baseline_exposed: int) -> tuple[bool, s
             return False, f"{why} — 첫 멈춤"
         return False, f"{why} — 멈춤(안전 쪽)"
     rec = prev.get("record") or {}
-    pb, pc = int(rec.get("baseline_exposed", -1)), int(rec.get("current_exposed", -1))
-    if abs(baseline_exposed - pb) <= abs(baseline_exposed - pc):
-        return True, f"{why}(기준 {pb}줄 · 이번 기준 {baseline_exposed}줄 같은 기준)"
-    return False, f"{why}이지만 그새 기준이 {pb}→{baseline_exposed}줄로 바뀜 — 새 급감으로 보고 멈춤"
+    pb, pr = rec.get("baseline_exposed"), rec.get("rows_compared")
+    if pb == baseline_exposed and pr == rows_compared:
+        return True, f"{why}(기준 노출 {pb}줄 · 맞댄 줄 {pr} — 이번과 같은 기준)"
+    return False, (
+        f"{why}이지만 기준이 다름(기준 노출 {pb}→{baseline_exposed}줄 · 맞댄 줄 {pr}→{rows_compared}) "
+        f"— 새 급감으로 보고 멈춤"
+    )
 
 
-def save_state(path: Optional[str], result: dict, run_id: str, now: Optional[datetime] = None) -> bool:
-    """이번 회차 판정을 숫자만 남긴다(키워드 · 링크 · 카페 · 탭 이름 없음). 경로가 없으면 안 씀 → False."""
+def save_state(
+    path: Optional[str], result: dict, run_id: str, now: Optional[datetime] = None, run_attempt: object = 1,
+) -> bool:
+    """이번 회차 판정을 숫자만 남긴다(키워드 · 링크 · 카페 · 탭 이름 없음). 경로가 없으면 안 씀 → False.
+
+    저장이 실패하면 그 자리에 남은 옛 기록을 지우고 오류를 그대로 올린다 — 옛 멈춤 기록이 '이번 회차 기록'처럼
+    다음 회차로 넘어가지 않게(품질 3차 3-1). 지우기마저 실패해도 다음 회차의 실행 순서 확인이 막는다.
+    """
     if not path:
         return False
     now = now or _now_utc()
     rid = str(run_id or "")
     if not _RUN_ID_RE.match(rid):
         rid = "unknown"
+    try:
+        att = int(str(run_attempt))
+    except ValueError:
+        att = 1
     rec = {
         "version": STATE_VERSION,
         "run_id": rid,
+        "run_attempt": att if att >= 1 else 1,
         "saved_at": now.astimezone(timezone.utc).isoformat(timespec="seconds"),
         "status": str(result.get("status") or ""),
         "drop_ratio": result.get("drop_ratio") if isinstance(result.get("drop_ratio"), (int, float)) else None,
     }
     for k in _STATE_INT_FIELDS:
         rec[k] = int(result.get(k) or 0)
-    d = os.path.dirname(path)
-    if d:
-        os.makedirs(d, exist_ok=True)
-    tmp = f"{path}.tmp"
-    with open(tmp, "w", encoding="utf-8") as f:
-        json.dump(rec, f, ensure_ascii=False)
-    os.replace(tmp, path)
+    try:
+        d = os.path.dirname(path)
+        if d:
+            os.makedirs(d, exist_ok=True)
+        tmp = f"{path}.tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(rec, f, ensure_ascii=False)
+        os.replace(tmp, path)
+    except Exception:
+        try:
+            if os.path.isfile(path):
+                os.remove(path)
+        except OSError:
+            pass
+        raise
     return True
 
 

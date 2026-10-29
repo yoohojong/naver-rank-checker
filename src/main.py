@@ -866,7 +866,14 @@ def run_cycle() -> dict:
     # 사람이 바로 쓰려면 수동 실행 입력 allow_exposure_drop=true(EXPOSURE_DROP_ALLOW).
     # 기준을 못 읽으면 막지 않고 '비교 못 함'을 남긴다. K 값을 정하는 규칙은 손대지 않는다.
     exposure_state_path = exposure_drop_guard.state_path_from_env()
-    exposure_prev = exposure_drop_guard.load_prev_state(exposure_state_path, run_id=run_id)
+    # 바로 앞 실행(실행 순서 — 워크플로 'Find previous run' 단계가 GitHub API 로 찾아 넣음). 비면 재확인 안 함(멈춤 쪽).
+    run_attempt = os.environ.get("GITHUB_RUN_ATTEMPT", "1")
+    exposure_prev = exposure_drop_guard.load_prev_state(
+        exposure_state_path,
+        run_id=run_id,
+        prev_run=os.environ.get(exposure_drop_guard.ENV_PREV_RUN, ""),
+        prev_run_why=os.environ.get(exposure_drop_guard.ENV_PREV_RUN_WHY, ""),
+    )
     exposure_drop = exposure_drop_guard.evaluate(
         filtered_updates,
         row_context,
@@ -880,8 +887,12 @@ def run_cycle() -> dict:
     exposure_state_saved = None  # None = 기록 꺼짐(경로 없음)
     if exposure_state_path:
         try:
-            exposure_state_saved = exposure_drop_guard.save_state(exposure_state_path, exposure_drop, run_id)
+            exposure_state_saved = exposure_drop_guard.save_state(
+                exposure_state_path, exposure_drop, run_id, run_attempt=run_attempt,
+            )
         except Exception as e:
+            # save_state 가 남은 옛 기록을 지웠고(못 지워도 워크플로가 이번 실행 것만 보관 · 다음 회차가 실행 순서 확인),
+            # 다음 회차는 '바로 앞 회차 기록 없음' → 급감이면 다시 멈춘다.
             exposure_state_saved = False
             print(f"[노출급감] 앞 회차 기록 저장 실패 = {type(e).__name__} — 다음 회차는 기록 없이 판정(급감이면 다시 멈춤)")
     if exposure_hold:

@@ -188,21 +188,24 @@ def _fake_sheet(n: int, with_k: bool = True, missing: int = 0) -> dict:
 
 
 def _run(monkeypatch, tmp_path, n_rows: int, still_exposed: int, *, allow=False, with_k=True, missing=0,
-         state_path=None, run_id=None, sheet=None):
+         state_path=None, run_id=None, sheet=None, prev_run=None):
     """가짜 시트 · 가짜 검색으로 run_cycle 을 돌린다. 시트 · 네이버 요청 0.
 
     state_path: 앞 회차 기록 파일(EXPOSURE_DROP_STATE_PATH). None 이면 기록 꺼짐(예전 동작).
     sheet: 시작 때 읽을 시트를 직접 줄 때(멈춘 뒤 다음 회차 — 시트가 그대로인 경우).
+    prev_run: 워크플로가 찾은 바로 앞 실행 '<실행 id>:<시도>'(EXPOSURE_DROP_PREV_RUN). None 이면 확인 못 함.
     """
     monkeypatch.chdir(tmp_path)
     for name in ("GITHUB_ACTIONS", "ARCHIVE_ENABLED", "STALE_OUTPUT_FORMULA_MODE",
                  "RECHECK_STALE_ONLY", "TYPE_PREVIEW_WRITE_ALLOW_BULK", "GITHUB_RUN_ID",
-                 G.ENV_STATE_PATH):
+                 "GITHUB_RUN_ATTEMPT", G.ENV_STATE_PATH, G.ENV_PREV_RUN, G.ENV_PREV_RUN_WHY):
         monkeypatch.delenv(name, raising=False)
     if state_path is not None:
         monkeypatch.setenv(G.ENV_STATE_PATH, str(state_path))
     if run_id is not None:
         monkeypatch.setenv("GITHUB_RUN_ID", str(run_id))
+    if prev_run is not None:
+        monkeypatch.setenv(G.ENV_PREV_RUN, str(prev_run))
     monkeypatch.setenv("TYPE_PREVIEW_WRITE_CONFIRMED", "true")
     if allow:
         monkeypatch.setenv(G.ENV_ALLOW, "true")

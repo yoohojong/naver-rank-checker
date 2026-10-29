@@ -26,24 +26,28 @@ def _state(tmp_path) -> pathlib.Path:
     return tmp_path / "state" / "state.json"
 
 
-def _hold_record(path: pathlib.Path, *, baseline=552, current=173, run_id="r1800", saved=None, status=G.STATUS_HOLD):
+def _hold_record(path: pathlib.Path, *, baseline=552, current=173, run_id="r1800", saved=None, status=G.STATUS_HOLD,
+                 attempt=1, compared=None):
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps({
-        "version": G.STATE_VERSION, "run_id": run_id,
+        "version": G.STATE_VERSION, "run_id": run_id, "run_attempt": attempt,
         "saved_at": (saved or (NOW - timedelta(minutes=46))).isoformat(),
         "status": status, "drop_ratio": round((baseline - current) / baseline, 4) if baseline else None,
         "baseline_exposed": baseline, "current_exposed": current,
-        "rows_compared": baseline, "rows_unreadable": 0,
+        "rows_compared": baseline if compared is None else compared, "rows_unreadable": 0,
     }), encoding="utf-8")
+
+
+PREV_1800 = "r1800:1"   # 워크플로가 찾은 바로 앞 실행(실행 순서) — 기록과 같은 실행 · 같은 시도
 
 
 # ── 판정(순수 함수) ──────────────────────────────────────────────────────────────
 class Test앞회차_기록_판정:
-    def _eval(self, tmp_path, total, still, **rec):
+    def _eval(self, tmp_path, total, still, prev_run=PREV_1800, **rec):
         p = _state(tmp_path)
         if rec.pop("write", True):
             _hold_record(p, **rec)
-        prev = G.load_prev_state(str(p), run_id="r1846", now=NOW)
+        prev = G.load_prev_state(str(p), run_id="r1846", now=NOW, prev_run=prev_run)
         tu, rc = _sample(total, still)
         return G.evaluate(tu, rc, prev=prev), prev
 
@@ -103,7 +107,7 @@ class Test앞회차_기록_판정:
     def test_그새_기준이_바뀌었으면_새_급감으로_멈춤(self, tmp_path):
         """앞 회차 멈춤(552→173) 뒤 누가 시트를 173 쪽으로 써 놨고, 이번에 거기서 또 급감 → 다른 급감."""
         r, _ = self._eval(tmp_path, 180, 20)
-        assert r["status"] == G.STATUS_HOLD and "그새 기준이" in r["reason"]
+        assert r["status"] == G.STATUS_HOLD and "기준이 다름" in r["reason"]
 
     def test_기록_꺼짐이면_예전처럼_멈춤(self):
         tu, rc = _sample(552, 173)
@@ -114,13 +118,13 @@ class Test앞회차_기록_판정:
         p = _state(tmp_path)
         _hold_record(p)
         tu, rc = _sample(552, 173)
-        r = G.evaluate(tu, rc, allow=True, prev=G.load_prev_state(str(p), now=NOW))
+        r = G.evaluate(tu, rc, allow=True, prev=G.load_prev_state(str(p), now=NOW, prev_run=PREV_1800))
         assert r["status"] == G.STATUS_RELEASED
 
     def test_장치_고장은_여전히_비교_못_함(self, tmp_path):
         p = _state(tmp_path)
         _hold_record(p)
-        r = G.evaluate({TAB: [object()]}, {}, prev=G.load_prev_state(str(p), now=NOW))
+        r = G.evaluate({TAB: [object()]}, {}, prev=G.load_prev_state(str(p), now=NOW, prev_run=PREV_1800))
         assert r["status"] == G.STATUS_NO_COMPARE and "계산 오류" in r["reason"]
 
 
@@ -132,13 +136,14 @@ class Test기록에_숫자만:
         p = _state(tmp_path)
         assert G.save_state(str(p), r, "40846265314", now=NOW) is True
         rec = json.loads(p.read_text(encoding="utf-8"))
-        assert set(rec) == {"version", "run_id", "saved_at", "status", "drop_ratio",
+        assert set(rec) == {"version", "run_id", "run_attempt", "saved_at", "status", "drop_ratio",
                             "baseline_exposed", "current_exposed", "rows_compared", "rows_unreadable"}
         text = p.read_text(encoding="utf-8")
         for bad in ("kw", "cafe", "http", TAB, "키워드", "링크"):
             assert bad not in text
         # 다음 회차가 그대로 읽는다
-        prev = G.load_prev_state(str(p), run_id="40852211707", now=NOW + timedelta(minutes=46))
+        prev = G.load_prev_state(str(p), run_id="40852211707", now=NOW + timedelta(minutes=46),
+                                 prev_run="40846265314:1")
         assert prev["state"] == G.PREV_HOLD and prev["record"]["baseline_exposed"] == 552
 
     def test_실행_번호_모양이_이상하면_unknown(self, tmp_path):
@@ -161,7 +166,7 @@ class Test두_회차_배선:
         c1.write_type_results.assert_not_called()
         assert s1["exposure_drop_state_saved"] is True
         # 멈춘 회차는 시트를 안 바꿨다 → 다음 회차도 같은 시트를 읽는다
-        s2, c2, _ = _run(monkeypatch, d2, 552, 173, state_path=st, run_id="1002")
+        s2, c2, _ = _run(monkeypatch, d2, 552, 173, state_path=st, run_id="1002", prev_run="1001:1")
         assert s2["exposure_drop_status"] == G.STATUS_RECONFIRMED
         assert s2["exposure_drop_hold"] is False
         assert _written_rows(c2) == 552          # 가짜 시트가 셀 수 0 을 돌려줘 total_cells 는 못 씀 — 쓴 줄 수로 본다
@@ -170,7 +175,7 @@ class Test두_회차_배선:
         # 세 번째 회차는 앞 회차가 '급감 재확인'(멈춤 아님) → 또 급감이면 새 급감으로 한 번 멈춘다
         d3 = tmp_path / "c3"
         d3.mkdir()
-        s3, c3, _ = _run(monkeypatch, d3, 173, 20, state_path=st, run_id="1003")
+        s3, c3, _ = _run(monkeypatch, d3, 173, 20, state_path=st, run_id="1003", prev_run="1002:1")
         assert s3["exposure_drop_status"] == G.STATUS_HOLD and _written_rows(c3) == 0
 
     def test_멈춤_다음_회차_회복이면_통과(self, monkeypatch, tmp_path):
@@ -179,7 +184,7 @@ class Test두_회차_배선:
         d1.mkdir(), d2.mkdir()
         s1, _, _ = _run(monkeypatch, d1, 552, 173, state_path=st, run_id="2001")
         assert s1["exposure_drop_status"] == G.STATUS_HOLD
-        s2, c2, _ = _run(monkeypatch, d2, 552, 540, state_path=st, run_id="2002")
+        s2, c2, _ = _run(monkeypatch, d2, 552, 540, state_path=st, run_id="2002", prev_run="2001:1")
         assert s2["exposure_drop_status"] == G.STATUS_PASS and _written_rows(c2) == 552
 
     def test_기록을_못_읽으면_다음_회차도_멈춤(self, monkeypatch, tmp_path):
@@ -188,7 +193,7 @@ class Test두_회차_배선:
         d1.mkdir(), d2.mkdir()
         _run(monkeypatch, d1, 552, 173, state_path=st, run_id="3001")
         st.write_text("{깨진 기록", encoding="utf-8")
-        s2, c2, _ = _run(monkeypatch, d2, 552, 173, state_path=st, run_id="3002")
+        s2, c2, _ = _run(monkeypatch, d2, 552, 173, state_path=st, run_id="3002", prev_run="3001:1")
         assert s2["exposure_drop_status"] == G.STATUS_HOLD and _written_rows(c2) == 0
         assert "못 읽음" in s2["exposure_drop"]["reason"]
 
@@ -223,7 +228,8 @@ def _partial_two_cycles(monkeypatch, tmp_path, *, allow=False, reconfirm=False, 
         assert s0["exposure_drop_status"] == G.STATUS_HOLD
     d = tmp_path / "c1"
     d.mkdir()
-    return _run(monkeypatch, d, 100, still, missing=50, allow=allow, state_path=st, run_id="9001")
+    return _run(monkeypatch, d, 100, still, missing=50, allow=allow, state_path=st, run_id="9001",
+                prev_run="9000:1" if reconfirm else None)
 
 
 class Test일부_미확인_네_갈래:
@@ -283,7 +289,7 @@ class Test텔레그램_급감_재확인:
         tu, rc = _sample(552, 173)
         p = _state(tmp_path)
         _hold_record(p)
-        d = G.evaluate(tu, rc, prev=G.load_prev_state(str(p), now=NOW))
+        d = G.evaluate(tu, rc, prev=G.load_prev_state(str(p), now=NOW, prev_run=PREV_1800))
         s = {"success_rate": 1.0, "total_rows_processed": 552, "code_change_suspected": False,
              "exposure_drop": d, "exposure_drop_status": d["status"], "exposure_drop_hold": False}
         (tmp_path / "cycle_summary.json").write_text(json.dumps(s, ensure_ascii=False), encoding="utf-8")

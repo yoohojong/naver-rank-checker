@@ -142,6 +142,17 @@ jobs:
           restore-keys: |
             exposure-drop-state-
 
+      # 노출 급감 '바로 앞 회차'는 기록이 아니라 실행 순서로 확인(2026-10-30 품질 3차 3-1) — 이 워크플로의 바로 앞
+      #   실행(실행 번호 - 1)의 id · 시도 번호를 GitHub API 로 찾아 EXPOSURE_DROP_PREV_RUN 에 넣는다(actions: read).
+      #   못 찾으면 빈 값 → 급감이면 멈춤(안전 쪽). 키워드 · 링크는 오가지 않는다. 비차단.
+      - name: Find previous run (노출 급감 바로 앞 실행)
+        continue-on-error: true
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PYTHONIOENCODING: 'utf-8'
+        run: ./.venv/bin/python -u -m src.exposure_prev_run find
+
       - name: Run cron cycle
         id: run_cycle
         shell: bash
@@ -188,9 +199,18 @@ jobs:
           exit $rc
 
       # 노출 급감 앞 회차 기록 저장(정책 A) — run_cycle 이 쓴 숫자 기록만. 실행마다 새 열쇠(run_id·attempt),
-      #   다음 회차는 restore-keys 로 가장 최근 것을 받는다. 파일이 없으면 저장 안 함. 비차단.
-      - name: Save exposure-drop state (다음 회차용)
+      #   다음 회차는 restore-keys 로 가장 최근 것을 받는다. 비차단.
+      #   이번 실행 · 이번 시도가 쓴 기록일 때만 저장(2026-10-30 품질 3차 3-1) — 저장 실패 · 기록 전에 죽어 복원된
+      #   옛 기록이 남아 있으면 새 열쇠로 다시 보관하지 않는다(전에는 파일이 있기만 하면 저장).
+      - name: Check own exposure-drop state (이번 실행 기록인가)
+        id: exposure_state_own
         if: ${{ always() && hashFiles('.harness/exposure-drop-state/state.json') != '' }}
+        continue-on-error: true
+        shell: bash
+        run: ./.venv/bin/python -u -m src.exposure_prev_run own .harness/exposure-drop-state/state.json
+
+      - name: Save exposure-drop state (다음 회차용)
+        if: ${{ always() && steps.exposure_state_own.outputs.own == 'true' }}
         continue-on-error: true
         uses: actions/cache/save@v5
         with:
