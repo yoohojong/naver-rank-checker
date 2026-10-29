@@ -98,6 +98,22 @@ def build_success_comment(summary: dict) -> str:
 
     health_status = "🚨 code_change_suspected" if code_change else "✅ 정상"
 
+    # 노출 급감 멈춤(2026-10-29): 멈춤 · 풀림 · 비교 못 함을 늘 한 줄로 남긴다(조용히 넘기지 않음).
+    exposure_drop = summary.get("exposure_drop") or {}
+    if exposure_drop:
+        exposure_drop_line = (
+            f"\n**노출 급감 검사**: {exposure_drop.get('status', '?')} — {exposure_drop.get('reason', '')}"
+        )
+        if summary.get("exposure_drop_hold"):
+            exposure_drop_line += (
+                "\n⏸ **이번 회차 시트 쓰기 멈춤** (K/L/M/O · C열 0셀). 결과는 diagnostics 산출물"
+                f" `{os.path.basename(summary.get('exposure_drop_path', ''))}` · row-trace 에만."
+                " 진짜 하락이면 수동 실행 입력 `allow_exposure_drop=true`."
+            )
+        exposure_drop_line += f"\n**K 분포 비교**: {summary.get('k_anomaly_compare', '?')}"
+    else:
+        exposure_drop_line = ""
+
     if cafe_whitelist_size == 0:
         whitelist_line = "\n⚠️ **CAFE_WHITELIST_SLUGS secrets 미설정** — D-026 빈 link 자동 채움 비활성 상태. GitHub Settings → Secrets → CAFE_WHITELIST_SLUGS 등록 의무."
     else:
@@ -189,7 +205,7 @@ def build_success_comment(summary: dict) -> str:
 **성공률**: {success_pct}
 **재시도 큐 남음**: {retry_left}
 **예외 시 시트 보존 (D-024)**: {d024_skipped} 행
-**상태**: {health_status}{whitelist_line}{circuit_line}{audit_line}{type_preview_line}{stale_preview_line}{stale_formula_line}
+**상태**: {health_status}{exposure_drop_line}{whitelist_line}{circuit_line}{audit_line}{type_preview_line}{stale_preview_line}{stale_formula_line}
 
 ---
 자세한 내역 (탭별 / K 분포 등) = Actions log 링크 클릭:

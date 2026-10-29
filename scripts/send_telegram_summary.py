@@ -87,6 +87,17 @@ def build_brief(summary: dict | None = None, ts: str | None = None,
         s.get("post_write_audit_violations", 0) or 0
     )
 
+    # 노출 급감 멈춤(2026-10-29) — 실패가 아니라 '멈춤'. 다른 어떤 줄보다 먼저 알린다.
+    if s.get("exposure_drop_hold"):
+        d = s.get("exposure_drop") or {}
+        ratio = d.get("drop_ratio")
+        pct = f"{ratio * 100:.0f}%" if isinstance(ratio, (int, float)) else "?"
+        return (
+            f"⏸ 상노체크 {ts} · 노출 {d.get('baseline_exposed', '?')}→{d.get('current_exposed', '?')}줄"
+            f"({pct} 감소) — 이번 회차 시트 쓰기를 멈췄습니다(시트는 앞 회차 값 그대로)."
+            f"\n진짜 하락이면 수동 실행에서 '노출 급감 그대로 쓰기'를 켜고 한 번 돌리면 됩니다."
+        )
+
     # 정상 (성공률 ≥90% + 코드변경 의심 없음)
     if s.get("success_rate", 0) >= 0.9 and not code_change:
         line = f"✅ 상노체크 {ts} 점검 완료 · {rows}개 키워드 · 성공률 {rate:.0f}%"
@@ -165,9 +176,18 @@ def 이_회차에_이미_보고했나() -> bool:
     return False
 
 
+def _이번에_멈췄나() -> bool:
+    """이번 실행이 노출 급감으로 쓰기를 멈췄나 — 멈춤 알림은 '같은 회차 이미 보고' 생략을 타지 않는다."""
+    try:
+        with open("cycle_summary.json", encoding="utf-8") as f:
+            return bool(json.load(f).get("exposure_drop_hold"))
+    except Exception:  # noqa: BLE001
+        return False
+
+
 def main() -> int:
     try:
-        if 이_회차에_이미_보고했나():
+        if not _이번에_멈췄나() and 이_회차에_이미_보고했나():
             return 0
         return send_report(build_brief())
     except Exception:  # noqa: BLE001
