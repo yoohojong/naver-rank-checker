@@ -34,7 +34,7 @@ from src.sheets import (
     SheetsClient, RowUpdate,
     rank_result_to_columns,
     HEADER_AREA, HEADER_L, HEADER_M, HEADER_JISIKIN, HEADER_LINK, HEADER_TYPE,
-    HEADER_KEYWORD, HEADER_LAST_CHECKED_INPUT_KEY, HEADER_LAST_CHECKED_AT,
+    HEADER_KEYWORD, HEADER_LAST_CHECKED_INPUT_KEY, HEADER_LAST_CHECKED_AT, HEADER_SUBSTITUTE,
     HEADER_RAW_AREA, HEADER_RAW_L, HEADER_RAW_M, HEADER_RAW_JISIKIN,
     STALE_DISPLAY_K,
 )
@@ -729,6 +729,12 @@ def run_cycle() -> dict:
             print(f"[대체노출] 목록 구성 실패 = {e} (판정은 그대로 진행)")
     else:
         print("[대체노출] SUBSTITUTE_SCAN=0 — 끔")
+    # 대체 노출 칸 만들기(없을 때만 · 맨 오른쪽 덧붙임). 스위치 끔이면 부르지 않는다.
+    substitute_column_setup = substitute_module.prepare_sheet_columns(
+        client, data, formula_mode=stale_formula_mode_enabled,
+    )
+    if substitute_column_setup["enabled"]:
+        print(f"[대체노출] 시트 칸: {substitute_column_setup}")
 
     # 2. 각 탭 + 행 처리
     # url_alive_cache: T-M10.5 폐기로 미사용. 호환성 유지용 빈 dict.
@@ -879,6 +885,12 @@ def run_cycle() -> dict:
             )
     except Exception as e:
         print(f"[대체노출] 저장 실패 = {e} (cron 진행)")
+    # 3.5.2. 대체 노출 시트 칸 값 (사장님 승인 10-29 17:5x) — 스위치 끔이면 넣지 않음.
+    substitute_cells_rows = substitute_module.apply_cells(
+        tab_updates, substitute_rows, HEADER_SUBSTITUTE,
+        enabled=substitute_module.substitute_enabled(),
+        index_error=(substitute_index_counts.get("error", "") if our_index is None else ""),
+    )
     attempted_update_keys = {
         (tab_name, upd.row)
         for tab_name, updates in tab_updates.items()
@@ -1106,6 +1118,8 @@ def run_cycle() -> dict:
     summary["substitute_rows_with_hits"] = sum(1 for r in substitute_rows if r["substitute_count"])
     summary["substitute_scan_errors"] = sum(1 for r in substitute_rows if r.get("error"))
     summary["substitute_path"] = substitute_path
+    summary["substitute_cells_rows"] = substitute_cells_rows
+    summary["substitute_column_setup"] = substitute_column_setup
     # 회차 시간 전후 견주기용 — 맞대기·목록 만들기에 걸린 초와 맞댄 글 수 (2026-10-29)
     summary["substitute_scan_seconds"] = round(our_index.scan_seconds, 2) if our_index else 0.0
     summary["substitute_build_seconds"] = round(our_index.build_seconds, 2) if our_index else 0.0

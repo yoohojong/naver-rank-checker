@@ -1145,8 +1145,9 @@ class TestD024Guard:
         D-024 (2026-05-14): 직접 frozenset 검증 = 미래 회귀 방지 가드.
         """
         assert HEADER_TYPE not in SYSTEM_OUTPUT_COLUMNS
-        # 허용 4 컬럼만 남음
-        assert SYSTEM_OUTPUT_COLUMNS == frozenset({HEADER_AREA, HEADER_L, HEADER_M, HEADER_JISIKIN})
+        # 허용 4 컬럼 + 2026-10-29 D-062 시스템 출력 '대체 노출'(사장님 승인 10-29 17:5x)
+        from src.sheets import HEADER_SUBSTITUTE
+        assert SYSTEM_OUTPUT_COLUMNS == frozenset({HEADER_AREA, HEADER_L, HEADER_M, HEADER_JISIKIN, HEADER_SUBSTITUTE})
 
     def test_HEADER_TYPE_in_mix_update_거부(self):
         """유형(입력) + 노출영역(출력) mix update 시 = 노출영역만 write.

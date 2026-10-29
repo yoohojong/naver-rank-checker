@@ -212,6 +212,53 @@ def format_cell(hits: list[dict]) -> str:
     return " / ".join(parts)
 
 
+ERROR_CELL_PREFIX = "확인 못 함"
+
+
+def cell_text(sub_row: dict) -> str:
+    """기록 줄 하나 → 시트 칸 글자. 찾기 오류는 빈칸(=없음)으로 바꾸지 않고 '확인 못 함 (사유)' 로 적는다."""
+    err = str(sub_row.get("error") or "").strip()
+    if err:
+        return f"{ERROR_CELL_PREFIX} ({err[:80]})"
+    return str(sub_row.get("substitute_cell") or "")
+
+
+def prepare_sheet_columns(client, data: dict, *, formula_mode: bool) -> dict:
+    """회차 앞: 탭마다 '대체 노출' 칸(수식 모드면 숨김 raw 칸도)을 없을 때만 만든다. 스위치 끔 = 아무것도 안 함."""
+    out = {"enabled": substitute_enabled(), "tabs": 0, "headers_added": 0, "errors": {}}
+    if not out["enabled"]:
+        return out
+    for tab_name, rows in (data or {}).items():
+        try:
+            res = client.ensure_substitute_columns(tab_name, rows, formula_mode=formula_mode)
+            out["tabs"] += 1
+            out["headers_added"] += int(res.get("headers_added", 0) or 0)
+        except Exception as e:  # 칸 못 만듦 = 그 탭은 쓰기 때 칸이 없어 건너뜀(판정·회차는 계속)
+            out["errors"][tab_name] = f"{type(e).__name__}: {e}"[:200]
+    return out
+
+
+def apply_cells(tab_updates: dict, substitute_rows: list[dict], header: str, *,
+                enabled: bool, index_error: str = "") -> int:
+    """회차 끝: 시트에 쓸 RowUpdate 마다 '대체 노출' 값을 넣는다.
+
+    - 스위치 끔 = 아무것도 넣지 않음(칸 쓰기 없음 = 고침 전과 같음).
+    - 맞댄 줄 = 대체 글자 또는 '확인 못 함 (사유)'. 맞대지 않은 줄(제 글 찾음) = 빈칸(지난 값 지움).
+    - 우리 글 목록 자체를 못 만듦(index_error) = 모든 줄 '확인 못 함 (사유)'(빈칸=없음 으로 속이지 않음).
+    돌려주는 값 = 값을 넣은 RowUpdate 수.
+    """
+    if not enabled:
+        return 0
+    by_row = {(r["tab"], r["row"]): cell_text(r) for r in substitute_rows or []}
+    err_text = f"{ERROR_CELL_PREFIX} ({str(index_error)[:80]})" if index_error else ""
+    n = 0
+    for tab_name, updates in (tab_updates or {}).items():
+        for upd in updates:
+            upd.columns[header] = err_text or by_row.get((tab_name, upd.row), "")
+            n += 1
+    return n
+
+
 def collect_rows(tab_updates: dict, row_context: dict, run_id: str, checked_at: str) -> list[dict]:
     """회차 끝: 각 RowUpdate 의 '_substitute' 메타 키를 꺼내(지우며) 기록 줄로 만든다."""
     out = []
