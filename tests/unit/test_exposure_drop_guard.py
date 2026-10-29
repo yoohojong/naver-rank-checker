@@ -269,6 +269,9 @@ class Test회차_배선:
         assert s["exposure_drop"]["reason"]
         assert _written_rows(client) == 552
         assert s["k_anomaly_compare"] == "비교 못 함"
+        from scripts.send_telegram_summary import build_brief
+        t = build_brief(s, ts="10/29 18:00", run_status="success")
+        assert "앞 회차 값을 못 읽어 552줄 모두 비교 못 함" in t
 
     def test_사람_스위치를_켜면_그대로_쓴다(self, monkeypatch, tmp_path):
         s, client, crawler = _run(monkeypatch, tmp_path, 552, 173, allow=True)

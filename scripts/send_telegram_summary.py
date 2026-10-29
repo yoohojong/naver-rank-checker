@@ -85,6 +85,8 @@ def build_brief(summary: dict | None = None, ts: str | None = None,
             f"\n⚠️ 노출 급감 검사: {unreadable}줄은 앞 회차 값을 못 읽어 확인 못 함"
             f"(읽은 {d.get('rows_compared')}줄만 맞댐)"
         )
+    elif unreadable:
+        line += f"\n⚠️ 노출 급감 검사: 앞 회차 값을 못 읽어 {unreadable}줄 모두 비교 못 함(쓰기는 막지 않음)"
     return line
 
 
