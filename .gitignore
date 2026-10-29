@@ -46,6 +46,8 @@ docs/사장님-가이드/screenshots/
 .harness/traces/
 .harness/type-previews/
 .harness/stale-previews/
+# 대체 노출 기록(키워드·우리 글 링크 포함, 2026-10-29) — 공개 repo 커밋 금지.
+.harness/substitutes/
 # 로컬 진단/백업 덤프(키워드·링크 포함). 공개 repo 유출 방지 — 절대 커밋 금지.
 .harness/tmp/
 

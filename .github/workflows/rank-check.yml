@@ -240,6 +240,7 @@ jobs:
             .harness/type-previews/*.md
             .harness/stale-previews/*.jsonl
             .harness/stale-previews/*.md
+            .harness/substitutes/*.jsonl
           retention-days: 14
           if-no-files-found: warn
 

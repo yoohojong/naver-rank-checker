@@ -1398,6 +1398,96 @@ def collect_slot_items(html: str, *, max_per_area: int = 20) -> list[SlotItem]:
     return items
 
 
+@dataclass
+class OurPostHit:
+    """검색 화면 구좌에 떠 있는 '우리 글' 1건 (대체 노출 재기용 — 2026-10-29).
+
+    순위 셈은 판정 함수(_parse_ab_list / _parse_smart_blocks / _parse_popular)와 같다:
+      AB = 박스 없는(h2 없는) 카페 결과 목록의 순서, 스마트블록·인기글 = 그 박스 안 화면 칸 순서.
+    """
+
+    area: str  # "AB" / "스마트블록" / "인기글"
+    integrated_rank: int  # 그 구좌 안 순위 (L 칸과 같은 셈)
+    cafe_slot_rank: Optional[int]  # 그 구좌 안 카페 순위 (M 칸과 같은 셈)
+    url: str  # 검색 화면에 뜬 주소 그대로
+    block_name: str = ""  # 박스 h2 글자 (AB 는 "")
+    rank_from_dom_cards: bool = True
+
+
+def find_all_our_posts(html: str, is_ours) -> list[OurPostHit]:
+    """검색 화면 하나에서 우리 글을 **전부** 찾는다 (첫 매치에서 멈추지 않음).
+
+    parse_search_result 는 첫 매치 하나만 돌려준다(AB → 스마트블록 → 인기글 순서로 끝).
+    대체 노출은 '한 키워드에 우리 글 1위·2위' 처럼 여러 개를 다 적어야 해서 따로 둔다.
+    판정 흐름(K/L/M/O)에는 쓰지 않는다 — 이 함수 결과는 기록 파일에만 간다.
+
+    Args:
+        html: 이미 받은 검색 화면 (새로 받지 않는다).
+        is_ours: url → bool. 우리 글인지 판단 (substitute.LinkMatcher.match 등).
+
+    부작용 없음: _items_by_card 가 올리는 rank_signals 는 원래 값으로 되돌린다
+    (판정 쪽 신호가 두 번 세어지지 않게).
+    """
+    if not html or len(html) < 500:
+        return []
+    saved_signals = dict(rank_signals)
+    try:
+        soup = BeautifulSoup(html, "lxml")
+        boxes = soup.select(".desktop_mode.api_subject_bx, .fds-default-mode.api_subject_bx")
+        hits: list[OurPostHit] = []
+
+        # 1) AB — _parse_ab_list 와 같은 항목 정의·순위 셈
+        ab_items: list[tuple[str, str]] = []
+        for box in boxes:
+            if box.find("h2") is not None:
+                continue
+            has_cafe = any("cafe.naver.com" in a.get("href", "") for a in box.find_all("a", href=True))
+            if not has_cafe:
+                continue
+            main_url = _extract_main_link(box)
+            if not main_url:
+                continue
+            ab_items.append((main_url, _classify_item_url(main_url)))
+        cafe_count = 0
+        for idx, (url, kind) in enumerate(ab_items, start=1):
+            if kind != "cafe":
+                continue
+            cafe_count += 1
+            if is_ours(url):
+                hits.append(OurPostHit(area=ExposureArea.AB.value, integrated_rank=idx,
+                                       cafe_slot_rank=cafe_count, url=url))
+
+        # 2) h2 박스 — 화면 위→아래 순서. 스마트블록·인기글 판별은 판정 함수와 같다.
+        for box in boxes:
+            h2 = box.find("h2")
+            if h2 is None:
+                continue
+            h2_text = h2.get_text(strip=True)
+            if any(p in h2_text for p in _POPULAR_SKIP_PATTERNS):
+                continue
+            if "인기글" in h2_text:
+                area = ExposureArea.POPULAR.value
+            else:
+                if any(p in h2_text for p in _SMART_BLOCK_SKIP_PATTERNS):
+                    continue
+                area = ExposureArea.SMART_BLOCK.value
+            cards, dom_ok = _items_by_card(box)
+            cafe_count = 0
+            for idx, card_urls in enumerate(cards, start=1):
+                if any("cafe.naver.com" in u for u in card_urls):
+                    cafe_count += 1
+                for url in card_urls:
+                    if "cafe.naver.com" not in url:
+                        continue
+                    if is_ours(url):
+                        hits.append(OurPostHit(area=area, integrated_rank=idx, cafe_slot_rank=cafe_count,
+                                               url=url, block_name=h2_text, rank_from_dom_cards=dom_ok))
+        return hits
+    finally:
+        rank_signals.clear()
+        rank_signals.update(saved_signals)
+
+
 def is_known_url(url: str, link_set: Optional[set[str]]) -> bool:
     """url 이 link_set(우리 시트 link) 중 하나와 같은 글인지 (정규화 매치). 공개 wrapper."""
     if not url or not link_set:

@@ -27,6 +27,7 @@ from src.crawler import Crawler, SlowdownController, CrawlerError, CafeStatus, C
 from src.health import HealthMonitor
 from src import parser as parser_module
 from src.parser import parse_search_result
+from src import substitute as substitute_module
 from src.retry import RetryQueue
 from src.audit import audit_sheet_rows, build_update_trace, filter_invalid_updates, write_jsonl
 from src.sheets import (
@@ -184,8 +185,13 @@ def _process_row(
     url_alive_cache: Optional[dict] = None,  # 호환성 유지 — 미사용 (T-M10.5 폐기)
     today_stamp: Optional[str] = None,  # D-030 (2026-05-18): "5/18 03:00" — K 시점 통합
     type_preview_collector: Optional[TypePreviewCollector] = None,
+    our_index: Optional["substitute_module.OurLinkIndex"] = None,  # 2026-10-29 대체 노출 재기 (기록만)
 ) -> Optional[dict]:
     """한 행 처리 → 새 컬럼 dict 또는 None (skip).
+
+    2026-10-29 대체 노출: 제 글을 못 찾은 행(미노출·누락·삭제)과 빈 link 미노출 행은
+    our_index 가 있으면 **이미 받은 같은 html** 을 우리 글 전체와 다시 맞대어
+    cols["_substitute"] 메타 키에 남긴다. K/L/M/O 값은 이 메타와 무관하게 그대로다.
 
     D-029 (2026-05-18 — D-026 정정) 사장님 컨벤션:
     - 빈 link 행 + all_known_links 매치 = K="중복노출(매치 구좌)" + HEADER_LINK 자동 채움
@@ -298,6 +304,7 @@ def _process_row(
             HEADER_M: "",
             HEADER_JISIKIN: "",
         }
+        _attach_substitute(cols, html, our_index, row, keyword, own_link="")
         _add_type_preview(
             type_preview_collector,
             build_type_preview_row(row=row, result=result, columns=cols, html_status=html_status),
@@ -372,11 +379,26 @@ def _process_row(
         cafe_slot_rank=result.cafe_slot_rank if search_found else None,
         in_jisikin=result.in_jisikin,
     )
+    if not search_found:
+        # 2026-10-29: 제 글 못 찾음 = 같은 html 에 우리 다른 글이 떠 있나 (새 검색 X, K 무관)
+        _attach_substitute(cols, html, our_index, row, keyword, own_link=link)
     _add_type_preview(
         type_preview_collector,
         build_type_preview_row(row=row, result=result, columns=cols, html_status=html_status),
     )
     return cols
+
+
+def _attach_substitute(cols: dict, html: str, our_index, row: dict, keyword: str, own_link: str) -> None:
+    """대체 노출 메타 키 부착 — 실패해도 판정(K/L/M/O)과 회차를 죽이지 않는다(사유는 남김)."""
+    if our_index is None:
+        return
+    tab = str(row.get("_tab") or "")
+    try:
+        hits = substitute_module.scan(html, our_index, tab, keyword, own_link=own_link)
+        cols["_substitute"] = {"hits": hits}
+    except Exception as e:  # 기록만 못 함 = '검사 못 함' 으로 남긴다(빈칸=없음 으로 바꾸지 않음)
+        cols["_substitute"] = {"hits": [], "error": f"{type(e).__name__}: {e}"[:200]}
 
 
 def _d029_apply_pass2_duplicate(
@@ -688,6 +710,24 @@ def run_cycle() -> dict:
                 all_known_links.add(row_link)
     print(f"[D-026] all_known_links 구성: {len(all_known_links)} link (CAFE_WHITELIST 필터)")
 
+    # 2026-10-29 대체 노출 재기: 우리 글 전체 = 시트 전체 링크 + (탭·키워드)별 옛 글
+    # (비공개 시트의 숨긴 '우리글_장부' 탭 + '상위노출_이력' 링크 칸). 시트 읽기 2번, 네이버 요청 0번.
+    our_index = None
+    substitute_index_counts: dict = {}
+    if substitute_module.substitute_enabled():
+        try:
+            l_rows, l_err, a_rows, a_err = substitute_module.read_private_sources(client)
+            our_index = substitute_module.build_index(
+                data, l_rows, a_rows, ledger_error=l_err, archive_error=a_err,
+            )
+            substitute_index_counts = dict(our_index.counts)
+            print(f"[대체노출] 우리 글 목록: {substitute_index_counts}")
+        except Exception as e:
+            substitute_index_counts = {"error": f"{type(e).__name__}: {e}"[:200]}
+            print(f"[대체노출] 목록 구성 실패 = {e} (판정은 그대로 진행)")
+    else:
+        print("[대체노출] SUBSTITUTE_SCAN=0 — 끔")
+
     # 2. 각 탭 + 행 처리
     # url_alive_cache: T-M10.5 폐기로 미사용. 호환성 유지용 빈 dict.
     url_alive_cache: dict[str, bool] = {}
@@ -726,6 +766,7 @@ def run_cycle() -> dict:
                     url_alive_cache=url_alive_cache,
                     today_stamp=today_kst_stamp,
                     type_preview_collector=type_preview,
+                    our_index=our_index,
                 )
                 if cols is None:
                     continue  # link 빈 행 skip
@@ -782,6 +823,7 @@ def run_cycle() -> dict:
                 url_alive_cache=url_alive_cache,
                 today_stamp=today_kst_stamp,
                 type_preview_collector=type_preview,
+                our_index=our_index,
             )
             return cols
         retry_results = retry_queue.process(retry_processor, slowdown_multiplier=2.0)
@@ -822,6 +864,19 @@ def run_cycle() -> dict:
     # 2) 같은 link 가 2+ 행에 매치 = 중복노출 검출
     # 3) 그 link 가진 모든 RowUpdate K = "중복노출(매치 구좌)" 갱신
     _d029_apply_pass2_duplicate(tab_updates, today_stamp=today_kst_stamp)
+
+    # 3.5.1. 대체 노출 기록 — 메타 키를 꺼내(지우며) 파일로만 남긴다. 시트 칸 쓰기 없음.
+    substitute_path = f".harness/substitutes/{run_id}_{artifact_ts}_substitute.jsonl"
+    substitute_rows = substitute_module.collect_rows(tab_updates, row_context, run_id, today_kst_stamp)
+    try:
+        if our_index is not None:
+            write_jsonl(substitute_path, substitute_rows)
+            print(
+                f"[대체노출] {substitute_path} 저장 (맞댄 줄 {len(substitute_rows)}, "
+                f"우리 다른 글 뜬 줄 {sum(1 for r in substitute_rows if r['substitute_count'])})"
+            )
+    except Exception as e:
+        print(f"[대체노출] 저장 실패 = {e} (cron 진행)")
     attempted_update_keys = {
         (tab_name, upd.row)
         for tab_name, updates in tab_updates.items()
@@ -1038,6 +1093,12 @@ def run_cycle() -> dict:
     summary["d024_skipped_rows"] = d024_skipped_rows  # D-024 (2026-05-14): 예외 시 시트 보존 skip 카운트
     # T-M90 (D-027 보강 2026-05-17) architect Opus C1 fix: 사장님 가시성 = secrets 미설정 시 issue #1 댓글 명시 의무.
     summary["all_known_links_count"] = len(all_known_links)
+    summary["substitute_enabled"] = our_index is not None
+    summary["substitute_index_counts"] = substitute_index_counts
+    summary["substitute_rows_scanned"] = len(substitute_rows)
+    summary["substitute_rows_with_hits"] = sum(1 for r in substitute_rows if r["substitute_count"])
+    summary["substitute_scan_errors"] = sum(1 for r in substitute_rows if r.get("error"))
+    summary["substitute_path"] = substitute_path
     summary["cafe_whitelist_size"] = len(CAFE_WHITELIST)
     summary["prewrite_invariant_violations"] = len(prewrite_invariant_issues)
     summary["post_write_audit_violations"] = len(post_write_blocking_issues)
