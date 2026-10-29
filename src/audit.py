@@ -149,6 +149,8 @@ def build_update_trace(
                 trace["substitute_scanned"] = sub is not None
                 trace["substitute_count"] = int(sub.get("substitute_count", 0)) if sub else 0
                 trace["substitute_cell"] = sub.get("substitute_cell", "") if sub else ""
+                # 완전 확인 = 맞댄 줄 + 오류 없음(옛 글 출처 다 읽음 포함). 부분 자료 대체는 False (2026-10-30 지적 2)
+                trace["substitute_complete"] = bool(sub) and not sub.get("error")
                 if sub and sub.get("error"):
                     trace["substitute_error"] = sub["error"]
             if issue:

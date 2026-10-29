@@ -396,9 +396,15 @@ def _attach_substitute(cols: dict, html: str, our_index, row: dict, keyword: str
     tab = str(row.get("_tab") or "")
     try:
         hits = substitute_module.scan(html, our_index, tab, keyword, own_link=own_link)
-        cols["_substitute"] = {"hits": hits}
     except Exception as e:  # 기록만 못 함 = '검사 못 함' 으로 남긴다(빈칸=없음 으로 바꾸지 않음)
         cols["_substitute"] = {"hits": [], "error": f"{type(e).__name__}: {e}"[:200]}
+        return
+    cols["_substitute"] = {"hits": hits}
+    # 2026-10-30 품질 1차 반려 지적 2: 옛 글 출처(글장부·이력)를 못 읽은 목록으로 맞댔으면
+    # '없음'도 '찾은 것'도 완전 확인이 아니다 → 이 줄 기록 error 로 남겨 시트 칸·trace·집계까지 보낸다.
+    src_err = our_index.source_error_text()
+    if src_err:
+        cols["_substitute"]["error"] = src_err
 
 
 def _d029_apply_pass2_duplicate(
@@ -724,6 +730,8 @@ def run_cycle() -> dict:
             our_index.build_seconds = time.perf_counter() - _t_build
             substitute_index_counts = dict(our_index.counts)
             print(f"[대체노출] 우리 글 목록: {substitute_index_counts}")
+            if our_index.source_errors:
+                print(f"[대체노출] ⚠️ {our_index.source_error_text()} — 맞댄 줄은 '확인 못 함'으로 적음(대체 없음과 가름)")
         except Exception as e:
             substitute_index_counts = {"error": f"{type(e).__name__}: {e}"[:200]}
             print(f"[대체노출] 목록 구성 실패 = {e} (판정은 그대로 진행)")
@@ -1117,6 +1125,10 @@ def run_cycle() -> dict:
     summary["substitute_rows_scanned"] = len(substitute_rows)
     summary["substitute_rows_with_hits"] = sum(1 for r in substitute_rows if r["substitute_count"])
     summary["substitute_scan_errors"] = sum(1 for r in substitute_rows if r.get("error"))
+    # 2026-10-30 지적 2: 못 읽은 옛 글 출처 {출처: 사유} · 부분 자료로 찾은 대체 줄 수(완전 확인 아님)
+    summary["substitute_source_errors"] = dict(our_index.source_errors) if our_index else {}
+    summary["substitute_rows_with_hits_partial"] = sum(
+        1 for r in substitute_rows if r["substitute_count"] and r.get("error"))
     summary["substitute_path"] = substitute_path
     summary["substitute_cells_rows"] = substitute_cells_rows
     summary["substitute_column_setup"] = substitute_column_setup

@@ -12,18 +12,22 @@
   - 공개 저장소에 우리 글 목록을 두지 않는다: 옛 글은 비공개 시트의 숨긴 탭(LEDGER_TAB_NAME)과
     상위노출_이력(링크 칸)에서 회차마다 읽는다.
 
+2026-10-30 품질 1차 반려 고침: ① 글 비교 열쇠는 카페+글번호(다른 카페 같은 번호 = 다른 글)
+② 옛 글 출처를 못 읽으면 맞댄 줄마다 error(시트 '확인 못 함' · 집계 맞대기실패) — '대체 없음'과 가름.
+
 한 스위치: 환경값 SUBSTITUTE_SCAN=0 이면 통째로 끈다(기본 켬). 끄면 회차 결과는 고침 전과 같다.
 주인: 순위체커(카페외부). 되돌리는 법: SUBSTITUTE_SCAN=0 또는 이 파일과 main.py 의 호출 4곳 되돌림.
 """
 from __future__ import annotations
 
 import os
+import re
 import time
 from dataclasses import dataclass, field
 from typing import Iterable, Optional
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlparse
 
-from src.parser import OurPostHit, _normalize_cafe_url, find_all_our_posts
+from src.parser import OurPostHit, find_all_our_posts
 
 # 비공개 시트 안의 숨긴 탭 — 이 PC 글 장부(post_ledger.db assignments)를 옮겨 둔 곳.
 # scripts/ledger_to_sheet_tab.py 가 채운다(운영 쓰기는 사장님 승인 뒤).
@@ -44,19 +48,53 @@ def norm_keyword(value: object) -> str:
     return " ".join(str(value or "").split())
 
 
-def link_key(url: str) -> Optional[tuple]:
-    """parser._urls_match 와 같은 뜻의 비교 열쇠.
+_CAFE_HOSTS = {"cafe.naver.com", "m.cafe.naver.com"}  # m. = 같은 글(parser._normalize_netloc 2026-05-08 확인)
+_CAFE_NEW_PATH_RE = re.compile(r"^/ca-fe/cafes/(\d+)/articles/(\d+)$")
+_CAFE_SLUG_RE = re.compile(r"^[A-Za-z0-9_-]+$")
+_CAFE_NOT_SLUG = {"ca-fe", "f-e", "articleread.nhn", "cafeview"}
 
-    카페 글은 (주소 앞, 글번호) — _urls_match 가 구형·신형 모두 netloc+글번호로만 가르므로 같다.
-    그 밖은 (주소 앞, 경로). 이 열쇠로 사전을 만들면 줄마다 2천 개 링크를 하나씩 맞대지 않아도 된다.
+
+def link_key(url: str, aliases: Optional[dict] = None) -> Optional[tuple]:
+    """대체 노출 전용 비교 열쇠 — **카페 + 글번호** 둘 다 (2026-10-30 품질 1차 반려 지적 3).
+
+    parser._urls_match 는 카페 이름을 버리고 글번호만 비교해, 다른 카페의 같은 번호를 같은 글로 본다
+    (기존 K 판정 쪽 — 이 카드에서는 고치지 않음). 여기서는 카페 식별자를 버리지 않는다.
+
+      구형 cafe.naver.com/{카페이름}/{글번호}             → ("cafe", "slug:카페이름", 글번호)
+      신형 cafe.naver.com/ca-fe/cafes/{카페번호}/articles/{글번호} → ("cafe", "id:카페번호", 글번호)
+      ArticleRead.nhn?clubid=&articleid=                  → ("cafe", "clubid:번호", 글번호)  (신형과 같다고 확인된 자료가 없어 따로 둔다)
+      글을 가리키지 못하는 카페 주소(카페 첫 화면 · 글번호 없음) → None (어느 글과도 같지 않음)
+      카페 밖 주소                                        → (호스트, 경로)
+
+    같다고 보는 것: m. 앞머리 · http/https · 물음표 뒤(?art= 등) · 끝 / — 같은 글의 주소 꼴(확인됨).
+    카페 이름 ↔ 카페 번호 · 대소문자 다른 카페 이름은 **확인된 매핑(aliases: {"slug:이름": "id:번호"})** 이 있을 때만 같게 본다.
     """
     url = (url or "").strip()
     if not url or not url.startswith("http"):
         return None
-    netloc, key = _normalize_cafe_url(urlparse(url))
-    if key.startswith(("OLD:", "NEW:")):
-        return (netloc, "POST:" + key[4:])
-    return (netloc, key)
+    p = urlparse(url)
+    host = (p.hostname or "").lower()
+    path = p.path.rstrip("/")
+    if host not in _CAFE_HOSTS:
+        return (host[2:] if host.startswith("m.") else host, path)
+    m = _CAFE_NEW_PATH_RE.match(path)
+    if m:
+        cafe, post = "id:" + m.group(1), m.group(2)
+    elif path.lower() == "/articleread.nhn":
+        q = parse_qs(p.query)
+        club, art = (q.get("clubid") or [""])[0], (q.get("articleid") or [""])[0]
+        if not (club.isdigit() and art.isdigit()):
+            return None
+        cafe, post = "clubid:" + club, art
+    else:
+        parts = [x for x in path.split("/") if x]
+        if (len(parts) != 2 or not parts[1].isdigit() or not _CAFE_SLUG_RE.match(parts[0])
+                or parts[0].lower() in _CAFE_NOT_SLUG):
+            return None
+        cafe, post = "slug:" + parts[0], parts[1]
+    if aliases:
+        cafe = aliases.get(cafe, cafe)
+    return ("cafe", cafe, post)
 
 
 @dataclass
@@ -66,6 +104,11 @@ class OurLinkIndex:
     global_keys: dict = field(default_factory=dict)  # link_key → 출처
     per_keyword: dict = field(default_factory=dict)  # (탭, 키워드) → {link_key: 출처}
     counts: dict = field(default_factory=dict)  # 출처별 링크 수 / '못 읽음' 사유
+    # 2026-10-30 지적 2: 못 읽은 옛 글 출처 {출처: 사유}. 비어 있지 않으면 이 회차의 '대체 없음'은
+    # 완전한 없음이 아니다 → 맞댄 줄마다 error 로 남겨 시트 칸 '확인 못 함' · 집계 맞대기실패로 간다.
+    source_errors: dict = field(default_factory=dict)
+    # 2026-10-30 지적 3: 확인된 카페 별칭 {"slug:이름": "id:번호"}. 여기 없는 별칭은 같은 카페로 보지 않는다.
+    aliases: dict = field(default_factory=dict)
     scan_seconds: float = 0.0  # 맞대기에 걸린 시간 합(회차 요약용)
     scan_calls: int = 0  # 맞댄 줄 수
     build_seconds: float = 0.0  # 목록 만들기(시트 읽기 포함)에 걸린 시간
@@ -75,13 +118,23 @@ class OurLinkIndex:
                 "키워드별": sum(len(v) for v in self.per_keyword.values()),
                 "키워드수": len(self.per_keyword)}
 
+    def key(self, url: str) -> Optional[tuple]:
+        return link_key(url, self.aliases)
+
+    def source_error_text(self) -> str:
+        """못 읽은 출처 → 한 줄 사유. 다 읽었으면 빈 글자."""
+        if not self.source_errors:
+            return ""
+        return "옛 글 출처 못 읽음: " + " · ".join(
+            f"{src}({str(err)[:60]})" for src, err in sorted(self.source_errors.items()))
+
     def add_global(self, url: str, source: str) -> None:
-        k = link_key(url)
+        k = self.key(url)
         if k is not None:
             self.global_keys.setdefault(k, source)
 
     def add_keyword(self, tab: str, keyword: str, url: str, source: str) -> None:
-        k = link_key(url)
+        k = self.key(url)
         kw = norm_keyword(keyword)
         if k is None or not kw or not tab:
             return
@@ -90,10 +143,10 @@ class OurLinkIndex:
     def matcher_for(self, tab: str, keyword: str, own_link: str = ""):
         """그 줄 하나에 쓸 판정 함수. 그 줄 제 링크는 '대체'가 아니므로 뺀다."""
         local = self.per_keyword.get(((tab or "").strip(), norm_keyword(keyword)), {})
-        own = link_key(own_link) if own_link else None
+        own = self.key(own_link) if own_link else None
 
         def source_of(url: str) -> Optional[str]:
-            k = link_key(url)
+            k = self.key(url)
             if k is None or k == own:
                 return None
             return self.global_keys.get(k) or local.get(k)
@@ -108,9 +161,15 @@ def build_index(
     *,
     ledger_error: str = "",
     archive_error: str = "",
+    aliases: Optional[dict] = None,
 ) -> OurLinkIndex:
-    """data = 이번 회차 시트(탭별 행). ledger_rows/archive_rows = {탭, 키워드, 링크} dict."""
-    idx = OurLinkIndex()
+    """data = 이번 회차 시트(탭별 행). ledger_rows/archive_rows = {탭, 키워드, 링크} dict.
+
+    출처를 못 읽으면(ledger_error/archive_error) counts 에 사유를 적고 source_errors 에도 남긴다 —
+    그 출처의 옛 글이 빠진 목록이므로 이 목록으로 낸 '대체 없음'은 확인 못 함이다(2026-10-30 지적 2).
+    aliases = 확인된 카페 별칭 매핑만(지적 3). 없으면 카페 이름·번호가 다르면 다른 글.
+    """
+    idx = OurLinkIndex(aliases=dict(aliases or {}))
     n_sheet = 0
     for tab_rows in (data or {}).values():
         for r in tab_rows:
@@ -126,6 +185,7 @@ def build_index(
     ):
         if err:
             idx.counts[source] = f"못 읽음: {err}"
+            idx.source_errors[source] = str(err)
             continue
         n = 0
         for r in rows or []:
@@ -139,8 +199,8 @@ def build_index(
 
 
 def _rows_from_values(values: list, need: tuple) -> list[dict]:
-    if not values:
-        return []
+    if not values:  # 머리줄도 없는 탭 = 읽었다고 볼 수 없음(0건으로 치지 않음 — 2026-10-30 지적 2)
+        raise ValueError("빈 탭 — 머리줄 없음")
     header = [str(h).strip() for h in values[0]]
     if any(h not in header for h in need):
         raise ValueError(f"머리줄에 {need} 없음")
@@ -183,7 +243,7 @@ def scan(html: str, index: Optional[OurLinkIndex], tab: str, keyword: str, own_l
     out = []
     seen = set()
     for h in hits:
-        k = link_key(h.url)
+        k = index.key(h.url)
         if k in seen:  # 같은 글이 두 구좌에 뜨면 위쪽(먼저 찾은) 한 번만
             continue
         seen.add(k)
@@ -216,11 +276,17 @@ ERROR_CELL_PREFIX = "확인 못 함"
 
 
 def cell_text(sub_row: dict) -> str:
-    """기록 줄 하나 → 시트 칸 글자. 찾기 오류는 빈칸(=없음)으로 바꾸지 않고 '확인 못 함 (사유)' 로 적는다."""
+    """기록 줄 하나 → 시트 칸 글자. 찾기 오류는 빈칸(=없음)으로 바꾸지 않고 '확인 못 함 (사유)' 로 적는다.
+
+    옛 글 출처 일부를 못 읽은 채 찾은 대체(부분 자료)는 '확인 못 함 (사유) — 찾은 것: …' —
+    찾은 글은 보여 주되 완전 확인으로 읽히지 않게 앞머리를 '확인 못 함' 으로 둔다(2026-10-30 지적 2).
+    """
     err = str(sub_row.get("error") or "").strip()
+    found = str(sub_row.get("substitute_cell") or "")
     if err:
-        return f"{ERROR_CELL_PREFIX} ({err[:80]})"
-    return str(sub_row.get("substitute_cell") or "")
+        text = f"{ERROR_CELL_PREFIX} ({err[:80]})"
+        return f"{text} — 찾은 것: {found}" if found else text
+    return found
 
 
 def prepare_sheet_columns(client, data: dict, *, formula_mode: bool) -> dict:
@@ -281,5 +347,7 @@ def collect_rows(tab_updates: dict, row_context: dict, run_id: str, checked_at: 
                 "substitute_cell": format_cell(hits),
                 "hits": hits,
                 "error": meta.get("error", ""),
+                # 완전 확인 = 맞대기 오류도 없고 옛 글 출처도 다 읽음. 아니면 대체가 있어도 부분 자료.
+                "complete": not meta.get("error"),
             })
     return out

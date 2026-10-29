@@ -286,8 +286,21 @@ def test_회차_끄고_켜도_시트_쓰기와_검색_수가_같고_기록만_�
     (tmp_path / "on").mkdir()
     s0, w0, n0 = _run_cycle(tmp_path / "off", monkeypatch, enabled=False)
     s1, w1, n1 = _run_cycle(tmp_path / "on", monkeypatch, enabled=True)
-    assert w0 == w1 and w0  # 시트에 가는 값 같음(메타 키 없음)
+    # 시트에 가는 값: 켬 = 끔 + '대체 노출' 칸 하나만 더해짐(D-062 사장님 승인 10-29 17:5x). K/L/M/O·그 밖 칸은 같다.
+    assert w0 and len(w0) == len(w1)
+    from src.sheets import HEADER_SUBSTITUTE
+    assert all(HEADER_SUBSTITUTE not in dict(cols) for _, _, cols in w0)  # 끔 = 칸 쓰기 없음
+    sub_cells = {}
+    for (t0, r0, c0), (t1, r1, c1) in zip(w0, w1):
+        c1 = dict(c1)
+        assert (t0, r0) == (t1, r1)
+        sub_cells[r1] = c1.pop(HEADER_SUBSTITUTE)  # 켬 = 줄마다 그 칸이 꼭 있다
+        assert c1 == dict(c0), r1  # 더해진 것은 그 칸 하나뿐
     assert all("_substitute" not in dict(cols) for _, _, cols in w1)
+    # 2행 = 옛 글 1위 + 시트 다른 글 2위(출처 다 읽음 = 완전 확인) · 3행 = 제 글 찾음 = 맞대지 않아 빈칸
+    assert sub_cells[2].startswith("인기글 1위 https://cafe.naver.com/ccrs5500/777989")
+    assert " / 인기글 2위 https://cafe.naver.com/cantsb/3406915" in sub_cells[2]
+    assert sub_cells[3] == ""
     # 빈 링크 줄은 시트 지금 링크(all_known_links)가 비면 원래도 검색하지 않는다(고침 전과 같음).
     # 이 시험은 카페 허용 목록이 비어 있어 2번(링크 줄 2개)만 검색한다.
     assert n0 == n1 == 2
@@ -318,6 +331,8 @@ def test_회차_끄고_켜도_시트_쓰기와_검색_수가_같고_기록만_�
     cnt = _load_script("count_substitute_before_after")
     res = cnt.count(cnt._read_jsonl(str(trace)), cnt._read_jsonl(str(out[0])))
     assert res["전체"]["줄"] == 3 and res["전체"]["비포"] == 1 and res["전체"]["애프터"] == 2
+    assert res["전체"]["맞대기실패"] == 0 and res["전체"]["대체_확인못함"] == 0
+    assert tr[2]["substitute_complete"] is True
     assert [(t["행"], t["대신 뜬 글"].split("?")[0], t["구좌"], t["순위"]) for t in res["대체 줄 표"]] == [
         (2, OLD_LEDGER, "인기글", 1), (2, OTHER_SHEET, "인기글", 2)]
     assert "error" in cnt.count(cnt._read_jsonl(str(trace_off)))  # 고침 전 회차 = 0 이 아니라 '셀 수 없음'

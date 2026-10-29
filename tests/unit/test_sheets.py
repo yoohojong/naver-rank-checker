@@ -1341,8 +1341,12 @@ class TestD026EmptyLinkColumnGuard:
         assert HEADER_JISIKIN in SYSTEM_OUTPUT_COLUMNS_EMPTY_LINK
         # HEADER_TYPE 포함 X (= D-024 가드 유지)
         assert HEADER_TYPE not in SYSTEM_OUTPUT_COLUMNS_EMPTY_LINK
-        # 정확히 5 컬럼 (4 시스템 + HEADER_LINK)
-        assert len(SYSTEM_OUTPUT_COLUMNS_EMPTY_LINK) == 5
+        # 정확히 6 컬럼 = 4 시스템 + HEADER_LINK + 2026-10-29 D-062 시스템 출력 '대체 노출'(사장님 승인 10-29 17:5x).
+        # 개수만 보지 않고 집합 전체를 못 박는다 — 새 칸은 '대체 노출' 하나만 늘었다.
+        from src.sheets import HEADER_SUBSTITUTE
+        assert SYSTEM_OUTPUT_COLUMNS_EMPTY_LINK == frozenset(
+            {HEADER_AREA, HEADER_L, HEADER_M, HEADER_JISIKIN, HEADER_LINK, HEADER_SUBSTITUTE})
+        assert len(SYSTEM_OUTPUT_COLUMNS_EMPTY_LINK) == 6
 
 
 class TestExposureResultAlignment:

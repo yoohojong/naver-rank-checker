@@ -371,11 +371,15 @@ class TestD032TraceAuditInvariant:
 
         written_updates = mock_client.write_results.call_args_list[0].args[1]
         assert [u.row for u in written_updates] == [2]
+        # 2026-10-29 D-062: 대체 노출 스위치(SUBSTITUTE_SCAN) 기본 켬 → 시스템 출력 '대체 노출' 칸 하나만 더해진다.
+        # 이 줄은 검색하지 않고 지운 줄이라 맞대지 않았으니 빈칸(지난 값 지움). 그 밖 칸은 고침 전과 같다.
+        from src.sheets import HEADER_SUBSTITUTE
         assert written_updates[0].columns == {
             HEADER_AREA: "",
             HEADER_L: "",
             HEADER_M: "",
             HEADER_JISIKIN: "",
+            HEADER_SUBSTITUTE: "",
         }
         mock_crawler.fetch_search.assert_not_called()
         assert summary["post_write_audit_total_issues"] == 0
