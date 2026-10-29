@@ -303,6 +303,33 @@ def test_회차_끄고_켜도_시트_쓰기와_검색_수가_같고_기록만_�
     assert by_row[2]["substitute_cell"].startswith("인기글 1위")
     assert s1["substitute_rows_with_hits"] >= 1
     assert not list((tmp_path / "off" / ".harness").glob("substitutes/*.jsonl"))
+    # 회차 요약: 맞대기 시간 · 맞댄 줄 · 맞댄 글 수
+    assert s1["substitute_scan_calls"] == 1 and s1["substitute_scan_seconds"] >= 0
+    assert s1["substitute_index_size"]["키워드별"] == 1 and s0["substitute_scan_calls"] == 0
+    # 비포·애프터: 같은 회차 trace 줄마다 K 와 대체 값이 같이 남는다
+    trace = list((tmp_path / "on" / ".harness" / "traces").glob("*.jsonl"))[0]
+    tr = {r["row"]: r for r in map(json.loads, trace.read_text(encoding="utf-8").splitlines())}
+    assert tr[2]["new_K_base"] == "미노출" and tr[2]["substitute_count"] == 2
+    assert tr[2]["substitute_cell"].startswith("인기글 1위")
+    assert tr[3]["substitute_scanned"] is False and tr[3]["new_K_base"] == "인기글"
+    trace_off = list((tmp_path / "off" / ".harness" / "traces").glob("*.jsonl"))[0]
+    assert all("substitute_scanned" not in json.loads(x) for x in trace_off.read_text(encoding="utf-8").splitlines())
+    # 셈 스크립트
+    cnt = _load_script("count_substitute_before_after")
+    res = cnt.count(cnt._read_jsonl(str(trace)), cnt._read_jsonl(str(out[0])))
+    assert res["전체"]["줄"] == 3 and res["전체"]["비포"] == 1 and res["전체"]["애프터"] == 2
+    assert [(t["행"], t["대신 뜬 글"].split("?")[0], t["구좌"], t["순위"]) for t in res["대체 줄 표"]] == [
+        (2, OLD_LEDGER, "인기글", 1), (2, OTHER_SHEET, "인기글", 2)]
+    assert "error" in cnt.count(cnt._read_jsonl(str(trace_off)))  # 고침 전 회차 = 0 이 아니라 '셀 수 없음'
+
+
+def _load_script(name: str):
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(
+        name, Path(__file__).resolve().parents[2] / "scripts" / f"{name}.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
 
 
 # ── 글 장부 → 비공개 숨긴 탭 스크립트 ───────────────────────────────────

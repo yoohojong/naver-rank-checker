@@ -716,10 +716,12 @@ def run_cycle() -> dict:
     substitute_index_counts: dict = {}
     if substitute_module.substitute_enabled():
         try:
+            _t_build = time.perf_counter()
             l_rows, l_err, a_rows, a_err = substitute_module.read_private_sources(client)
             our_index = substitute_module.build_index(
                 data, l_rows, a_rows, ledger_error=l_err, archive_error=a_err,
             )
+            our_index.build_seconds = time.perf_counter() - _t_build
             substitute_index_counts = dict(our_index.counts)
             print(f"[대체노출] 우리 글 목록: {substitute_index_counts}")
         except Exception as e:
@@ -907,7 +909,12 @@ def run_cycle() -> dict:
             )
     try:
         write_jsonl(prewrite_audit_path, prewrite_invariant_issues)
-        trace_rows = build_update_trace(tab_updates, row_context, prewrite_invariant_issues)
+        trace_rows = build_update_trace(
+            tab_updates, row_context, prewrite_invariant_issues,
+            substitute_by_row=(
+                {(r["tab"], r["row"]): r for r in substitute_rows} if our_index is not None else None
+            ),
+        )
         write_jsonl(trace_path, trace_rows)
         print(f"[D-032-TRACE] {trace_path} 저장 ({len(trace_rows)} rows)")
     except Exception as e:
@@ -1099,6 +1106,16 @@ def run_cycle() -> dict:
     summary["substitute_rows_with_hits"] = sum(1 for r in substitute_rows if r["substitute_count"])
     summary["substitute_scan_errors"] = sum(1 for r in substitute_rows if r.get("error"))
     summary["substitute_path"] = substitute_path
+    # 회차 시간 전후 견주기용 — 맞대기·목록 만들기에 걸린 초와 맞댄 글 수 (2026-10-29)
+    summary["substitute_scan_seconds"] = round(our_index.scan_seconds, 2) if our_index else 0.0
+    summary["substitute_build_seconds"] = round(our_index.build_seconds, 2) if our_index else 0.0
+    summary["substitute_scan_calls"] = our_index.scan_calls if our_index else 0
+    summary["substitute_index_size"] = our_index.size() if our_index else {}
+    if our_index is not None:
+        print(
+            f"[대체노출] 맞대기 {summary['substitute_scan_seconds']}초 · 목록 {summary['substitute_build_seconds']}초"
+            f" · 맞댄 줄 {our_index.scan_calls} · 맞댄 글 {summary['substitute_index_size']}"
+        )
     summary["cafe_whitelist_size"] = len(CAFE_WHITELIST)
     summary["prewrite_invariant_violations"] = len(prewrite_invariant_issues)
     summary["post_write_audit_violations"] = len(post_write_blocking_issues)

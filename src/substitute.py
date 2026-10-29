@@ -18,6 +18,7 @@
 from __future__ import annotations
 
 import os
+import time
 from dataclasses import dataclass, field
 from typing import Iterable, Optional
 from urllib.parse import urlparse
@@ -65,6 +66,14 @@ class OurLinkIndex:
     global_keys: dict = field(default_factory=dict)  # link_key → 출처
     per_keyword: dict = field(default_factory=dict)  # (탭, 키워드) → {link_key: 출처}
     counts: dict = field(default_factory=dict)  # 출처별 링크 수 / '못 읽음' 사유
+    scan_seconds: float = 0.0  # 맞대기에 걸린 시간 합(회차 요약용)
+    scan_calls: int = 0  # 맞댄 줄 수
+    build_seconds: float = 0.0  # 목록 만들기(시트 읽기 포함)에 걸린 시간
+
+    def size(self) -> dict:
+        return {"전체": len(self.global_keys),
+                "키워드별": sum(len(v) for v in self.per_keyword.values()),
+                "키워드수": len(self.per_keyword)}
 
     def add_global(self, url: str, source: str) -> None:
         k = link_key(url)
@@ -164,8 +173,13 @@ def scan(html: str, index: Optional[OurLinkIndex], tab: str, keyword: str, own_l
     """이미 받은 html 에서 떠 있는 우리 글 전부 → 기록용 dict 목록 (없으면 [])."""
     if index is None or not html:
         return []
+    t0 = time.perf_counter()
     source_of = index.matcher_for(tab, keyword, own_link)
-    hits: list[OurPostHit] = find_all_our_posts(html, lambda u: source_of(u) is not None)
+    try:
+        hits: list[OurPostHit] = find_all_our_posts(html, lambda u: source_of(u) is not None)
+    finally:
+        index.scan_seconds += time.perf_counter() - t0
+        index.scan_calls += 1
     out = []
     seen = set()
     for h in hits:

@@ -110,8 +110,14 @@ def build_update_trace(
     tab_updates: dict[str, list[RowUpdate]],
     row_context: dict[tuple[str, int], dict],
     invalid_issues: Iterable[dict],
+    substitute_by_row: Optional[dict] = None,
 ) -> list[dict]:
-    """Build final per-row trace rows for updates and pre-write skips."""
+    """Build final per-row trace rows for updates and pre-write skips.
+
+    2026-10-29 대체 노출: substitute_by_row = {(탭, 행): 대체 기록} 을 주면 줄마다
+    substitute_scanned / substitute_count / substitute_cell 을 함께 남긴다 — 같은 회차에서
+    'K 판정 상위노출' 과 '대체 노출까지 넣은 상위노출' 을 나란히 셀 수 있게(비포·애프터).
+    """
     issue_by_key = {(i.get("tab"), i.get("row")): i for i in invalid_issues}
     traces: list[dict] = []
     for tab_name, updates in tab_updates.items():
@@ -138,6 +144,13 @@ def build_update_trace(
                 "matched_area": _clean(upd.columns.get("_matched_area", "")),
                 "row_link_meta": _clean(upd.columns.get("_row_link", "")),
             }
+            if substitute_by_row is not None:
+                sub = substitute_by_row.get((tab_name, upd.row))
+                trace["substitute_scanned"] = sub is not None
+                trace["substitute_count"] = int(sub.get("substitute_count", 0)) if sub else 0
+                trace["substitute_cell"] = sub.get("substitute_cell", "") if sub else ""
+                if sub and sub.get("error"):
+                    trace["substitute_error"] = sub["error"]
             if issue:
                 trace["issue_code"] = issue.get("code", "")
             traces.append(trace)
