@@ -14,6 +14,10 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from src.notify import send_report  # noqa: E402
+from src.exposure_drop_guard import (  # noqa: E402
+    RECONFIRM_NOTE as G_RECONFIRM_NOTE,
+    STATUS_RECONFIRMED as G_RECONFIRMED,
+)
 
 
 def _kst_now() -> str:
@@ -79,6 +83,13 @@ def build_brief(summary: dict | None = None, ts: str | None = None,
     # 노출 급감 검사가 기준을 일부 못 읽었으면(2026-10-30 품질 반려 고침) 어느 줄이든 끝에 붙인다 —
     # '점검 완료'만 보고 전체를 확인한 것으로 읽히지 않게.
     d = summary.get("exposure_drop") or {}
+    held = bool(summary.get("exposure_drop_hold"))
+    # 두 회차 연속 같은 급감(2026-10-30 정책 A) — 실제 변화로 보고 썼다는 한 줄
+    if d.get("status") == G_RECONFIRMED and not held:
+        line += (
+            f"\n🔁 노출 {d.get('baseline_exposed', '?')}→{d.get('current_exposed', '?')}줄 · "
+            f"{G_RECONFIRM_NOTE}"
+        )
     unreadable = int(d.get("rows_unreadable") or 0)
     if unreadable and int(d.get("rows_compared") or 0) > 0:
         line += (
@@ -86,7 +97,11 @@ def build_brief(summary: dict | None = None, ts: str | None = None,
             f"(읽은 {d.get('rows_compared')}줄만 맞댐)"
         )
     elif unreadable:
-        line += f"\n⚠️ 노출 급감 검사: 앞 회차 값을 못 읽어 {unreadable}줄 모두 비교 못 함(쓰기는 막지 않음)"
+        # 쓰기 여부는 실제로 멈췄나(held)로만 말한다 — 품질 2차 지적 2-1
+        tail = "" if held else "(쓰기는 막지 않음)"
+        line += f"\n⚠️ 노출 급감 검사: 앞 회차 값을 못 읽어 {unreadable}줄 모두 비교 못 함{tail}"
+    if summary.get("exposure_drop_state_saved") is False:
+        line += "\n⚠️ 노출 급감 앞 회차 기록 저장 실패 — 다음 회차에 급감이면 다시 멈춥니다"
     return line
 
 
@@ -109,7 +124,8 @@ def _build_brief_core(s: dict, ts: str) -> str:
         return (
             f"⏸ 상노체크 {ts} · 노출 {d.get('baseline_exposed', '?')}→{d.get('current_exposed', '?')}줄"
             f"({pct} 감소) — 이번 회차 시트 쓰기를 멈췄습니다(시트는 앞 회차 값 그대로)."
-            f"\n진짜 하락이면 수동 실행에서 '노출 급감 그대로 쓰기'를 켜고 한 번 돌리면 됩니다."
+            f"\n멈춤은 한 회차만 — 다음 회차에도 같으면 실제 변화로 보고 저절로 씁니다."
+            f" 바로 쓰려면 수동 실행에서 '노출 급감 그대로 쓰기'를 켜고 한 번 돌리면 됩니다."
         )
 
     # 정상 (성공률 ≥90% + 코드변경 의심 없음)
@@ -191,10 +207,15 @@ def 이_회차에_이미_보고했나() -> bool:
 
 
 def _이번에_멈췄나() -> bool:
-    """이번 실행이 노출 급감으로 쓰기를 멈췄나 — 멈춤 알림은 '같은 회차 이미 보고' 생략을 타지 않는다."""
+    """이번 실행이 노출 급감으로 쓰기를 멈췄거나 '급감 재확인'으로 썼나 — 둘 다 '같은 회차 이미 보고' 생략을 타지 않는다.
+
+    급감 재확인(2026-10-30 정책 A)은 바로 앞 멈춤 실행이 같은 회차(:07 → :27 줄 선 실행)일 때가 많다.
+    멈춘 실행도 종료 0(success)이라 생략 규칙이 '이미 보고함'으로 읽어 '실제 변화로 보고 썼음' 줄이 안 갈 뻔했다.
+    """
     try:
         with open("cycle_summary.json", encoding="utf-8") as f:
-            return bool(json.load(f).get("exposure_drop_hold"))
+            s = json.load(f)
+        return bool(s.get("exposure_drop_hold")) or s.get("exposure_drop_status") == G_RECONFIRMED
     except Exception:  # noqa: BLE001
         return False
 

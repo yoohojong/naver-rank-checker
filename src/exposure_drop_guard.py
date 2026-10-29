@@ -28,6 +28,19 @@
     비교 못 함  : 기준 K 칸을 하나도 못 읽음 · 기준 노출 0줄(첫 회차 · 새 시트 — 줄어들 노출이 없음)
                   · 계산 오류 → 막지 않고 기록
     풀림        : 20% 넘게 감소했지만 사람이 스위치(EXPOSURE_DROP_ALLOW)를 켠 수동 실행 → 그대로 씀
+    급감 재확인 : 바로 앞 회차가 '멈춤'이었고 이번 회차도 같은 기준 대비 20% 넘게 감소 → 실제 변화로 보고
+                  그대로 씀(알림 · 이슈에 '두 회차 연속 같은 급감 — 실제 변화로 보고 썼음' 한 줄)
+
+멈춤은 한 회차만 (2026-10-30 정책 A · 사장님 확인 '실제 급감에도 시트를 멈춰 세움이 되지 않게')
+    예전엔 멈추면 시트가 안 바뀌어 다음 회차도 같은 기준으로 또 멈추고, 사람이 풀 때까지 실제
+    급감을 끝없이 막았다. 이제 회차마다 판정 숫자를 '앞 회차 기록' 파일 하나에 남기고
+    (EXPOSURE_DROP_STATE_PATH — 워크플로가 GitHub Actions 캐시로 다음 회차에 넘긴다), 다음 회차가 읽는다.
+      앞 회차 멈춤 + 이번도 같은 기준에서 20% 넘게 감소 → 급감 재확인(씀)
+      앞 회차 멈춤 + 이번은 20% 이하                    → 통과 / 일부 미확인(한 번 튄 것)
+      기록 없음 · 못 읽음 · 24시간 지남 · 같은 실행의 기록 · 기준이 달라짐(시트가 그새 바뀜) → 지금처럼 멈춤(안전 쪽)
+    '같은 기준' = 이번 기준 노출 줄 수가 앞 회차 멈춤 때의 기준 쪽에 더 가깝다(멈춘 뒤 시트가 안 바뀌었다).
+    기록에는 실행 번호 · 시각 · 줄 수 · 비율만 넣는다 — 저장소가 공개라 키워드 · 링크 · 카페 · 탭 이름은 넣지 않는다.
+    EXPOSURE_DROP_STATE_PATH 가 없으면(로컬 실행 · 시험) 기록을 읽지도 쓰지도 않는다 → 예전과 같다(멈춤).
 
     2026-10-30 품질 1차 반려 고침: ① 예전엔 기준 노출 20줄 미만을 '비교 못 함'으로 넘겨 정상 기준 19→0 을
     그대로 썼다(하한 MIN_BASELINE_EXPOSED 삭제). ② 기준을 반만 읽어도 '통과'라 했고, K 분포는 읽은 줄(기준)과
@@ -41,7 +54,11 @@
 """
 from __future__ import annotations
 
+import json
+import os
+import re
 from collections import Counter
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from src.transitions import EXPOSED_VALUES, parse_K_with_stamp
@@ -57,8 +74,25 @@ STATUS_PARTIAL = "일부 미확인"
 STATUS_HOLD = "멈춤"
 STATUS_NO_COMPARE = "비교 못 함"
 STATUS_RELEASED = "풀림(사람 스위치)"
+STATUS_RECONFIRMED = "급감 재확인"
 
 ENV_ALLOW = "EXPOSURE_DROP_ALLOW"
+ENV_STATE_PATH = "EXPOSURE_DROP_STATE_PATH"
+
+RECONFIRM_NOTE = "두 회차 연속 같은 급감 — 실제 변화로 보고 썼음"
+
+# 앞 회차 기록(회차 사이 상태) — 숫자만
+STATE_VERSION = 1
+STATE_MAX_AGE = timedelta(hours=24)        # 이보다 오래된 기록은 무효
+STATE_FUTURE_SLACK = timedelta(minutes=10)  # 시계가 앞선 기록은 못 읽은 것으로 본다
+PREV_OFF = "꺼짐"            # 기록 경로가 없음(로컬 · 시험) — 읽지도 쓰지도 않음
+PREV_NONE = "없음"           # 기록 파일이 없음(첫 회차 · 캐시 없음)
+PREV_HOLD = "멈춤"           # 바로 앞 회차가 멈춤
+PREV_NOT_HOLD = "멈춤 아님"
+PREV_UNREADABLE = "못 읽음"
+PREV_EXPIRED = "지남"
+_RUN_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,40}$")
+_STATE_INT_FIELDS = ("baseline_exposed", "current_exposed", "rows_compared", "rows_unreadable")
 
 
 def _base(k_full: object) -> str:
@@ -85,6 +119,7 @@ def evaluate(
     allow: bool = False,
     threshold: float = DROP_RATIO_LIMIT,
     cleanup_keys: Optional[set] = None,
+    prev: Optional[dict] = None,
 ) -> dict:
     """이번 회차가 쓰려는 줄의 노출 수를 쓰기 전 시트와 맞대 판정한다.
 
@@ -92,8 +127,10 @@ def evaluate(
     row_context: {(탭, 행): 시작 때 읽은 행 dict}  — 앞 회차가 써 놓은 값
     cleanup_keys: {(탭, 행)} — 사람이 입력(키워드 · 링크)을 비운 줄의 K/L/M/O 비우기(D-034).
                   이번 회차가 잰 노출이 아니라 정리라서 맞대기에서 빼고 줄 수만 남긴다.
+    prev: load_prev_state() 의 반환 — 앞 회차 기록. None 이면 기록 꺼짐(멈춤 한 회차 규칙이 안 걸림 → 예전처럼 멈춤).
     반환 dict 는 cycle_summary · 산출물에 그대로 남긴다.
     """
+    prev = prev if isinstance(prev, dict) else {"state": PREV_OFF, "why": "앞 회차 기록 꺼짐", "record": None}
     result = {
         "status": STATUS_NO_COMPARE,
         "reason": "",
@@ -112,6 +149,8 @@ def evaluate(
         "prev_k_distribution": {},
         "cur_k_distribution": {},
         "lost_examples": [],
+        # 앞 회차 기록(숫자만) — 무엇을 읽었고 왜 그렇게 판정했나
+        "prev_run": {k: prev.get(k) for k in ("state", "why", "record")},
     }
     try:
         prev_dist: Counter = Counter()
@@ -179,16 +218,24 @@ def evaluate(
         ratio = (baseline_exposed - current_exposed) / baseline_exposed
         result["drop_ratio"] = round(ratio, 4)
         if ratio > threshold:
+            prev_ok, prev_why = _prev_hold_same_baseline(prev, baseline_exposed)
             if allow:
                 result["status"] = STATUS_RELEASED
                 result["reason"] = (
                     f"노출 {baseline_exposed}→{current_exposed}줄({ratio:.0%} 감소)이지만 "
                     f"사람이 스위치를 켠 실행 → 그대로 씀{tail}"
                 )
+            elif prev_ok:
+                result["status"] = STATUS_RECONFIRMED
+                result["reason"] = (
+                    f"노출 {baseline_exposed}→{current_exposed}줄({ratio:.0%} 감소) > {threshold:.0%} · "
+                    f"{prev_why} → {RECONFIRM_NOTE}{tail}"
+                )
             else:
                 result["status"] = STATUS_HOLD
                 result["reason"] = (
-                    f"노출 {baseline_exposed}→{current_exposed}줄({ratio:.0%} 감소) > {threshold:.0%}{tail}"
+                    f"노출 {baseline_exposed}→{current_exposed}줄({ratio:.0%} 감소) > {threshold:.0%}"
+                    f" · {prev_why}{tail}"
                 )
         else:
             change = f"{ratio:.0%} 감소" if ratio >= 0 else f"{-ratio:.0%} 증가"
@@ -210,3 +257,121 @@ def evaluate(
 def summary_line(result: dict) -> str:
     """로그 한 줄."""
     return f"[노출급감] {result.get('status')} — {result.get('reason')}"
+
+
+def is_hold(result: dict) -> bool:
+    """이번 회차 시트 쓰기를 멈췄나 — 쓰기 여부를 말하는 모든 문구는 이 한 곳을 본다."""
+    return (result or {}).get("status") == STATUS_HOLD
+
+
+# ── 앞 회차 기록 (멈춤은 한 회차만 · 2026-10-30 정책 A) ───────────────────────────
+def _now_utc() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def state_path_from_env() -> Optional[str]:
+    p = os.environ.get(ENV_STATE_PATH, "").strip()
+    return p or None
+
+
+def load_prev_state(path: Optional[str], run_id: str = "", now: Optional[datetime] = None) -> dict:
+    """앞 회차 기록을 읽는다. 반환 {state, why, record}. 못 읽는 경우는 전부 '멈춤 쪽'(PREV_HOLD 아님)으로 남긴다."""
+    if not path:
+        return {"state": PREV_OFF, "why": "앞 회차 기록 꺼짐", "record": None}
+    now = now or _now_utc()
+    try:
+        if not os.path.exists(path):
+            return {"state": PREV_NONE, "why": "앞 회차 기록 없음", "record": None}
+        with open(path, encoding="utf-8") as f:
+            raw = json.load(f)
+        if not isinstance(raw, dict) or raw.get("version") != STATE_VERSION:
+            raise ValueError("판 번호가 맞지 않음")
+        rec = {
+            "run_id": str(raw["run_id"]),
+            "saved_at": str(raw["saved_at"]),
+            "status": str(raw["status"]),
+            "drop_ratio": raw.get("drop_ratio"),
+        }
+        if not _RUN_ID_RE.match(rec["run_id"]):
+            raise ValueError("실행 번호 모양이 다름")
+        for k in _STATE_INT_FIELDS:
+            v = raw[k]
+            if isinstance(v, bool) or not isinstance(v, int) or v < 0:
+                raise ValueError(f"{k} 가 0 이상 정수가 아님")
+            rec[k] = v
+        if rec["drop_ratio"] is not None and not isinstance(rec["drop_ratio"], (int, float)):
+            raise ValueError("drop_ratio 가 숫자가 아님")
+        saved = datetime.fromisoformat(rec["saved_at"])
+        if saved.tzinfo is None:
+            raise ValueError("시각에 시간대가 없음")
+    except Exception as e:  # noqa: BLE001 — 못 읽으면 멈춤 쪽
+        return {"state": PREV_UNREADABLE, "why": f"앞 회차 기록 못 읽음({type(e).__name__})", "record": None}
+    age = now - saved
+    if age < -STATE_FUTURE_SLACK:
+        return {"state": PREV_UNREADABLE, "why": "앞 회차 기록 시각이 지금보다 뒤", "record": rec}
+    if age > STATE_MAX_AGE:
+        hours = age.total_seconds() / 3600
+        return {"state": PREV_EXPIRED, "why": f"앞 회차 기록이 {hours:.0f}시간 지나 무효", "record": rec}
+    if run_id and rec["run_id"] == str(run_id):
+        return {"state": PREV_UNREADABLE, "why": "앞 회차 기록이 이번 실행 것", "record": rec}
+    if rec["status"] == STATUS_HOLD:
+        return {"state": PREV_HOLD, "why": f"앞 회차(실행 {rec['run_id']}) 멈춤", "record": rec}
+    return {"state": PREV_NOT_HOLD, "why": f"앞 회차(실행 {rec['run_id']}) {rec['status']}", "record": rec}
+
+
+def _prev_hold_same_baseline(prev: dict, baseline_exposed: int) -> tuple[bool, str]:
+    """앞 회차가 멈춤이었고, 멈춘 뒤 시트가 그대로(같은 기준)인가.
+
+    같은 기준 = 이번 기준 노출 줄 수가 앞 회차의 '기준'에 '이번 값'보다 더 가깝다.
+    (멈춘 회차는 시트를 안 바꿨으니 다음 회차 기준은 그 회차 기준과 같다. 그새 누가 썼으면 '이번 값' 쪽에 가깝다.)
+    """
+    state = prev.get("state")
+    why = str(prev.get("why") or "")
+    if state != PREV_HOLD:
+        if state in (PREV_NOT_HOLD,):
+            return False, f"{why} — 첫 멈춤"
+        return False, f"{why} — 멈춤(안전 쪽)"
+    rec = prev.get("record") or {}
+    pb, pc = int(rec.get("baseline_exposed", -1)), int(rec.get("current_exposed", -1))
+    if abs(baseline_exposed - pb) <= abs(baseline_exposed - pc):
+        return True, f"{why}(기준 {pb}줄 · 이번 기준 {baseline_exposed}줄 같은 기준)"
+    return False, f"{why}이지만 그새 기준이 {pb}→{baseline_exposed}줄로 바뀜 — 새 급감으로 보고 멈춤"
+
+
+def save_state(path: Optional[str], result: dict, run_id: str, now: Optional[datetime] = None) -> bool:
+    """이번 회차 판정을 숫자만 남긴다(키워드 · 링크 · 카페 · 탭 이름 없음). 경로가 없으면 안 씀 → False."""
+    if not path:
+        return False
+    now = now or _now_utc()
+    rid = str(run_id or "")
+    if not _RUN_ID_RE.match(rid):
+        rid = "unknown"
+    rec = {
+        "version": STATE_VERSION,
+        "run_id": rid,
+        "saved_at": now.astimezone(timezone.utc).isoformat(timespec="seconds"),
+        "status": str(result.get("status") or ""),
+        "drop_ratio": result.get("drop_ratio") if isinstance(result.get("drop_ratio"), (int, float)) else None,
+    }
+    for k in _STATE_INT_FIELDS:
+        rec[k] = int(result.get(k) or 0)
+    d = os.path.dirname(path)
+    if d:
+        os.makedirs(d, exist_ok=True)
+    tmp = f"{path}.tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(rec, f, ensure_ascii=False)
+    os.replace(tmp, path)
+    return True
+
+
+def write_decision_text(result: dict) -> str:
+    """이번 회차 시트 쓰기 여부 한 문장 — 상태와 꼭 맞게(품질 2차 지적 2-1)."""
+    status = (result or {}).get("status")
+    if status == STATUS_HOLD:
+        return "이번 회차 시트 쓰기는 위 급감으로 멈춤(못 읽은 줄도 쓰지 않음)"
+    if status == STATUS_RECONFIRMED:
+        return f"이번 회차는 {RECONFIRM_NOTE}"
+    if status == STATUS_RELEASED:
+        return "사람 스위치로 이번 회차 그대로 씀"
+    return "못 읽은 줄 때문에 쓰기를 막지는 않음 — 이번 회차 그대로 씀"

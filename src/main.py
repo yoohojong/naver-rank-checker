@@ -859,17 +859,31 @@ def run_cycle() -> dict:
     # 3.6.5. 노출 급감 멈춤 (2026-10-29) — 쓰기 '전에' 이번 회차가 쓰려는 K 의 노출 줄 수를
     # 이번 회차 시작 때 읽은 시트(= 앞 회차가 써 놓은 값, raw_노출영역 우선)와 맞댄다.
     # 20% 넘게 줄면 이번 회차 시트 쓰기(K/L/M/O · C열)를 전부 멈추고, 결과는 산출물에만 남긴다.
-    # 회차는 실패가 아니라 '멈춤'(종료 코드 0 + 알림). 사람이 진짜 하락이라고 보면
-    # 수동 실행 입력 allow_exposure_drop=true(EXPOSURE_DROP_ALLOW) 로 그대로 쓴다.
+    # 회차는 실패가 아니라 '멈춤'(종료 코드 0 + 알림).
+    # 멈춤은 한 회차만(2026-10-30 정책 A): 바로 앞 회차가 멈춤이었고 이번도 같은 기준에서 20% 넘게 줄면
+    # '급감 재확인'으로 그대로 쓴다(실제 급감을 끝없이 막지 않게). 앞 회차 기록(숫자만)은
+    # EXPOSURE_DROP_STATE_PATH 파일 — 워크플로가 Actions 캐시로 넘긴다. 못 읽으면 지금처럼 멈춤.
+    # 사람이 바로 쓰려면 수동 실행 입력 allow_exposure_drop=true(EXPOSURE_DROP_ALLOW).
     # 기준을 못 읽으면 막지 않고 '비교 못 함'을 남긴다. K 값을 정하는 규칙은 손대지 않는다.
+    exposure_state_path = exposure_drop_guard.state_path_from_env()
+    exposure_prev = exposure_drop_guard.load_prev_state(exposure_state_path, run_id=run_id)
     exposure_drop = exposure_drop_guard.evaluate(
         filtered_updates,
         row_context,
         allow=_env_truthy(exposure_drop_guard.ENV_ALLOW),
         cleanup_keys=blank_cleanup_keys,
+        prev=exposure_prev,
     )
-    exposure_hold = exposure_drop["status"] == exposure_drop_guard.STATUS_HOLD
+    exposure_hold = exposure_drop_guard.is_hold(exposure_drop)
     print(exposure_drop_guard.summary_line(exposure_drop))
+    # 이번 판정을 다음 회차가 읽을 기록으로 남긴다(쓰기 전에 — 이 뒤에 죽어도 다음 회차는 멈춤 쪽).
+    exposure_state_saved = None  # None = 기록 꺼짐(경로 없음)
+    if exposure_state_path:
+        try:
+            exposure_state_saved = exposure_drop_guard.save_state(exposure_state_path, exposure_drop, run_id)
+        except Exception as e:
+            exposure_state_saved = False
+            print(f"[노출급감] 앞 회차 기록 저장 실패 = {type(e).__name__} — 다음 회차는 기록 없이 판정(급감이면 다시 멈춤)")
     if exposure_hold:
         print(
             "[노출급감] ⏸ 이번 회차 시트 쓰기(K/L/M/O · C열) 전부 멈춤 — "
@@ -1148,6 +1162,7 @@ def run_cycle() -> dict:
     summary["exposure_drop_status"] = exposure_drop["status"]
     summary["exposure_drop_hold"] = exposure_hold
     summary["exposure_drop_path"] = exposure_drop_path
+    summary["exposure_drop_state_saved"] = exposure_state_saved
 
     # 6.5. T-M38: 앞 회차 K 분포 vs 이번 회차 anomaly 감지
     # 2026-10-29: 예전엔 앞 회차 cycle_summary.json 을 읽었는데 GitHub 실행은 매번 새 폴더라
@@ -1173,9 +1188,11 @@ def run_cycle() -> dict:
         summary["k_anomaly_detected"] = k_anomaly
         if k_anomaly:
             print("⚠️ K_DISTRIBUTION_ANOMALY — 앞 회차 대비 K 분포 20% 이상 변동. 네이버 변경 또는 차단 의심.")
-            # 노출 급감으로 이미 멈췄거나(같은 신호) 사람이 스위치로 풀었으면 빨강(rc=2)으로 올리지 않는다.
+            # 노출 급감으로 이미 멈췄거나(같은 신호) 사람이 스위치로 풀었거나 두 회차 연속 같은 급감으로
+            # 실제 변화라고 보고 썼으면 빨강(rc=2)으로 올리지 않는다 — 알림은 노출 급감 줄이 맡는다.
             if exposure_drop["status"] not in (
                 exposure_drop_guard.STATUS_HOLD, exposure_drop_guard.STATUS_RELEASED,
+                exposure_drop_guard.STATUS_RECONFIRMED,
             ):
                 summary["code_change_suspected"] = True
     else:

@@ -9,6 +9,10 @@ import subprocess
 import sys
 from datetime import datetime, timezone, timedelta
 
+# `python scripts/post_summary_to_issue.py` 로 돌 때도 src 를 찾게(send_telegram_summary.py 와 같은 방식)
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from src import exposure_drop_guard  # noqa: E402 — 노출 급감 상태 이름 · 쓰기 여부 문장 한 곳
+
 ISSUE_NUMBER = "1"
 REPO = "yoohojong/naver-rank-checker"
 # M10 (D-049, 2026-06-20): 이메일→텔레그램 전환. OWNER_MENTION(@yoohojong) 제거 =
@@ -104,18 +108,31 @@ def build_success_comment(summary: dict) -> str:
         exposure_drop_line = (
             f"\n**노출 급감 검사**: {exposure_drop.get('status', '?')} — {exposure_drop.get('reason', '')}"
         )
-        if summary.get("exposure_drop_hold"):
+        # 쓰기 여부 문구는 '실제로 멈췄나' 한 곳(exposure_drop_hold)만 본다 — 품질 2차 지적 2-1:
+        # 멈춘 회차에 '쓰기는 막지 않음'이 함께 나와 반대로 읽혔다.
+        _held = bool(summary.get("exposure_drop_hold"))
+        _status = exposure_drop.get("status")
+        if _held:
             exposure_drop_line += (
                 "\n⏸ **이번 회차 시트 쓰기 멈춤** (K/L/M/O · C열 0셀). 결과는 diagnostics 산출물"
                 f" `{os.path.basename(summary.get('exposure_drop_path', ''))}` · row-trace 에만."
-                " 진짜 하락이면 수동 실행 입력 `allow_exposure_drop=true`."
+                " 멈춤은 한 회차만 — 다음 회차에도 같은 급감이면 실제 변화로 보고 저절로 씀"
+                "(앞 회차 기록을 못 읽으면 다시 멈춤). 바로 쓰려면 수동 실행 입력 `allow_exposure_drop=true`."
             )
+        elif _status == exposure_drop_guard.STATUS_RECONFIRMED:
+            exposure_drop_line += f"\n🔁 **{exposure_drop_guard.RECONFIRM_NOTE}** (이번 회차 시트 그대로 씀)"
         _unread = int(exposure_drop.get("rows_unreadable") or 0)
         if _unread and int(exposure_drop.get("rows_compared") or 0) > 0:
             exposure_drop_line += (
                 f"\n⚠️ **일부 미확인 {_unread}줄** — 앞 회차 K 칸을 못 읽어 노출 급감 · K 분포 비교에서 빠짐"
-                f"(읽은 {exposure_drop.get('rows_compared')}줄끼리만 맞댐). 쓰기는 막지 않음."
+                f"(읽은 {exposure_drop.get('rows_compared')}줄끼리만 맞댐). "
+                + (
+                    "이번 회차 시트 쓰기는 위 급감으로 멈춤(못 읽은 줄도 쓰지 않음)."
+                    if _held else exposure_drop_guard.write_decision_text(exposure_drop) + "."
+                )
             )
+        if summary.get("exposure_drop_state_saved") is False:
+            exposure_drop_line += "\n⚠️ 노출 급감 앞 회차 기록 저장 실패 — 다음 회차는 기록 없이 판정(급감이면 다시 멈춤)"
         exposure_drop_line += f"\n**K 분포 비교**: {summary.get('k_anomaly_compare', '?')}"
     else:
         exposure_drop_line = ""

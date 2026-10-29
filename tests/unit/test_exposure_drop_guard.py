@@ -187,19 +187,29 @@ def _fake_sheet(n: int, with_k: bool = True, missing: int = 0) -> dict:
     return {TAB: rows}
 
 
-def _run(monkeypatch, tmp_path, n_rows: int, still_exposed: int, *, allow=False, with_k=True, missing=0):
-    """가짜 시트 · 가짜 검색으로 run_cycle 을 돌린다. 시트 · 네이버 요청 0."""
+def _run(monkeypatch, tmp_path, n_rows: int, still_exposed: int, *, allow=False, with_k=True, missing=0,
+         state_path=None, run_id=None, sheet=None):
+    """가짜 시트 · 가짜 검색으로 run_cycle 을 돌린다. 시트 · 네이버 요청 0.
+
+    state_path: 앞 회차 기록 파일(EXPOSURE_DROP_STATE_PATH). None 이면 기록 꺼짐(예전 동작).
+    sheet: 시작 때 읽을 시트를 직접 줄 때(멈춘 뒤 다음 회차 — 시트가 그대로인 경우).
+    """
     monkeypatch.chdir(tmp_path)
     for name in ("GITHUB_ACTIONS", "ARCHIVE_ENABLED", "STALE_OUTPUT_FORMULA_MODE",
-                 "RECHECK_STALE_ONLY", "TYPE_PREVIEW_WRITE_ALLOW_BULK", "GITHUB_RUN_ID"):
+                 "RECHECK_STALE_ONLY", "TYPE_PREVIEW_WRITE_ALLOW_BULK", "GITHUB_RUN_ID",
+                 G.ENV_STATE_PATH):
         monkeypatch.delenv(name, raising=False)
+    if state_path is not None:
+        monkeypatch.setenv(G.ENV_STATE_PATH, str(state_path))
+    if run_id is not None:
+        monkeypatch.setenv("GITHUB_RUN_ID", str(run_id))
     monkeypatch.setenv("TYPE_PREVIEW_WRITE_CONFIRMED", "true")
     if allow:
         monkeypatch.setenv(G.ENV_ALLOW, "true")
     else:
         monkeypatch.delenv(G.ENV_ALLOW, raising=False)
 
-    sheet = _fake_sheet(n_rows, with_k=with_k, missing=missing)
+    sheet = sheet if sheet is not None else _fake_sheet(n_rows, with_k=with_k, missing=missing)
     exposed_links = {r["링크"] for r in sheet[TAB][:still_exposed]}
 
     client = MagicMock()
