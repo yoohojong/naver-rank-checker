@@ -75,8 +75,20 @@ def build_brief(summary: dict | None = None, ts: str | None = None,
             summary = json.load(open("cycle_summary.json", encoding="utf-8"))
         except Exception:  # noqa: BLE001
             return f"❌ 상노체크 {ts} · 결과 읽기 오류"
-    s = summary
+    line = _build_brief_core(summary, ts)
+    # 노출 급감 검사가 기준을 일부 못 읽었으면(2026-10-30 품질 반려 고침) 어느 줄이든 끝에 붙인다 —
+    # '점검 완료'만 보고 전체를 확인한 것으로 읽히지 않게.
+    d = summary.get("exposure_drop") or {}
+    unreadable = int(d.get("rows_unreadable") or 0)
+    if unreadable and int(d.get("rows_compared") or 0) > 0:
+        line += (
+            f"\n⚠️ 노출 급감 검사: {unreadable}줄은 앞 회차 값을 못 읽어 확인 못 함"
+            f"(읽은 {d.get('rows_compared')}줄만 맞댐)"
+        )
+    return line
 
+
+def _build_brief_core(s: dict, ts: str) -> str:
     rate = s.get("success_rate", 0) * 100
     rows = s.get("total_rows_processed", 0)
     blocked = s.get("circuit_breaker_blocks", 0)

@@ -86,11 +86,47 @@ class Test판정:
         assert "못 읽음" in r["reason"] and r["rows_unreadable"] == 552
 
     def test_첫_회차는_비교_못_함(self):
-        """기준 노출이 거의 없으면(새 시트 · 첫 회차) 비율이 흔들려 막지 않는다."""
-        tu, rc = _sample(5, 0)
+        """기준 노출이 0줄(새 시트 · 첫 회차 — 앞 회차 K 가 비었거나 미노출)이면 줄어들 노출이 없어 막지 않는다."""
+        tab = "샴푸 카외"
+        tu = {tab: [_upd(i + 2, f"AB ({STAMP}~)" if i < 3 else "미노출") for i in range(10)]}
+        rc = {(tab, i + 2): {"raw_노출영역": "" if i % 2 else "미노출"} for i in range(10)}
         r = G.evaluate(tu, rc)
         assert r["status"] == G.STATUS_NO_COMPARE
-        assert "첫 회차" in r["reason"]
+        assert "첫 회차" in r["reason"] and r["rows_unreadable"] == 0
+
+    @pytest.mark.parametrize("n", range(1, 20))
+    def test_정상으로_읽은_작은_기준도_20퍼센트_넘게_줄면_멈춤(self, n):
+        """품질 1차 반려 지적 1 — 정상 기준 1~19줄이 전부 누락으로 바뀌면 멈춘다(하한 예외 없음)."""
+        tu, rc = _sample(n, 0)
+        r = G.evaluate(tu, rc)
+        assert r["status"] == G.STATUS_HOLD, r["reason"]
+        assert (r["baseline_exposed"], r["current_exposed"], r["rows_unreadable"]) == (n, 0, 0)
+
+    def test_작은_기준도_딱_20퍼센트는_통과(self):
+        tu, rc = _sample(10, 8)
+        assert G.evaluate(tu, rc)["status"] == G.STATUS_PASS
+        tu, rc = _sample(10, 7)
+        assert G.evaluate(tu, rc)["status"] == G.STATUS_HOLD
+
+    def test_기준을_반만_읽으면_통과가_아니라_일부_미확인(self):
+        """품질 1차 반려 지적 2 — 100줄 중 50줄만 기준을 읽음 · 읽은 50줄은 그대로 노출."""
+        tu, rc = _sample(100, 100)
+        for key in list(rc)[50:]:
+            rc[key] = {"키워드": rc[key]["키워드"], "_row": rc[key]["_row"]}   # K 칸 없음
+        r = G.evaluate(tu, rc)
+        assert r["status"] == G.STATUS_PARTIAL and r["status"] != G.STATUS_PASS
+        assert r["partial"] is True
+        assert (r["rows_compared"], r["rows_unreadable"]) == (50, 50)
+        assert "일부 미확인 50줄" in r["reason"]
+        # K 분포는 기준을 읽은 같은 50줄끼리
+        assert r["prev_k_distribution"] == {"AB": 50} and r["cur_k_distribution"] == {"AB": 50}
+
+    def test_기준을_반만_읽어도_읽은_줄이_급감이면_멈춤(self):
+        tu, rc = _sample(100, 0)
+        for key in list(rc)[50:]:
+            rc[key] = {"키워드": rc[key]["키워드"], "_row": rc[key]["_row"]}
+        r = G.evaluate(tu, rc)
+        assert r["status"] == G.STATUS_HOLD and "일부 미확인 50줄" in r["reason"]
 
     def test_쓸_줄이_없으면_비교_못_함(self):
         r = G.evaluate({}, {})
@@ -115,7 +151,7 @@ class Test판정:
     def test_중복노출도_노출로_센다(self):
         tu = {"t": [_upd(2, "중복노출(AB) (10/29 18:00~)")]}
         rc = {("t", 2): {"raw_노출영역": f"AB ({STAMP}~)"}}
-        r = G.evaluate(tu, rc, min_baseline=1)
+        r = G.evaluate(tu, rc)
         assert r["status"] == G.STATUS_PASS and r["current_exposed"] == 1
 
 
@@ -123,7 +159,8 @@ class Test판정:
 TAB = "샴푸 카외"
 
 
-def _fake_sheet(n: int, with_k: bool = True) -> dict:
+def _fake_sheet(n: int, with_k: bool = True, missing: int = 0) -> dict:
+    """missing: 뒤쪽 missing 줄은 기준 K 칸(노출영역 · raw_노출영역)이 없다."""
     rows = []
     for i in range(n):
         r = {
@@ -132,14 +169,14 @@ def _fake_sheet(n: int, with_k: bool = True) -> dict:
             "_row": i + 2,
             "_tab": TAB,
         }
-        if with_k:
+        if with_k and i < n - missing:
             r["노출영역"] = f"AB ({STAMP}~)"
             r["raw_노출영역"] = f"AB ({STAMP}~)"
         rows.append(r)
     return {TAB: rows}
 
 
-def _run(monkeypatch, tmp_path, n_rows: int, still_exposed: int, *, allow=False, with_k=True):
+def _run(monkeypatch, tmp_path, n_rows: int, still_exposed: int, *, allow=False, with_k=True, missing=0):
     """가짜 시트 · 가짜 검색으로 run_cycle 을 돌린다. 시트 · 네이버 요청 0."""
     monkeypatch.chdir(tmp_path)
     for name in ("GITHUB_ACTIONS", "ARCHIVE_ENABLED", "STALE_OUTPUT_FORMULA_MODE",
@@ -151,7 +188,7 @@ def _run(monkeypatch, tmp_path, n_rows: int, still_exposed: int, *, allow=False,
     else:
         monkeypatch.delenv(G.ENV_ALLOW, raising=False)
 
-    sheet = _fake_sheet(n_rows, with_k=with_k)
+    sheet = _fake_sheet(n_rows, with_k=with_k, missing=missing)
     exposed_links = {r["링크"] for r in sheet[TAB][:still_exposed]}
 
     client = MagicMock()
@@ -239,6 +276,40 @@ class Test회차_배선:
         assert _written_rows(client) == 552
         # 사람이 확인하고 푼 회차는 빨강으로 올리지 않는다
         assert not s.get("code_change_suspected")
+
+    def test_정상_기준_19줄이_0줄이_되면_쓰기_0_멈춤(self, monkeypatch, tmp_path):
+        """품질 1차 반려 지적 1 (probe small-existing) — 하한 예외 없이 멈춘다."""
+        s, client, crawler = _run(monkeypatch, tmp_path, 19, 0)
+        assert s["exposure_drop_status"] == G.STATUS_HOLD and s["exposure_drop_hold"] is True
+        assert (s["exposure_drop"]["baseline_exposed"], s["exposure_drop"]["current_exposed"]) == (19, 0)
+        assert s["exposure_drop"]["rows_unreadable"] == 0
+        assert _written_rows(client) == 0
+        client.write_type_results.assert_not_called()
+        assert s["total_cells_written"] == 0
+        assert s["k_anomaly_compare"] == "비교함"          # 옛 K 분포 검사도 하한 없이 돈다
+        from scripts.send_telegram_summary import build_brief
+        t = build_brief(s, ts="10/29 18:00", run_status="success")
+        assert t.startswith("⏸") and "19→0" in t and "✅" not in t
+
+    def test_기준을_반만_읽으면_일부_미확인으로_쓰고_거짓_경보가_없다(self, monkeypatch, tmp_path):
+        """품질 1차 반려 지적 2 (probe partial-baseline) — 100줄 중 50줄만 기준 · 그 50줄은 그대로 AB."""
+        s, client, crawler = _run(monkeypatch, tmp_path, 100, 50, missing=50)
+        d = s["exposure_drop"]
+        assert s["exposure_drop_status"] == G.STATUS_PARTIAL and s["exposure_drop_hold"] is False
+        assert (d["rows_compared"], d["rows_unreadable"]) == (50, 50)
+        assert "일부 미확인 50줄" in d["reason"]
+        assert _written_rows(client) == 100            # 기준 못 읽음은 막지 않는다
+        # K 분포는 기준을 읽은 같은 50줄끼리 → 급변 아님 · 구조변경 의심 아님
+        assert s["k_anomaly_detected"] is False
+        assert not s.get("code_change_suspected")
+        assert "일부 미확인 50줄" in s["k_anomaly_compare"]
+        from scripts.send_telegram_summary import build_brief
+        from scripts.post_summary_to_issue import build_success_comment
+        t = build_brief(s, ts="10/29 18:00", run_status="success")
+        assert "50줄은 앞 회차 값을 못 읽어 확인 못 함" in t and "구조변경" not in t
+        body = build_success_comment(s)
+        assert "노출 급감 검사**: 일부 미확인" in body and "일부 미확인 50줄" in body
+        assert "code_change_suspected" not in body
 
     def test_K_값과_검색_횟수는_장치와_상관없이_같다(self, monkeypatch, tmp_path):
         """장치는 세기만 한다 — 멈춘 회차와 푼 회차의 K 값 · 검색 수가 같아야 한다."""

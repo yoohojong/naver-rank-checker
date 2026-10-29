@@ -1150,13 +1150,22 @@ def run_cycle() -> dict:
     #   파일이 한 번도 없어 FileNotFoundError → 조용히 pass 였다(비교 0번). 이제 기준은
     #   이번 회차 시작 때 읽은 시트(앞 회차가 써 놓은 값) — 노출 급감 장치와 같은 기준.
     #   기준을 못 읽으면 '비교 못 함'을 summary 에 남긴다(조용히 넘기지 않음).
-    #   맞댄 줄이 적으면(2줄 중 1줄만 바뀌어도 50%) 비율이 흔들려 빨강을 헛되이 낸다 —
-    #   이 감지는 한 번도 돌아 본 적이 없어 표본 하한이 없었다. 노출 급감과 같은 하한(20줄)을 쓴다.
+    #   2026-10-30 품질 1차 반려 고침: ① 20줄 하한을 뺐다 — 원 요청의 예외는 첫 회차 · 기준 못 읽음 둘뿐.
+    #   ② 기준 분포(읽은 줄만)와 이번 분포(쓰는 줄 전부)를 맞대 서로 다른 줄 묶음을 비교하던 것을,
+    #   기준을 읽은 같은 줄끼리(prev_k_distribution ↔ cur_k_distribution)만 맞대게 바꿨다.
+    #   못 읽은 줄은 비교에서 빠졌다고 summary 에 줄 수로 남긴다.
     prev_k = exposure_drop.get("prev_k_distribution") or {}
+    cur_k_same_rows = exposure_drop.get("cur_k_distribution") or {}
     k_compare_rows = int(exposure_drop.get("rows_compared") or 0)
-    if prev_k and k_distribution and k_compare_rows >= exposure_drop_guard.MIN_BASELINE_EXPOSED:
-        k_anomaly = health.detect_k_anomaly(prev_k, dict(k_distribution))
-        summary["k_anomaly_compare"] = "비교함"
+    k_unreadable_rows = int(exposure_drop.get("rows_unreadable") or 0)
+    summary["k_anomaly_compare_rows"] = k_compare_rows
+    summary["k_anomaly_unreadable_rows"] = k_unreadable_rows
+    if prev_k and cur_k_same_rows and k_compare_rows > 0:
+        k_anomaly = health.detect_k_anomaly(prev_k, dict(cur_k_same_rows))
+        summary["k_anomaly_compare"] = (
+            f"비교함(일부 미확인 {k_unreadable_rows}줄 — 기준을 읽은 {k_compare_rows}줄끼리)"
+            if k_unreadable_rows else "비교함"
+        )
         summary["k_anomaly_detected"] = k_anomaly
         if k_anomaly:
             print("⚠️ K_DISTRIBUTION_ANOMALY — 앞 회차 대비 K 분포 20% 이상 변동. 네이버 변경 또는 차단 의심.")
@@ -1169,8 +1178,8 @@ def run_cycle() -> dict:
         summary["k_anomaly_compare"] = "비교 못 함"
         summary["k_anomaly_detected"] = None
         print(
-            f"[K분포 비교] 비교 못 함 — 기준 분포 {len(prev_k)}종 · 이번 분포 {len(k_distribution)}종 · "
-            f"맞댄 줄 {k_compare_rows}(하한 {exposure_drop_guard.MIN_BASELINE_EXPOSED})"
+            f"[K분포 비교] 비교 못 함 — 기준 분포 {len(prev_k)}종 · 이번 분포 {len(cur_k_same_rows)}종 · "
+            f"맞댄 줄 {k_compare_rows} · 기준 못 읽은 줄 {k_unreadable_rows}"
         )
 
     # 7. CI 환경 — cycle_summary.json 작성 (workflow yml 의 issue comment step 에서 읽음)

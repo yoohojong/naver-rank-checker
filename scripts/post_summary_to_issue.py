@@ -110,6 +110,12 @@ def build_success_comment(summary: dict) -> str:
                 f" `{os.path.basename(summary.get('exposure_drop_path', ''))}` · row-trace 에만."
                 " 진짜 하락이면 수동 실행 입력 `allow_exposure_drop=true`."
             )
+        _unread = int(exposure_drop.get("rows_unreadable") or 0)
+        if _unread and int(exposure_drop.get("rows_compared") or 0) > 0:
+            exposure_drop_line += (
+                f"\n⚠️ **일부 미확인 {_unread}줄** — 앞 회차 K 칸을 못 읽어 노출 급감 · K 분포 비교에서 빠짐"
+                f"(읽은 {exposure_drop.get('rows_compared')}줄끼리만 맞댐). 쓰기는 막지 않음."
+            )
         exposure_drop_line += f"\n**K 분포 비교**: {summary.get('k_anomaly_compare', '?')}"
     else:
         exposure_drop_line = ""
