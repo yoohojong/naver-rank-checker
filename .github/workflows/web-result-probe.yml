@@ -19,7 +19,7 @@ jobs:
       - run: pip install playwright==1.48.0 && python -m playwright install --with-deps chromium
       - name: Probe
         env:
-          QUERIES: "site:yeopropillow.com,여리손 핑거롤,뷰티움랩 핑거롤,손가락 붓기제거 괄사"
+          QUERIES: "톡스베린,노즈페린,포스파티딜세린 PS 영양제,닥터그레잇"
           GUIDE: "0"
         timeout-minutes: 15
         run: python scripts/web_result_probe.py out
