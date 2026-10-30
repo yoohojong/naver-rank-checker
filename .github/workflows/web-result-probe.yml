@@ -10,7 +10,7 @@ permissions:
 jobs:
   probe:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -20,8 +20,10 @@ jobs:
       - name: Probe
         env:
           QUERIES: "site:yeopropillow.com,site:drgreat.co.kr,여리손 핑거롤 세트 손라인관리 손가락관리기구,핑거롤"
+        timeout-minutes: 15
         run: python scripts/web_result_probe.py out
-      - uses: actions/upload-artifact@v4
+      - if: always()
+        uses: actions/upload-artifact@v4
         with:
           name: web-result-probe
           path: out/
