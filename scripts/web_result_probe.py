@@ -19,13 +19,15 @@ with sync_playwright() as p:
                 pg.goto(url, wait_until="domcontentloaded", timeout=30000); time.sleep(2)
                 open(f"{OUT}/search_{i}_{where}.html", "w", encoding="utf-8").write(pg.content())
                 open(f"{OUT}/search_{i}_{where}.txt", "w", encoding="utf-8").write(q + "\n" + url + "\n\n" + pg.inner_text("body"))
+                pg.set_viewport_size({"width": 1280, "height": 1000})
+                pg.screenshot(path=f"{OUT}/search_{i}_{where}.png", full_page=True)
             except Exception as e:
                 open(f"{OUT}/search_{i}_{where}.err", "w", encoding="utf-8").write(repr(e))
             time.sleep(4)
     # 2) 서치어드바이저 안내 (목차에서 guide 링크를 따라감, 최대 60쪽)
     seen, todo, pages = set(), [GUIDE_START], []
     t0 = time.time()
-    while todo and len(seen) < 45 and time.time() - t0 < 480:
+    while os.environ.get("GUIDE", "1") == "1" and todo and len(seen) < 45 and time.time() - t0 < 480:
         u = todo.pop(0)
         if u in seen: continue
         seen.add(u)
