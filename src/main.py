@@ -25,6 +25,7 @@ from typing import Optional
 from src.config import SPREADSHEET_ID, SERVICE_ACCOUNT_JSON, NAVER_SLOWDOWN_BASE_SEC, NAVER_SLOWDOWN_MAX_SEC, CAFE_WHITELIST
 from src.crawler import Crawler, SlowdownController, CrawlerError, CafeStatus, CircuitBreakerOpen, parse_cafe_url, resolve_short_url
 from src.health import HealthMonitor
+from src import exposure_drop_guard
 from src import parser as parser_module
 from src.parser import parse_search_result
 from src import substitute as substitute_module
@@ -576,6 +577,7 @@ def run_cycle() -> dict:
     type_preview_summary_path = f".harness/type-previews/{run_id}_{artifact_ts}_type-preview-summary.md"
     stale_preview_path = f".harness/stale-previews/{run_id}_{artifact_ts}_stale-preview.jsonl"
     stale_preview_summary_path = f".harness/stale-previews/{run_id}_{artifact_ts}_stale-preview-summary.md"
+    exposure_drop_path = f".harness/audits/{run_id}_{artifact_ts}_exposure-drop.jsonl"
     try:
         backup_dir = ".harness/backups"
         os.makedirs(backup_dir, exist_ok=True)
@@ -749,6 +751,8 @@ def run_cycle() -> dict:
     url_alive_cache: dict[str, bool] = {}
     tab_updates: dict[str, list[RowUpdate]] = {}
     row_context: dict[tuple[str, int], dict] = {}
+    # D-034 입력 비운 줄 정리(K/L/M/O 비우기) — 잰 노출이 아니라 노출 급감 맞대기에서 뺀다(2026-10-30)
+    blank_cleanup_keys: set[tuple[str, int]] = set()
     circuit_breaker_tripped = False  # 2026-05-11 architect Major 1 fix
     # 운영 3 (2026-05-18): 네이버 차단 검출 카운터 — 사장님 메일 알림 강화.
     # CircuitBreakerOpen raise 시 = 그 시점 누적 연속 차단 + circuit_breaker_blocks += 1.
@@ -772,6 +776,7 @@ def run_cycle() -> dict:
                 cleanup_cols = _blank_input_stale_output_cleanup(row)
                 if cleanup_cols is not None:
                     updates.append(RowUpdate(row=row["_row"], columns=cleanup_cols))
+                    blank_cleanup_keys.add((tab_name, row["_row"]))
                     continue
 
                 cols = _process_row(
@@ -927,6 +932,56 @@ def run_cycle() -> dict:
                 f"  [D-032-INVARIANT] {issue.get('tab')} row={issue.get('row')} "
                 f"kw={issue.get('keyword')!r} K={issue.get('k_full')!r} L={issue.get('L')!r} M={issue.get('M')!r}"
             )
+
+    # 3.6.5. 노출 급감 멈춤 (2026-10-29) — 쓰기 '전에' 이번 회차가 쓰려는 K 의 노출 줄 수를
+    # 이번 회차 시작 때 읽은 시트(= 앞 회차가 써 놓은 값, raw_노출영역 우선)와 맞댄다.
+    # 20% 넘게 줄면 이번 회차 시트 쓰기(K/L/M/O · C열)를 전부 멈추고, 결과는 산출물에만 남긴다.
+    # 회차는 실패가 아니라 '멈춤'(종료 코드 0 + 알림).
+    # 멈춤은 한 회차만(2026-10-30 정책 A): 바로 앞 회차가 멈춤이었고 이번도 같은 기준에서 20% 넘게 줄면
+    # '급감 재확인'으로 그대로 쓴다(실제 급감을 끝없이 막지 않게). 앞 회차 기록(숫자만)은
+    # EXPOSURE_DROP_STATE_PATH 파일 — 워크플로가 Actions 캐시로 넘긴다. 못 읽으면 지금처럼 멈춤.
+    # 사람이 바로 쓰려면 수동 실행 입력 allow_exposure_drop=true(EXPOSURE_DROP_ALLOW).
+    # 기준을 못 읽으면 막지 않고 '비교 못 함'을 남긴다. K 값을 정하는 규칙은 손대지 않는다.
+    exposure_state_path = exposure_drop_guard.state_path_from_env()
+    # 바로 앞 실행(실행 순서 — 워크플로 'Find previous run' 단계가 GitHub API 로 찾아 넣음). 비면 재확인 안 함(멈춤 쪽).
+    run_attempt = os.environ.get("GITHUB_RUN_ATTEMPT", "1")
+    exposure_prev = exposure_drop_guard.load_prev_state(
+        exposure_state_path,
+        run_id=run_id,
+        prev_run=os.environ.get(exposure_drop_guard.ENV_PREV_RUN, ""),
+        prev_run_why=os.environ.get(exposure_drop_guard.ENV_PREV_RUN_WHY, ""),
+    )
+    exposure_drop = exposure_drop_guard.evaluate(
+        filtered_updates,
+        row_context,
+        allow=_env_truthy(exposure_drop_guard.ENV_ALLOW),
+        cleanup_keys=blank_cleanup_keys,
+        prev=exposure_prev,
+    )
+    exposure_hold = exposure_drop_guard.is_hold(exposure_drop)
+    print(exposure_drop_guard.summary_line(exposure_drop))
+    # 이번 판정을 다음 회차가 읽을 기록으로 남긴다(쓰기 전에 — 이 뒤에 죽어도 다음 회차는 멈춤 쪽).
+    exposure_state_saved = None  # None = 기록 꺼짐(경로 없음)
+    if exposure_state_path:
+        try:
+            exposure_state_saved = exposure_drop_guard.save_state(
+                exposure_state_path, exposure_drop, run_id, run_attempt=run_attempt,
+            )
+        except Exception as e:
+            # save_state 가 남은 옛 기록을 지웠고(못 지워도 워크플로가 이번 실행 것만 보관 · 다음 회차가 실행 순서 확인),
+            # 다음 회차는 '바로 앞 회차 기록 없음' → 급감이면 다시 멈춘다.
+            exposure_state_saved = False
+            print(f"[노출급감] 앞 회차 기록 저장 실패 = {type(e).__name__} — 다음 회차는 기록 없이 판정(급감이면 다시 멈춤)")
+    if exposure_hold:
+        print(
+            "[노출급감] ⏸ 이번 회차 시트 쓰기(K/L/M/O · C열) 전부 멈춤 — "
+            "시트는 앞 회차 값 그대로, 이번 결과는 diagnostics 산출물(row-trace · exposure-drop)에만"
+        )
+        attempted_update_keys = set()  # 아무 줄도 쓰지 않았으니 사후 감사가 '이번에 건드린 줄'로 보지 않게
+    try:
+        write_jsonl(exposure_drop_path, [exposure_drop])
+    except Exception as e:
+        print(f"[노출급감] 판정 파일 저장 실패 = {e} (cron 진행)")
     try:
         write_jsonl(prewrite_audit_path, prewrite_invariant_issues)
         trace_rows = build_update_trace(
@@ -935,6 +990,10 @@ def run_cycle() -> dict:
                 {(r["tab"], r["row"]): r for r in substitute_rows} if our_index is not None else None
             ),
         )
+        if exposure_hold:
+            for trace in trace_rows:
+                if trace.get("status") == "write_ready":
+                    trace["status"] = "held_exposure_drop"
         write_jsonl(trace_path, trace_rows)
         print(f"[D-032-TRACE] {trace_path} 저장 ({len(trace_rows)} rows)")
     except Exception as e:
@@ -951,7 +1010,8 @@ def run_cycle() -> dict:
         "relocation_conflict_keys": 0,
         "relocation_fanout_rows": 0,
     }
-    for tab_name, updates in tab_updates.items():
+    # 노출 급감 멈춤이면 K/L/M/O 쓰기 대상 0 (tab_updates 자체는 요약 · K 분포용으로 그대로 둔다)
+    for tab_name, updates in ({} if exposure_hold else tab_updates).items():
         if updates:
             if stale_formula_mode_enabled:
                 n = client.write_stale_formula_results(
@@ -972,7 +1032,10 @@ def run_cycle() -> dict:
     type_preview_write_requested_rows = 0
     type_preview_write_blocked_by_bulk_guard = False
     type_tab_updates: dict[str, list[RowUpdate]] = {}
-    if type_preview_write_confirmed:
+    if type_preview_write_confirmed and exposure_hold:
+        # C열 유형 후보도 같은 검색 화면에서 나온 값이다 — 그 화면 읽기가 의심스러운 회차라 함께 멈춘다.
+        print("[TYPE-PREVIEW] 노출 급감 멈춤 → C-column write skipped (후보는 type-preview 산출물에만)")
+    elif type_preview_write_confirmed:
         # 교착 완전봉인(2026-07-01): bulk-guard 는 count(>100) 또는 ratio(>50%)로 트립한다.
         #   · count 만(정상 대량변경, 예: 날짜롤오버 '중복노출' 재분류 ~12~15%)으로 트립된 건 flush 허용.
         #     이유: would_update 행은 이미 전부 html_status==SAFE(정상 페이지) 필터를 통과 → 구조적으로 안전.
@@ -1032,7 +1095,7 @@ def run_cycle() -> dict:
         else:
             print("[D-032-POST-AUDIT] 불가능 조합 0건")
 
-        if type_preview_write_confirmed and not type_preview_write_blocked_by_bulk_guard:
+        if type_preview_write_confirmed and not type_preview_write_blocked_by_bulk_guard and not exposure_hold:
             type_preview_write_audit_issues = audit_type_preview_writes(type_preview_rows, post_write_data)
             write_jsonl(typewrite_audit_path, type_preview_write_audit_issues)
             if type_preview_write_audit_issues:
@@ -1209,16 +1272,51 @@ def run_cycle() -> dict:
     if type_preview_write_blocked_by_bulk_guard or type_preview_write_audit_issues:
         summary["code_change_suspected"] = True
 
-    # 6.5. T-M38: 이전 cron K 분포 vs 현재 anomaly 감지
-    try:
-        with open("cycle_summary.json", "r", encoding="utf-8") as f:
-            prev_summary = json.load(f)
-        prev_k = prev_summary.get("k_distribution", {})
-        if health.detect_k_anomaly(prev_k, dict(k_distribution)):
-            print("⚠️ K_DISTRIBUTION_ANOMALY — 이전 대비 K 분포 20% 이상 변동. 네이버 변경 또는 차단 의심.")
-            summary["code_change_suspected"] = True
-    except (FileNotFoundError, json.JSONDecodeError):
-        pass  # 첫 cron 또는 파일 없음 = 비교 불가, 무시
+    # 6.4. 노출 급감 멈춤 결과 (3.6.5 에서 판정). 멈춤은 실패가 아니다 — 종료 코드 0 + 알림.
+    summary["exposure_drop"] = exposure_drop
+    summary["exposure_drop_status"] = exposure_drop["status"]
+    summary["exposure_drop_hold"] = exposure_hold
+    summary["exposure_drop_path"] = exposure_drop_path
+    summary["exposure_drop_state_saved"] = exposure_state_saved
+
+    # 6.5. T-M38: 앞 회차 K 분포 vs 이번 회차 anomaly 감지
+    # 2026-10-29: 예전엔 앞 회차 cycle_summary.json 을 읽었는데 GitHub 실행은 매번 새 폴더라
+    #   파일이 한 번도 없어 FileNotFoundError → 조용히 pass 였다(비교 0번). 이제 기준은
+    #   이번 회차 시작 때 읽은 시트(앞 회차가 써 놓은 값) — 노출 급감 장치와 같은 기준.
+    #   기준을 못 읽으면 '비교 못 함'을 summary 에 남긴다(조용히 넘기지 않음).
+    #   2026-10-30 품질 1차 반려 고침: ① 20줄 하한을 뺐다 — 원 요청의 예외는 첫 회차 · 기준 못 읽음 둘뿐.
+    #   ② 기준 분포(읽은 줄만)와 이번 분포(쓰는 줄 전부)를 맞대 서로 다른 줄 묶음을 비교하던 것을,
+    #   기준을 읽은 같은 줄끼리(prev_k_distribution ↔ cur_k_distribution)만 맞대게 바꿨다.
+    #   못 읽은 줄은 비교에서 빠졌다고 summary 에 줄 수로 남긴다.
+    prev_k = exposure_drop.get("prev_k_distribution") or {}
+    cur_k_same_rows = exposure_drop.get("cur_k_distribution") or {}
+    k_compare_rows = int(exposure_drop.get("rows_compared") or 0)
+    k_unreadable_rows = int(exposure_drop.get("rows_unreadable") or 0)
+    summary["k_anomaly_compare_rows"] = k_compare_rows
+    summary["k_anomaly_unreadable_rows"] = k_unreadable_rows
+    if prev_k and cur_k_same_rows and k_compare_rows > 0:
+        k_anomaly = health.detect_k_anomaly(prev_k, dict(cur_k_same_rows))
+        summary["k_anomaly_compare"] = (
+            f"비교함(일부 미확인 {k_unreadable_rows}줄 — 기준을 읽은 {k_compare_rows}줄끼리)"
+            if k_unreadable_rows else "비교함"
+        )
+        summary["k_anomaly_detected"] = k_anomaly
+        if k_anomaly:
+            print("⚠️ K_DISTRIBUTION_ANOMALY — 앞 회차 대비 K 분포 20% 이상 변동. 네이버 변경 또는 차단 의심.")
+            # 노출 급감으로 이미 멈췄거나(같은 신호) 사람이 스위치로 풀었거나 두 회차 연속 같은 급감으로
+            # 실제 변화라고 보고 썼으면 빨강(rc=2)으로 올리지 않는다 — 알림은 노출 급감 줄이 맡는다.
+            if exposure_drop["status"] not in (
+                exposure_drop_guard.STATUS_HOLD, exposure_drop_guard.STATUS_RELEASED,
+                exposure_drop_guard.STATUS_RECONFIRMED,
+            ):
+                summary["code_change_suspected"] = True
+    else:
+        summary["k_anomaly_compare"] = "비교 못 함"
+        summary["k_anomaly_detected"] = None
+        print(
+            f"[K분포 비교] 비교 못 함 — 기준 분포 {len(prev_k)}종 · 이번 분포 {len(cur_k_same_rows)}종 · "
+            f"맞댄 줄 {k_compare_rows} · 기준 못 읽은 줄 {k_unreadable_rows}"
+        )
 
     # 7. CI 환경 — cycle_summary.json 작성 (workflow yml 의 issue comment step 에서 읽음)
     if os.environ.get("GITHUB_ACTIONS") == "true":
@@ -1242,6 +1340,7 @@ if __name__ == "__main__":
     #       → rank-check.yml self-heal 이 rc=2 는 재시도 생략. 실제 크래시(rc=1 등)만 1회 재시도.
     #   1(또는 그 외 비0) = 예기치 못한 크래시 → self-heal 1회 재시도 대상.
     # ⚠️ 순위 데이터(K/L/M/O)는 이 체크 '전에' 이미 시트에 기록됨 → rc=2 여도 순위 갱신은 정상.
+    # 노출 급감 멈춤(2026-10-29)은 0 — 실패가 아니라 '멈춤'. 쓰기는 이미 막혔고 알림은 텔레그램 줄이 맡는다.
     if s.get("code_change_suspected"):
         sys.exit(2)
     sys.exit(0)

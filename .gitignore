@@ -61,3 +61,5 @@ geomsu.log
 
 # 기계가 남기는 실행 상태 — git 에 담지 않는다(상태 DB 안티패턴)
 .harness/last_skip_reason.txt
+# 노출 급감 앞 회차 기록(숫자만, Actions 캐시로 넘김) — 기계 상태라 git 에 담지 않는다
+.harness/exposure-drop-state/

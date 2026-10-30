@@ -43,6 +43,16 @@ on:
         options:
           - 'false'
           - 'true'
+      # 2026-10-29 노출 급감 멈춤의 사람 스위치. 노출이 앞 회차보다 20% 넘게 줄면 정기 실행은
+      # 시트 쓰기를 멈춘다. 사람이 화면을 보고 '진짜 하락'이라 판단했을 때만 true 로 한 번 돌린다.
+      allow_exposure_drop:
+        description: '노출 급감 그대로 쓰기 (진짜 하락 확인 뒤에만 true)'
+        required: false
+        default: 'false'
+        type: choice
+        options:
+          - 'false'
+          - 'true'
 
 # critic 2026-05-08 Critical 2: cron overlap 방지.
 concurrency:
@@ -119,6 +129,30 @@ jobs:
           ./.venv/bin/python -m pip install --upgrade pip
           ./.venv/bin/python -m pip install -r requirements.txt
 
+      # 노출 급감 '멈춤은 한 회차만'(2026-10-30 정책 A) — 앞 회차 판정 기록(숫자만: 실행 번호·시각·줄 수·비율.
+      #   공개 저장소라 키워드·링크·카페 이름 없음)을 Actions 캐시로 다음 회차에 넘긴다.
+      #   못 받으면(캐시 없음·오류) 기록 없음 → 급감이면 지금처럼 멈춤(안전 쪽). 비차단.
+      - name: Restore exposure-drop state (앞 회차 기록)
+        id: exposure_state_restore
+        continue-on-error: true
+        uses: actions/cache/restore@v5
+        with:
+          path: .harness/exposure-drop-state/state.json
+          key: exposure-drop-state-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: |
+            exposure-drop-state-
+
+      # 노출 급감 '바로 앞 회차'는 기록이 아니라 실행 순서로 확인(2026-10-30 품질 3차 3-1) — 이 워크플로의 바로 앞
+      #   실행(실행 번호 - 1)의 id · 시도 번호를 GitHub API 로 찾아 EXPOSURE_DROP_PREV_RUN 에 넣는다(actions: read).
+      #   못 찾으면 빈 값 → 급감이면 멈춤(안전 쪽). 키워드 · 링크는 오가지 않는다. 비차단.
+      - name: Find previous run (노출 급감 바로 앞 실행)
+        continue-on-error: true
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PYTHONIOENCODING: 'utf-8'
+        run: ./.venv/bin/python -u -m src.exposure_prev_run find
+
       - name: Run cron cycle
         id: run_cycle
         shell: bash
@@ -132,6 +166,10 @@ jobs:
           TYPE_PREVIEW_WRITE_ALLOW_BULK: ${{ github.event_name == 'workflow_dispatch' && inputs.allow_bulk_type_preview == 'true' }}
           STALE_OUTPUT_FORMULA_MODE: ${{ github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.apply_stale_formula_mode != 'false') }}
           RECHECK_STALE_ONLY: ${{ github.event_name == 'workflow_dispatch' && inputs.recheck_stale_only == 'true' }}
+          # 노출 급감 멈춤의 사람 스위치(2026-10-29) - schedule 실행은 늘 false.
+          EXPOSURE_DROP_ALLOW: ${{ github.event_name == 'workflow_dispatch' && inputs.allow_exposure_drop == 'true' }}
+          # 앞 회차 기록 파일(위 캐시 복원 · 아래 캐시 저장과 같은 경로)
+          EXPOSURE_DROP_STATE_PATH: .harness/exposure-drop-state/state.json
           PYTHONIOENCODING: 'utf-8'
           ARCHIVE_ENABLED: '1'  # 2026-07-02 사장님 "켜" — 상위노출 실적 일별 아카이빙 활성(비공개 시트 탭 '상위노출_이력')
           # 경쟁사 리스트업(2026-07-23) — 기본 OFF. 사장님 go 시 repo Variables 에
@@ -159,6 +197,25 @@ jobs:
             echo "[SELF-HEAL] rc=2 (코드/사이트 변경 의심 — 결정적) → 재시도 생략. 사람(Claude) 검토 필요."
           fi
           exit $rc
+
+      # 노출 급감 앞 회차 기록 저장(정책 A) — run_cycle 이 쓴 숫자 기록만. 실행마다 새 열쇠(run_id·attempt),
+      #   다음 회차는 restore-keys 로 가장 최근 것을 받는다. 비차단.
+      #   이번 실행 · 이번 시도가 쓴 기록일 때만 저장(2026-10-30 품질 3차 3-1) — 저장 실패 · 기록 전에 죽어 복원된
+      #   옛 기록이 남아 있으면 새 열쇠로 다시 보관하지 않는다(전에는 파일이 있기만 하면 저장).
+      - name: Check own exposure-drop state (이번 실행 기록인가)
+        id: exposure_state_own
+        if: ${{ always() && hashFiles('.harness/exposure-drop-state/state.json') != '' }}
+        continue-on-error: true
+        shell: bash
+        run: ./.venv/bin/python -u -m src.exposure_prev_run own .harness/exposure-drop-state/state.json
+
+      - name: Save exposure-drop state (다음 회차용)
+        if: ${{ always() && steps.exposure_state_own.outputs.own == 'true' }}
+        continue-on-error: true
+        uses: actions/cache/save@v5
+        with:
+          path: .harness/exposure-drop-state/state.json
+          key: exposure-drop-state-${{ github.run_id }}-${{ github.run_attempt }}
 
       # 폴더누락 근본해결(2026-06-26): team-project cafe-auto-collect 의 일1회 cron 이 schedule 실제 0회 발동
       #   → 카외 보관함 폴더 누락 누적(바디워시 70개 사건). 확실히 도는 이 cron(8회/일+외부 cron-job.org 백업)이
