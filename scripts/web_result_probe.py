@@ -24,17 +24,19 @@ with sync_playwright() as p:
             time.sleep(4)
     # 2) 서치어드바이저 안내 (목차에서 guide 링크를 따라감, 최대 60쪽)
     seen, todo, pages = set(), [GUIDE_START], []
-    while todo and len(seen) < 60:
+    t0 = time.time()
+    while todo and len(seen) < 45 and time.time() - t0 < 480:
         u = todo.pop(0)
         if u in seen: continue
         seen.add(u)
         try:
-            pg.goto(u, wait_until="networkidle", timeout=30000); time.sleep(1)
-            for _ in range(3):
-                for el in pg.query_selector_all("text=expand_more"):
-                    try: el.click(timeout=1500)
+            pg.goto(u, wait_until="domcontentloaded", timeout=20000); pg.wait_for_timeout(2500); time.sleep(1)
+            if u == GUIDE_START:
+                for el in pg.query_selector_all("text=expand_more")[:20]:
+                    try: el.click(timeout=800)
                     except Exception: pass
-                time.sleep(0.5)
+                time.sleep(1)
+                open(f"{OUT}/guide_index.html", "w", encoding="utf-8").write(pg.content())
             txt = pg.inner_text("body")
             pages.append({"url": u, "text": txt})
             for h in pg.eval_on_selector_all("a[href]", "els => els.map(e => e.href).concat(Array.from(document.querySelectorAll('[data-href],[routerlink]')).map(e => new URL(e.getAttribute('data-href')||e.getAttribute('routerlink'), location.href).href))"):
@@ -43,8 +45,8 @@ with sync_playwright() as p:
                     todo.append(h)
         except Exception as e:
             pages.append({"url": u, "error": repr(e)})
-        time.sleep(1.5)
-    open(f"{OUT}/guide_index.html", "w", encoding="utf-8").write(pages and "" or "")
+        json.dump(pages, open(f"{OUT}/guide_pages.json", "w", encoding="utf-8"), ensure_ascii=False, indent=1)
+        time.sleep(1)
     json.dump(pages, open(f"{OUT}/guide_pages.json", "w", encoding="utf-8"), ensure_ascii=False, indent=1)
     b.close()
 print("done", len(QUERIES), "queries,", len(pages), "guide pages")
