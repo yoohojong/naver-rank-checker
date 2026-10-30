@@ -30,15 +30,21 @@ with sync_playwright() as p:
         seen.add(u)
         try:
             pg.goto(u, wait_until="networkidle", timeout=30000); time.sleep(1)
+            for _ in range(3):
+                for el in pg.query_selector_all("text=expand_more"):
+                    try: el.click(timeout=1500)
+                    except Exception: pass
+                time.sleep(0.5)
             txt = pg.inner_text("body")
             pages.append({"url": u, "text": txt})
-            for h in pg.eval_on_selector_all("a[href]", "els => els.map(e => e.href)"):
+            for h in pg.eval_on_selector_all("a[href]", "els => els.map(e => e.href).concat(Array.from(document.querySelectorAll('[data-href],[routerlink]')).map(e => new URL(e.getAttribute('data-href')||e.getAttribute('routerlink'), location.href).href))"):
                 h = h.split("#")[0]
                 if h.startswith("https://searchadvisor.naver.com/guide") and h not in seen and h not in todo:
                     todo.append(h)
         except Exception as e:
             pages.append({"url": u, "error": repr(e)})
         time.sleep(1.5)
+    open(f"{OUT}/guide_index.html", "w", encoding="utf-8").write(pages and "" or "")
     json.dump(pages, open(f"{OUT}/guide_pages.json", "w", encoding="utf-8"), ensure_ascii=False, indent=1)
     b.close()
 print("done", len(QUERIES), "queries,", len(pages), "guide pages")
