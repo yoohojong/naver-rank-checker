@@ -1,6 +1,6 @@
 name: web-result-probe
 # 네이버 검색 화면(통합 · 웹문서)과 서치어드바이저 안내를 받아 저장만 한다(읽기만 · 시트 · 기존 코드 안 건드림).
-# 2026-10-30 뷰티움랩 검색 표시 조사. 이 가지에 올릴 때만 돈다(예약 없음).
+# 2026-10-30 뷰티움랩 검색 표시 조사 · 4차부터 화면 사진(png)도 저장 · 안내 받기는 끔. 이 가지에 올릴 때만 돈다(예약 없음).
 # 받는 명령: gh run download <번호> -R yoohojong/naver-rank-checker -n web-result-probe
 on:
   push:
@@ -19,7 +19,8 @@ jobs:
       - run: pip install playwright==1.48.0 && python -m playwright install --with-deps chromium
       - name: Probe
         env:
-          QUERIES: "site:yeopropillow.com,site:drgreat.co.kr,여리손 핑거롤 세트 손라인관리 손가락관리기구,핑거롤"
+          QUERIES: "site:yeopropillow.com,여리손 핑거롤,뷰티움랩 핑거롤,손가락 붓기제거 괄사"
+          GUIDE: "0"
         timeout-minutes: 15
         run: python scripts/web_result_probe.py out
       - if: always()
