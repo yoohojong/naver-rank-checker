@@ -1,0 +1,28 @@
+name: web-result-probe
+# 네이버 검색 화면(통합 · 웹문서)과 서치어드바이저 안내를 받아 저장만 한다(읽기만 · 시트 · 기존 코드 안 건드림).
+# 2026-10-30 뷰티움랩 검색 표시 조사. 이 가지에 올릴 때만 돈다(예약 없음).
+# 받는 명령: gh run download <번호> -R yoohojong/naver-rank-checker -n web-result-probe
+on:
+  push:
+    branches: [feat/web-result-probe]
+permissions:
+  contents: read
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - run: pip install playwright==1.48.0 && python -m playwright install --with-deps chromium
+      - name: Probe
+        env:
+          QUERIES: "여리손,여리손 핑거롤,닥터그레잇,톡스베린,뷰티움랩"
+        run: python scripts/web_result_probe.py out
+      - uses: actions/upload-artifact@v4
+        with:
+          name: web-result-probe
+          path: out/
+          retention-days: 7
