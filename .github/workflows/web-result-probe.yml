@@ -19,7 +19,7 @@ jobs:
       - run: pip install playwright==1.48.0 && python -m playwright install --with-deps chromium
       - name: Probe
         env:
-          QUERIES: "여리손,여리손 핑거롤,닥터그레잇,톡스베린,뷰티움랩"
+          QUERIES: "site:yeopropillow.com,site:drgreat.co.kr,여리손 핑거롤 세트 손라인관리 손가락관리기구,핑거롤"
         run: python scripts/web_result_probe.py out
       - uses: actions/upload-artifact@v4
         with:
