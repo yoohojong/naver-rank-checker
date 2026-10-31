@@ -77,7 +77,17 @@ import sys
 
     ("⑥같은 회차 중복 문자 막기 제거",
      "scripts/send_telegram_summary.py",
-     "        if 이_회차에_이미_보고했나():\n            return 0\n", "",
+     "    return 이_회차에_이미_보고했나()\n", "    return False\n",
+     "tests/unit/test_send_telegram_summary.py"),
+
+    ("⑦멈춤 뒤 다시 잰 결과 생략(2026-10-31): 앞 실행이 멈춤이어도 '이미 보고함'으로",
+     "scripts/send_telegram_summary.py",
+     "    if rec.get(\"status\") == G_HOLD:\n", "    if False:\n",
+     "tests/unit/test_send_telegram_summary.py"),
+
+    ("⑦손으로 · 다시 돌린 실행도 생략",
+     "scripts/send_telegram_summary.py",
+     "    if _다시_잰_실행인가():\n", "    if False:\n",
      "tests/unit/test_send_telegram_summary.py"),
 
     ("⑥gh 인증 배선 끊기(워크플로)",

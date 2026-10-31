@@ -16,6 +16,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from src.notify import send_report  # noqa: E402
 from src.exposure_drop_guard import (  # noqa: E402
     RECONFIRM_NOTE as G_RECONFIRM_NOTE,
+    STATUS_HOLD as G_HOLD,
     STATUS_RECONFIRMED as G_RECONFIRMED,
 )
 
@@ -162,7 +163,17 @@ def _build_brief_core(s: dict, ts: str) -> str:
 
 
 def 이_회차에_이미_보고했나() -> bool:
-    """같은 회차(6시간)에 이미 성공한 점검이 있으면 True = 이번엔 문자 안 보낸다.
+    """같은 회차(6시간)에 이미 '정상' 보고가 나갔으면 True = 이번엔 문자 안 보낸다.
+
+    ★2026-10-31 사장님 "왜 보고를 안해줘". 예전엔 같은 회차에 success 실행이 하나라도 있으면
+      True 였다. 그런데 노출 급감으로 시트 쓰기를 멈춘 실행도 종료 0(success)이다 — 12:00 멈춤 실행
+      (41162456392)이 12~18 칸을 차지해, 15:19 다시 잰 실행(41176100244, 2회차 922/922 성공)의 문자가
+      생략됐다. 이제 같은 회차에서 이번 실행보다 **먼저 만들어진 실행 중 가장 늦은 것**
+      (success · failure 만 — 취소된 실행은 문자를 안 보낸다)을 '바로 앞 실행'으로 보고:
+        · 실패였으면 마지막 소식은 ❌ → 이번 결과를 보낸다
+        · 성공이었으면 그 실행의 노출 급감 기록(이번 실행이 캐시로 받은 앞 회차 기록 —
+          cycle_summary.exposure_drop.prev_run.record)으로 멈춤이었나를 본다:
+          멈춤 → 보낸다 / 멈춤 아님 → 생략 / 그 실행 기록이 아님·없음 → 보낸다(모르는 것을 '보냈다'로 읽지 않는다)
 
     ★하루 8통의 정체(2026-09-03). 예약을 :07·:27 두 번 거는 것은 GitHub 이 예약을
       통째로 흘린 적이 있어 남겨 둔 보험이다. 그런데 concurrency 가 뒤엣것을
@@ -196,35 +207,116 @@ def 이_회차에_이미_보고했나() -> bool:
     기준 = (_때(나[0]) if (나 and _때(나[0])) else datetime.now(timezone.utc))
     시작 = G.회차_시작(기준)
     끝 = 시작 + G.회차_길이
+    라벨 = G.회차_라벨(시작)
+    앞것들 = []
     for r in 기록:
         if str(r.get("databaseId", "")) == 이번run:
             continue
+        if r.get("conclusion") not in ("success", "failure"):
+            continue   # 취소 · 건너뜀 · 진행 중 = 문자를 보낸 실행이 아니다
         때 = _때(r)
-        if 때 and 시작 <= 때.astimezone(G.KST) < 끝 and r.get("conclusion") == "success":
-            print(f"[TG-SUMMARY] {G.회차_라벨(시작)} 회차는 이미 성공 보고가 나갔다 — 문자 생략")
-            return True
-    return False
+        if not 때 or not (시작 <= 때.astimezone(G.KST) < 끝) or 때 > 기준:
+            continue
+        앞것들.append((때, r))
+    if not 앞것들:
+        return False
+    _, 앞 = max(앞것들, key=lambda x: x[0])
+    앞id = str(앞.get("databaseId", ""))
+    if 앞.get("conclusion") != "success":
+        print(f"[TG-SUMMARY] {라벨} 회차 바로 앞 실행 {앞id} 이 실패로 끝났다 — 이번 결과를 보낸다")
+        return False
+    rec = _앞_실행_기록()
+    받은id = str(rec.get("run_id", "")) if rec else ""
+    if 받은id and 받은id == 이번run:
+        # 이번 실행 안의 자동 재시도(1차 사이클이 죽고 90초 뒤 다시 돎)가 앞 기록을 자기 기록으로 덮었다 —
+        # 앞 실행이 무엇이었는지 모른다. 1차가 죽은 일 자체가 소식이라 보낸다(GPT 검토 2번 · 일부러 고른 선택).
+        print(f"[TG-SUMMARY] {라벨} 회차 바로 앞 실행 {앞id} — 이번 실행이 중간에 다시 돌아 앞 기록이 덮였다"
+              " · 그냥 보낸다")
+        return False
+    if not 받은id or 받은id != 앞id:
+        print(f"[TG-SUMMARY] {라벨} 회차 바로 앞 실행 {앞id} 이 무엇을 보고했는지 기록이 없다"
+              f"(받은 기록: 실행 {받은id or '없음'}) — 그냥 보낸다(침묵보다 낫다)")
+        return False
+    앞시도 = 앞.get("attempt")
+    if 앞시도 is not None and str(rec.get("run_attempt", "")) != str(앞시도):
+        # 실행 번호는 같아도 시도가 다르면 다른 결과다 — 1차 '통과' 기록으로 2차 '멈춤'을 덮지 않는다(GPT 검토 1번).
+        print(f"[TG-SUMMARY] {라벨} 회차 바로 앞 실행 {앞id} 의 {앞시도}차 시도 기록이 없다"
+              f"(받은 기록: {rec.get('run_attempt')}차) — 그냥 보낸다")
+        return False
+    if rec.get("status") == G_HOLD:
+        print(f"[TG-SUMMARY] {라벨} 회차 바로 앞 실행 {앞id} 은 노출 급감 멈춤이었다 — 이번 결과를 보낸다")
+        return False
+    print(f"[TG-SUMMARY] {라벨} 회차는 이미 성공 보고가 나갔다(실행 {앞id} · 노출 급감 {rec.get('status')})"
+          " — 문자 생략")
+    return True
 
 
-def _이번에_멈췄나() -> bool:
-    """이번 실행이 노출 급감으로 쓰기를 멈췄거나 '급감 재확인'으로 썼나 — 둘 다 '같은 회차 이미 보고' 생략을 타지 않는다.
-
-    급감 재확인(2026-10-30 정책 A)은 바로 앞 멈춤 실행이 같은 회차(:07 → :27 줄 선 실행)일 때가 많다.
-    멈춘 실행도 종료 0(success)이라 생략 규칙이 '이미 보고함'으로 읽어 '실제 변화로 보고 썼음' 줄이 안 갈 뻔했다.
-    """
+def _요약() -> dict:
     try:
         with open("cycle_summary.json", encoding="utf-8") as f:
             s = json.load(f)
-        return bool(s.get("exposure_drop_hold")) or s.get("exposure_drop_status") == G_RECONFIRMED
+        return s if isinstance(s, dict) else {}
     except Exception:  # noqa: BLE001
+        return {}
+
+
+def _앞_실행_기록() -> dict | None:
+    """이번 실행이 읽은 '앞 회차 노출 급감 기록'(실행 번호 · 판정). 없으면 None.
+
+    새 상태 파일을 만들지 않는다 — 노출 급감 장치가 이미 캐시로 넘겨받아 cycle_summary 에 싣는 것을 쓴다.
+    """
+    rec = ((_요약().get("exposure_drop") or {}).get("prev_run") or {}).get("record")
+    return rec if isinstance(rec, dict) else None
+
+
+def _이번에_멈췄나() -> bool:
+    """이번 실행이 노출 급감으로 쓰기를 멈췄거나 '급감 재확인'으로 썼거나 K 분포 경보가 났나 — 모두 생략을 타지 않는다.
+
+    급감 재확인(2026-10-30 정책 A)은 바로 앞 멈춤 실행이 같은 회차(:07 → :27 줄 선 실행)일 때가 많다.
+    멈춘 실행도 종료 0(success)이라 생략 규칙이 '이미 보고함'으로 읽어 '실제 변화로 보고 썼음' 줄이 안 갈 뻔했다.
+    K 분포 경보(2026-10-31): 사람 스위치로 푼 실행은 경보가 빨강으로 안 올라가 ✅ 줄이 된다 — 그래도 새 소식이다.
+    """
+    s = _요약()
+    return (bool(s.get("exposure_drop_hold")) or s.get("exposure_drop_status") == G_RECONFIRMED
+            or s.get("k_anomaly_detected") is True)
+
+
+def _다시_잰_실행인가() -> bool:
+    """손으로 돌린 실행(workflow_dispatch)이나 다시 돌린 시도(run_attempt 2 이상)인가.
+
+    다시 잰 결과는 앞 소식(멈춤 · 실패 알림)의 끝 소식이다 — 같은 회차라도 보낸다(2026-10-31).
+    ⚠️ 외부 cron-job.org 정각 호출도 workflow_dispatch 다. 그 호출은 회차 첫 실행이라 원래도 보내던 것이라 달라지지 않는다.
+    """
+    if os.environ.get("GITHUB_EVENT_NAME", "").strip() == "workflow_dispatch":
+        return True
+    try:
+        return int(os.environ.get("GITHUB_RUN_ATTEMPT", "1").strip() or "1") >= 2
+    except ValueError:
         return False
+
+
+def 생략할까(brief: str) -> bool:
+    """문자를 생략하는 것은 '같은 회차에 정상 보고가 이미 나갔는데 이번도 평범한 정상 결과'일 때뿐이다.
+
+    문자 폭주를 막는 장치(2026-09-03 하루 8통 → 회차당 1통)는 정상(✅) 중복에만 건다.
+    실패 · 경보 · 멈춤 문자는 같은 회차라도 늘 보낸다 — 앞 성공이 있다고 ❌ 가 묻히면 안 된다.
+    """
+    if not brief.startswith("✅"):
+        return False
+    if _이번에_멈췄나():
+        return False
+    if _다시_잰_실행인가():
+        print("[TG-SUMMARY] 손으로 · 다시 돌린 실행 — 같은 회차라도 보낸다")
+        return False
+    return 이_회차에_이미_보고했나()
 
 
 def main() -> int:
     try:
-        if not _이번에_멈췄나() and 이_회차에_이미_보고했나():
+        brief = build_brief()
+        if 생략할까(brief):
             return 0
-        return send_report(build_brief())
+        return send_report(brief)
     except Exception:  # noqa: BLE001
         print("[TG-SUMMARY] 예외 — 비차단 반환(0)")
         return 0

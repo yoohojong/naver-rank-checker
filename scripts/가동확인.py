@@ -312,7 +312,7 @@ def 실행이력(저장소: str, 워크플로: str, 개수: int = 40) -> list:
     try:
         r = subprocess.run(
             ["gh", "run", "list", "--workflow", 워크플로, "--repo", 저장소,
-             "--limit", str(개수), "--json", "createdAt,conclusion,status,databaseId"],
+             "--limit", str(개수), "--json", "createdAt,conclusion,status,databaseId,attempt"],
             capture_output=True, text=True, encoding="utf-8", errors="replace",
             timeout=조회_제한초,
         )

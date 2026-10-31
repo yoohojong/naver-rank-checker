@@ -196,6 +196,8 @@ class Test같은_회차에_문자를_두_번_보내지_않는다:
         monkeypatch.setenv("GITHUB_RUN_ID", 이번run)
         monkeypatch.setenv("GH_REPO", "o/r")
         monkeypatch.setattr(G, "실행이력", lambda *a, **k: 실행들)
+        # 2026-10-31: '이미 보고함'은 앞 실행이 멈춤이 아니었다는 기록이 있을 때만이다(run 1 = 노출 급감 통과).
+        monkeypatch.setattr(S, "_앞_실행_기록", lambda: {"run_id": "1", "status": "통과"})
         return S.이_회차에_이미_보고했나()
 
     def _run(self, 때, conclusion="success", rid=1):
@@ -251,8 +253,13 @@ class Test같은_회차에_문자를_두_번_보내지_않는다:
 
         (돌연변이 확인에서 실제로 뚫렸던 자리 — 판정 함수만 검사하고 있었다.)
         """
+        import json
+
         import scripts.send_telegram_summary as S
         monkeypatch.chdir(tmp_path)
+        # 2026-10-31: 생략은 평범한 정상(✅) 결과에만 건다 — 실패 · 경보 문자는 같은 회차라도 간다.
+        (tmp_path / "cycle_summary.json").write_text(
+            json.dumps({"success_rate": 1.0, "total_rows_processed": 400}), encoding="utf-8")
         보낸것 = []
         monkeypatch.setattr(S, "send_report", lambda t: 보낸것.append(t) or 0)
         monkeypatch.setattr(S, "이_회차에_이미_보고했나", lambda: True)
@@ -281,3 +288,191 @@ class Test같은_회차에_문자를_두_번_보내지_않는다:
         스텝 = [s for s in 잡["steps"]
                if "send_telegram_summary.py" in str(s.get("run", ""))][0]
         assert "GH_TOKEN" in 스텝["env"], "gh 인증이 없으면 중복 문자가 그대로 나간다"
+
+
+class Test멈춘_뒤_다시_잰_결과는_보낸다:
+    """★2026-10-31 사장님 "왜 보고를 안해줘 근데 상노" · "텔레그램에".
+
+    같은 회차(6시간)에 success 로 끝난 실행이 있으면 무조건 '이미 보고함'으로 읽었다.
+    그런데 노출 급감으로 시트 쓰기를 멈춘 실행도 종료 0(success)이다. 그래서
+      · 12:00 실행(41162456392)이 멈춤으로 12~18 칸을 차지하자
+      · 15:19 손으로 다시 잰 실행(41176100244, 2회차 922/922 성공)의 문자가 생략됐다.
+    사장님은 '멈춤 → 다시 재서 성공'의 끝 소식을 못 받으셨다.
+    문자 폭주를 막는 장치(정상 보고가 이미 나간 회차의 예약 실행은 생략)는 그대로 둔다.
+    """
+
+    @staticmethod
+    def _run(시각, conclusion, rid):
+        from datetime import timezone
+        return {"createdAt": 시각.astimezone(timezone.utc).isoformat().replace("+00:00", "Z"),
+                "conclusion": conclusion, "status": "completed", "databaseId": rid}
+
+    @staticmethod
+    def _정상_요약(앞기록):
+        return {"success_rate": 1.0, "total_rows_processed": 922, "code_change_suspected": False,
+                "exposure_drop": {"status": "통과", "rows_compared": 922, "rows_unreadable": 0,
+                                  "prev_run": {"state": "앞 회차 멈춤 아님", "why": "",
+                                               "record": 앞기록}},
+                "exposure_drop_status": "통과", "exposure_drop_hold": False}
+
+    def _main(self, monkeypatch, tmp_path, 실행들, 이번run, 요약,
+              이벤트="schedule", 시도="1", run_status="success"):
+        import json
+
+        import scripts.send_telegram_summary as S
+        import scripts.가동확인 as G
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setenv("GITHUB_RUN_ID", str(이번run))
+        monkeypatch.setenv("GH_REPO", "o/r")
+        monkeypatch.setenv("GITHUB_EVENT_NAME", 이벤트)
+        monkeypatch.setenv("GITHUB_RUN_ATTEMPT", 시도)
+        monkeypatch.setenv("RUN_STATUS", run_status)
+        monkeypatch.setattr(G, "실행이력", lambda *a, **k: 실행들)
+        if 요약 is not None:
+            (tmp_path / "cycle_summary.json").write_text(
+                json.dumps(요약, ensure_ascii=False), encoding="utf-8")
+        보낸것 = []
+        monkeypatch.setattr(S, "send_report", lambda t: 보낸것.append(t) or 0)
+        assert S.main() == 0
+        return 보낸것
+
+    # ── 장면 ㉠ 같은 회차 앞 실행이 '멈춤으로 끝난 success' · 이번은 정상 성공(예약) → 보낸다
+    def test_ㄱ_앞_실행이_멈춤이면_이번_정상_결과를_보낸다(self, monkeypatch, tmp_path):
+        from datetime import datetime
+
+        from scripts.가동확인 import KST
+        멈춘것 = self._run(datetime(2026, 10, 31, 12, 0, 30, tzinfo=KST), "success", 41162456392)
+        나 = self._run(datetime(2026, 10, 31, 12, 27, tzinfo=KST), "", 5001)
+        보낸것 = self._main(monkeypatch, tmp_path, [나, 멈춘것], 5001,
+                          self._정상_요약({"run_id": "41162456392", "run_attempt": 1,
+                                         "status": "멈춤"}))
+        assert len(보낸것) == 1 and 보낸것[0].startswith("✅"), \
+            "멈춤 문자 뒤에 정상으로 다시 잰 결과가 안 갔다 — 사장님은 '멈춤'에서 소식이 끊긴다"
+
+    # ── 장면 ㉡ 이번 실행이 workflow_dispatch(손으로 다시 잼) → 보낸다
+    def test_ㄴ_손으로_다시_잰_실행은_보낸다(self, monkeypatch, tmp_path):
+        """15:00 실행(사람 스위치)이 정상 기록으로 칸을 차지해도, 15:19 손으로 다시 잰 결과는 간다."""
+        from datetime import datetime
+
+        from scripts.가동확인 import KST
+        멈춘것 = self._run(datetime(2026, 10, 31, 12, 0, 30, tzinfo=KST), "success", 41162456392)
+        스위치 = self._run(datetime(2026, 10, 31, 15, 0, 7, tzinfo=KST), "success", 41174777839)
+        나 = self._run(datetime(2026, 10, 31, 15, 19, 8, tzinfo=KST), "", 41176100244)
+        보낸것 = self._main(monkeypatch, tmp_path, [나, 스위치, 멈춘것], 41176100244,
+                          self._정상_요약({"run_id": "41174777839", "run_attempt": 1,
+                                         "status": "풀림(사람 스위치)"}),
+                          이벤트="workflow_dispatch")
+        assert len(보낸것) == 1 and 보낸것[0].startswith("✅")
+
+    def test_ㄴ_워치독이_다시_돌린_2회차도_보낸다(self, monkeypatch, tmp_path):
+        """실패 알림 뒤 다시 돌린 시도(run_attempt 2 이상)의 성공이 곧 '끝 소식'이다."""
+        from datetime import datetime
+
+        from scripts.가동확인 import KST
+        앞 = self._run(datetime(2026, 10, 31, 18, 0, 27, tzinfo=KST), "success", 41186870225)
+        나 = self._run(datetime(2026, 10, 31, 18, 7, tzinfo=KST), "", 5002)
+        보낸것 = self._main(monkeypatch, tmp_path, [나, 앞], 5002,
+                          self._정상_요약({"run_id": "41186870225", "run_attempt": 1,
+                                         "status": "통과"}),
+                          시도="2")
+        assert len(보낸것) == 1
+
+    # ── 장면 ㉢ 같은 회차에 정상 보고가 이미 나갔고 이번은 예약 실행 → 지금처럼 생략
+    def test_ㄷ_정상_보고가_나간_회차의_예약_실행은_생략한다(self, monkeypatch, tmp_path, capsys):
+        from datetime import datetime
+
+        from scripts.가동확인 import KST
+        앞 = self._run(datetime(2026, 10, 31, 18, 0, 27, tzinfo=KST), "success", 41186870225)
+        나 = self._run(datetime(2026, 10, 31, 18, 29, 41, tzinfo=KST), "", 41188906501)
+        보낸것 = self._main(monkeypatch, tmp_path, [나, 앞], 41188906501,
+                          self._정상_요약({"run_id": "41186870225", "run_attempt": 1,
+                                         "status": "통과"}))
+        assert 보낸것 == [], "문자 폭주를 막는 장치가 풀렸다"
+        assert "41186870225" in capsys.readouterr().out, "어느 실행이 칸을 차지했는지 로그에 없다"
+
+    # ── 같은 뿌리의 다른 자리
+    def test_앞_실행이_무엇을_보고했는지_모르면_보낸다(self, monkeypatch, tmp_path):
+        """기록(캐시)이 없거나 다른 실행 것이면 '이미 보냈다'로 읽지 않는다 — 침묵이 기본값이 되면 안 된다."""
+        from datetime import datetime
+
+        from scripts.가동확인 import KST
+        앞 = self._run(datetime(2026, 10, 31, 18, 0, 27, tzinfo=KST), "success", 41186870225)
+        나 = self._run(datetime(2026, 10, 31, 18, 29, 41, tzinfo=KST), "", 41188906501)
+        보낸것 = self._main(monkeypatch, tmp_path, [나, 앞], 41188906501, self._정상_요약(None))
+        assert len(보낸것) == 1
+
+    def test_앞_실행의_다른_시도_기록이면_보낸다(self, monkeypatch, tmp_path):
+        """GPT 검토 1번: A 1차 '통과' 기록 저장 뒤 실패 → 다시 돌린 A 2차가 '멈춤' · 저장 실패 → B 가 1차 기록을 받음."""
+        from datetime import datetime
+
+        from scripts.가동확인 import KST
+        앞 = self._run(datetime(2026, 10, 31, 18, 0, 27, tzinfo=KST), "success", 41186870225)
+        앞["attempt"] = 2
+        나 = self._run(datetime(2026, 10, 31, 18, 29, 41, tzinfo=KST), "", 41188906501)
+        보낸것 = self._main(monkeypatch, tmp_path, [나, 앞], 41188906501,
+                          self._정상_요약({"run_id": "41186870225", "run_attempt": 1,
+                                         "status": "통과"}))
+        assert len(보낸것) == 1
+
+    def test_같은_시도_기록이면_예전처럼_생략(self, monkeypatch, tmp_path):
+        from datetime import datetime
+
+        from scripts.가동확인 import KST
+        앞 = self._run(datetime(2026, 10, 31, 18, 0, 27, tzinfo=KST), "success", 41186870225)
+        앞["attempt"] = 1
+        나 = self._run(datetime(2026, 10, 31, 18, 29, 41, tzinfo=KST), "", 41188906501)
+        보낸것 = self._main(monkeypatch, tmp_path, [나, 앞], 41188906501,
+                          self._정상_요약({"run_id": "41186870225", "run_attempt": 1,
+                                         "status": "통과"}))
+        assert 보낸것 == []
+
+    def test_이번_실행_안에서_다시_돌아_기록이_덮였으면_보낸다(self, monkeypatch, tmp_path, capsys):
+        """GPT 검토 2번: 1차 사이클이 죽고 90초 뒤 다시 돌면 앞 기록 자리에 이번 실행 기록이 들어온다."""
+        from datetime import datetime
+
+        from scripts.가동확인 import KST
+        앞 = self._run(datetime(2026, 10, 31, 18, 0, 27, tzinfo=KST), "success", 41186870225)
+        나 = self._run(datetime(2026, 10, 31, 18, 29, 41, tzinfo=KST), "", 41188906501)
+        보낸것 = self._main(monkeypatch, tmp_path, [나, 앞], 41188906501,
+                          self._정상_요약({"run_id": "41188906501", "run_attempt": 1,
+                                         "status": "통과"}))
+        assert len(보낸것) == 1 and "덮였다" in capsys.readouterr().out
+
+    def test_실행이력이_시도_번호를_묻는다(self):
+        import pathlib
+        본문 = (pathlib.Path(__file__).resolve().parents[2] / "scripts/가동확인.py").read_text(encoding="utf-8")
+        assert "databaseId,attempt" in 본문, "시도 번호가 없으면 1차 기록으로 2차 결과를 판정한다"
+
+    def test_같은_회차_바로_앞_실행이_실패였으면_보낸다(self, monkeypatch, tmp_path):
+        """앞 성공 → 실패(❌ 문자) → 이번 성공: 마지막 소식이 ❌ 이므로 이번 성공은 새 소식이다."""
+        from datetime import datetime
+
+        from scripts.가동확인 import KST
+        성공 = self._run(datetime(2026, 10, 31, 18, 0, 27, tzinfo=KST), "success", 41186870225)
+        실패 = self._run(datetime(2026, 10, 31, 18, 7, tzinfo=KST), "failure", 5003)
+        나 = self._run(datetime(2026, 10, 31, 18, 27, tzinfo=KST), "", 5004)
+        보낸것 = self._main(monkeypatch, tmp_path, [나, 실패, 성공], 5004,
+                          self._정상_요약({"run_id": "41186870225", "run_attempt": 1,
+                                         "status": "통과"}))
+        assert len(보낸것) == 1
+
+    def test_이번_실행이_실패면_같은_회차_성공이_있어도_보낸다(self, monkeypatch, tmp_path):
+        from datetime import datetime
+
+        from scripts.가동확인 import KST
+        앞 = self._run(datetime(2026, 10, 31, 18, 0, 27, tzinfo=KST), "success", 41186870225)
+        나 = self._run(datetime(2026, 10, 31, 18, 29, tzinfo=KST), "", 5005)
+        보낸것 = self._main(monkeypatch, tmp_path, [나, 앞], 5005, None, run_status="failure")
+        assert len(보낸것) == 1 and 보낸것[0].startswith("❌")
+
+    def test_이번_실행에_K분포_경보가_있으면_보낸다(self, monkeypatch, tmp_path):
+        """사람 스위치로 푼 실행은 K 분포 경보가 빨강으로 안 올라가 ✅ 줄이 된다 — 그래도 생략하지 않는다."""
+        from datetime import datetime
+
+        from scripts.가동확인 import KST
+        앞 = self._run(datetime(2026, 10, 31, 12, 0, 30, tzinfo=KST), "success", 41162456392)
+        나 = self._run(datetime(2026, 10, 31, 12, 27, tzinfo=KST), "", 5006)
+        요약 = self._정상_요약({"run_id": "41162456392", "run_attempt": 1, "status": "통과"})
+        요약["k_anomaly_detected"] = True
+        보낸것 = self._main(monkeypatch, tmp_path, [나, 앞], 5006, 요약)
+        assert len(보낸것) == 1
