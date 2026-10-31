@@ -50,8 +50,19 @@ def split_message(text: str, limit: int = MAX_LEN) -> list:
     return chunks
 
 
+def _시험_끔() -> bool:
+    """GOYU_NOTIFY_OFF=1 이면 텔레그램을 보내지 않는다(전 저장소 공통 시험 스위치 · 2026-11-01).
+    실행 맥락으로만 거른다 — 글 내용으로 거르지 않는다."""
+    if os.environ.get("GOYU_NOTIFY_OFF", "").strip() == "1":
+        print("[TELEGRAM][SKIP] GOYU_NOTIFY_OFF=1 — 시험 실행이라 발송 안 함")
+        return True
+    return False
+
+
 def send_telegram(text: str, *, timeout: int = HTTP_TIMEOUT_SEC) -> bool:
     """sendMessage 1건. 성공 True. secret 미설정/HTTP 실패 = 경고 후 False(예외 X)."""
+    if _시험_끔():
+        return False
     token, chat_id = telegram_secrets()
     if not token or not chat_id:
         print("[TELEGRAM][SKIP] TELEGRAM_BOT_TOKEN/CHAT_ID 미설정 — 발송 건너뜀")
@@ -139,6 +150,8 @@ def _multipart_body(text_fields: dict, file_field: str, filename: str,
 def _send_file(api: str, file_field: str, filename: str, file_bytes: bytes,
                content_type: str, caption: str = "", timeout: int = 30) -> bool:
     """sendPhoto/sendDocument 공용. 성공 True. secret 미설정/실패 = 경고 후 False."""
+    if _시험_끔():
+        return False
     token, chat_id = telegram_secrets()
     if not token or not chat_id:
         print("[TELEGRAM][SKIP] 토큰/CHAT_ID 미설정 — 파일 발송 건너뜀")

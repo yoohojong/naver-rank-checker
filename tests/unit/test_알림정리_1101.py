@@ -63,3 +63,14 @@ def test_스위치_실행이라도_멈춤이면_멈춤_글():
     s = _요약("풀림(사람 스위치)")
     s["exposure_drop_hold"] = True
     assert build_brief(s, ts="t").startswith("⏸")
+
+
+def test_GOYU_NOTIFY_OFF_면_통신하지_않는다(monkeypatch, capsys):
+    monkeypatch.setenv("GOYU_NOTIFY_OFF", "1")
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "t")
+    monkeypatch.setenv("TELEGRAM_CHAT_ID", "c")
+    with mock.patch("urllib.request.urlopen") as u:
+        assert notify.send_telegram("hi") is False
+        assert notify.send_document(b"x", "a.txt") is False if hasattr(notify, "send_document") else True
+        assert not u.called
+    assert "GOYU_NOTIFY_OFF=1" in capsys.readouterr().out

@@ -34,7 +34,8 @@ def test_send_telegram_skip_without_secret():
                 os.environ[k] = v
 
 
-def test_send_telegram_success():
+def test_send_telegram_success(monkeypatch):
+    monkeypatch.delenv("GOYU_NOTIFY_OFF", raising=False)   # 시험 스위치가 켜진 창에서 돌려도 '보내는 길'을 잰다(통신은 가짜)
     os.environ["TELEGRAM_BOT_TOKEN"] = "t"
     os.environ["TELEGRAM_CHAT_ID"] = "c"
     try:
