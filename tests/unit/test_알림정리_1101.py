@@ -1,4 +1,5 @@
 """알림 정리(2026-11-01) — ① send_report 가 실제 발송 결과를 남긴다 ② 큰 급감을 쓴 실행은 '✅'로 시작하지 않는다."""
+import os
 from unittest import mock
 
 from src import notify
@@ -74,3 +75,15 @@ def test_GOYU_NOTIFY_OFF_면_통신하지_않는다(monkeypatch, capsys):
         assert notify.send_document(b"x", "a.txt") is False if hasattr(notify, "send_document") else True
         assert not u.called
     assert "GOYU_NOTIFY_OFF=1" in capsys.readouterr().out
+
+
+def test_pytest_안이면_스위치가_없어도_통신하지_않는다(monkeypatch, capsys):
+    """GPT 2차 검토 지적: GOYU_NOTIFY_OFF 없이 pytest 로 돌려도 진짜 문자가 나가면 안 된다(실행 맥락으로 거름)."""
+    monkeypatch.delenv("GOYU_NOTIFY_OFF", raising=False)
+    assert os.environ.get("PYTEST_CURRENT_TEST")
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "t")
+    monkeypatch.setenv("TELEGRAM_CHAT_ID", "c")
+    with mock.patch("urllib.request.urlopen") as u:
+        assert notify.send_telegram("hi") is False
+        assert not u.called
+    assert "pytest 안" in capsys.readouterr().out

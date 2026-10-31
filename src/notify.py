@@ -51,10 +51,13 @@ def split_message(text: str, limit: int = MAX_LEN) -> list:
 
 
 def _시험_끔() -> bool:
-    """GOYU_NOTIFY_OFF=1 이면 텔레그램을 보내지 않는다(전 저장소 공통 시험 스위치 · 2026-11-01).
-    실행 맥락으로만 거른다 — 글 내용으로 거르지 않는다."""
+    """시험 실행이면 텔레그램을 보내지 않는다(2026-11-01). 실행 맥락으로만 거른다 — 글 내용으로 거르지 않는다.
+    시험 실행 = GOYU_NOTIFY_OFF=1(전 저장소 공통 시험 스위치) 또는 pytest 안(PYTEST_CURRENT_TEST — GPT 2차 검토 지적)."""
     if os.environ.get("GOYU_NOTIFY_OFF", "").strip() == "1":
         print("[TELEGRAM][SKIP] GOYU_NOTIFY_OFF=1 — 시험 실행이라 발송 안 함")
+        return True
+    if os.environ.get("PYTEST_CURRENT_TEST"):
+        print("[TELEGRAM][SKIP] pytest 안 — 시험 실행이라 발송 안 함")
         return True
     return False
 
