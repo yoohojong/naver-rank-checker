@@ -19,8 +19,8 @@ from google.oauth2 import service_account
 from google.auth.transport.requests import AuthorizedSession
 
 KST = timezone(timedelta(hours=9))
-FROM = datetime(2026, 10, 31, 1, 0, tzinfo=timezone.utc)   # 10:00 KST
-TO = datetime(2026, 10, 31, 9, 0, tzinfo=timezone.utc)     # 18:00 KST
+FROM = datetime(2026, 9, 1, 0, 0, tzinfo=timezone.utc)   # 전부
+TO = datetime(2026, 12, 31, 0, 0, tzinfo=timezone.utc)
 
 raw = os.environ["SERVICE_ACCOUNT_JSON"]
 if raw.startswith("﻿"):
@@ -144,7 +144,7 @@ for _ in range(10):
     r = s.post("https://driveactivity.googleapis.com/v2/activity:query", json=body, timeout=60)
     print("ACTIVITY_HTTP", r.status_code, flush=True)
     if r.status_code != 200:
-        print("ACTIVITY_ERR", r.text[:300].replace(fid, "<id>"), flush=True)
+        print("ACTIVITY_ERR", r.text[:600].replace(fid, "<id>").replace(sa_email, "<sa>"), flush=True)
         break
     j = r.json()
     acts += j.get("activities", [])
