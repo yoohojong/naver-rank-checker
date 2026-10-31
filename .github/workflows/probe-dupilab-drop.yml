@@ -1,0 +1,17 @@
+name: probe-dupilab-drop
+# 10-31 임시 진단 — 읽기 전용, probe/ 가지에서만 돈다. main 에 합치지 않는다.
+on:
+  push:
+    branches: ['probe/dupilab-drop-1031']
+permissions:
+  contents: read
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.13'}
+      - run: python -m pip install -q -r requirements.txt
+      - run: python -u -m scripts.probe_dupilab_drop
