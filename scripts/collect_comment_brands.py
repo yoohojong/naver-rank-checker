@@ -1029,6 +1029,9 @@ def _닮은_낱말(낱말: str, name: str) -> bool:
     from src.comment_brand import strip_josa
     n = len("".join(ch for ch in str(name or "") if _이름글자.match(ch)))
     후보 = {낱말, strip_josa(낱말)} | {낱말[:k] for k in (n, n + 1) if k < len(낱말)}
+    # 같은 회사 검토(중요 4): '헤드 스파' 의 '헤드' · '닥터가' 의 '닥터' 가 '앞머리가 같다'로 닮음이 되어 그 대상 자리가
+    #   됐다 — 이름보다 두 글자 넘게 짧은 후보는 안 받는다('미쟝' ↔ '미쟝센' 같은 한 글자 덜 쓴 표기는 받음).
+    후보 = {x for x in 후보 if len("".join(ch for ch in x if _이름글자.match(ch))) >= n - 1}
     return any(x and comment_brand_llm.글자가_닮았나(x, name) for x in 후보)
 
 
@@ -1377,6 +1380,16 @@ def 개인정보_지우기(text, 글쓴이: str = "", 길이: int = 예시댓글
             or any(_애매한_이름(mm.group(1)) for mm in _이름직함.finditer(s))):
         return ""                         # 이름일지 모르는 말이 남았는데 못 지웠다 — 이 예시는 저장하지 않는다
     return s[:길이]
+
+
+def 예시댓글_뺀_줄(줄들: list) -> list:
+    """저장소에 올릴 깎인 대상 줄 — '예시댓글'(댓글 원문 한 줄)을 뺀 사본 · 순수함수.
+
+    ★2026-10-31 ④ 창 직접 처리(같은 회사 검토 '막음 3'): 이 저장소는 공개다. 이름 지우기는 무늬로 하므로
+      '김준 쌤이' · '수진 선생님이' · 숫자 없는 SNS 아이디처럼 못 지우는 꼴이 남는다. 공개 파일에는 원문을 싣지 않고
+      '예시글'(글 주소)만 둔다 — 시장 조사 때는 그 주소로 원문을 연다. 예시댓글은 함수 결과(사본 · 시험)에만 남는다.
+    """
+    return [{k: v for k, v in x.items() if k != "예시댓글"} for x in (줄들 or [])]
 
 
 def 깎인제품_집계(깎음언급: list, 민언급: list, verdicts: dict,
@@ -2502,7 +2515,8 @@ def run_from_sheet(args) -> int:
                   f"· 다시 읽은 옛 댓글 {jstat.get('다시읽음', 0)}/{jstat.get('다시읽기대상', 0)} "
                   f"· 종류 칸 못 본 댓글 {셈상태['종류칸못본댓글']}")
             with open(자리, "w", encoding="utf-8") as f:
-                json.dump({"때": today, "계정": 계정줄, "깎인제품": 깎인, "깎인제품_확인필요": 확인필요},
+                json.dump({"때": today, "계정": 계정줄, "깎인제품": 예시댓글_뺀_줄(깎인),
+                           "깎인제품_확인필요": 예시댓글_뺀_줄(확인필요)},
                           f, ensure_ascii=False, indent=1)
             못잼 = sum(1 for x in 계정줄 if x.get("이긴것을_못잼"))
             if 못잼:
