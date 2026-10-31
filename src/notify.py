@@ -74,13 +74,35 @@ def send_telegram(text: str, *, timeout: int = HTTP_TIMEOUT_SEC) -> bool:
 
 
 def send_report(text: str) -> int:
-    """긴 보고 분할 발송. 항상 0 반환(워크플로 비차단). secret 없으면 [SKIP] 후 0."""
+    """긴 보고 분할 발송. 항상 0 반환(워크플로 비차단). secret 없으면 [SKIP] 후 0.
+
+    ★2026-11-01(알림 정리): 예전엔 조각마다 성공 · 실패를 버려, 보냈는지가 로그 어디에도 안 남았다
+      (30일 세기에서 순위검사 성공 보고 수를 '못 셈'으로 남긴 까닭). 종료 코드는 그대로 0(비차단)이고,
+      실제로 몇 조각이 닿았는지를 '[TELEGRAM][결과]' 한 줄로 남긴다. 다 못 닿았으면 GitHub 실행 화면에
+      경고(::warning::)도 남긴다 — 문자는 더 보내지 않는다.
+    """
     chunks = split_message(text)
+    ok = 0
     for i, chunk in enumerate(chunks):
-        send_telegram(chunk)
+        if send_telegram(chunk):
+            ok += 1
         if i < len(chunks) - 1:
             time.sleep(PER_CHAT_INTERVAL_SEC)
+    _기록_결과(ok, len(chunks))
     return 0
+
+
+def _기록_결과(ok: int, n: int) -> None:
+    """보낸 결과 한 줄(세기 · 감시용). 글 내용 · 토큰은 싣지 않는다."""
+    if n == 0:
+        print("[TELEGRAM][결과] 보낼 글 없음 — 0조각")
+        return
+    if ok == n:
+        print(f"[TELEGRAM][결과] 보냄 {ok}/{n}조각")
+        return
+    print(f"[TELEGRAM][결과] 못 보냄 {n - ok}/{n}조각 — 이 보고는 사장님께 다 닿지 않음")
+    if os.environ.get("GITHUB_ACTIONS") == "true":
+        print(f"::warning::텔레그램 보고 {n - ok}/{n}조각 못 보냄")
 
 
 # ── 이미지/파일 발송 (일·주·월 대시보드용, 2026-07-13 추가) ────────────────────

@@ -297,7 +297,7 @@ class Test텔레그램_급감_재확인:
         monkeypatch.setattr(S, "send_report", lambda t: 보낸것.append(t) or 0)
         monkeypatch.setattr(S, "이_회차에_이미_보고했나", lambda: True)
         assert S.main() == 0
-        assert len(보낸것) == 1 and G.RECONFIRM_NOTE in 보낸것[0] and 보낸것[0].startswith("✅")
+        assert len(보낸것) == 1 and G.RECONFIRM_NOTE in 보낸것[0] and 보낸것[0].startswith("📉")
 
 
 class Test워크플로_캐시:

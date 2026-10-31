@@ -18,6 +18,7 @@ from src.exposure_drop_guard import (  # noqa: E402
     RECONFIRM_NOTE as G_RECONFIRM_NOTE,
     STATUS_HOLD as G_HOLD,
     STATUS_RECONFIRMED as G_RECONFIRMED,
+    STATUS_RELEASED as G_RELEASED,
 )
 
 
@@ -85,6 +86,19 @@ def build_brief(summary: dict | None = None, ts: str | None = None,
     # '점검 완료'만 보고 전체를 확인한 것으로 읽히지 않게.
     d = summary.get("exposure_drop") or {}
     held = bool(summary.get("exposure_drop_hold"))
+    # 큰 노출 급감을 그대로 쓴 실행(사람 스위치 · 급감 재확인)은 성공률이 높아도 '✅'로 시작하지 않는다.
+    # ★2026-11-01(알림 정리): 10-31 15:00 사람 스위치 실행이 노출 363→0줄을 쓰고도 '✅ … 점검 완료'로만 보였다.
+    #   머리 표시를 성공률만 보고 골랐고, 그 회차에 시트에 들어간 노출 급감은 보지 않았다.
+    #   '✅'가 아니면 생략할까()가 같은 회차 생략을 타지 않는다 — 큰 급감을 쓴 소식은 늘 간다.
+    if d.get("status") in (G_RELEASED, G_RECONFIRMED) and not held and line.startswith("✅"):
+        line = "📉" + line[1:]
+    if d.get("status") == G_RELEASED and not held:
+        ratio = d.get("drop_ratio")
+        pct = f"{ratio * 100:.0f}% 감소" if isinstance(ratio, (int, float)) else "감소"
+        line += (
+            f"\n🔓 노출 {d.get('baseline_exposed', '?')}→{d.get('current_exposed', '?')}줄({pct}) · "
+            f"사람 스위치로 그대로 씀 — 시트에 이 값이 들어갔습니다"
+        )
     # 두 회차 연속 같은 급감(2026-10-30 정책 A) — 실제 변화로 보고 썼다는 한 줄
     if d.get("status") == G_RECONFIRMED and not held:
         line += (
