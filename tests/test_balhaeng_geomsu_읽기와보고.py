@@ -234,17 +234,45 @@ def test_고칠_글_없는_날은_보내지_않고_성공으로_끝난다(monkey
     assert 보낸 == []
 
 
-def test_새로_걸린_글이_있는_날은_보내고_성공으로_끝난다(monkeypatch):
+# ★2026-11-01 알림 새 기준(판정표 B13): 검수 결과는 직원 일 결과 — 사장님 문자 0. 보고문은 실행 기록에만,
+#   진짜 고장(읽는 길 막힘 · 삭제 몰림 · 시트 못 씀 · 예외)은 실패로 끝나 실패카드 장치가 받는다.
+def test_새로_걸린_글이_있는_날은_문자없이_기록에_남기고_성공으로_끝난다(monkeypatch, capsys):
     보낸 = _main준비(monkeypatch, 요약([결과("a", "불합격", 치명=["글자수"])]))
     assert G.main() == 0
-    assert len(보낸) == 1
+    assert 보낸 == [], "알림보내기가 불리면 안 된다"
+    assert "고쳐야 할 글" in capsys.readouterr().out
 
 
-def test_읽는_방법이_막힌_날은_보내고_실패로_끝난다(monkeypatch):
+def test_읽는_방법이_막힌_날은_문자없이_실패로_끝난다(monkeypatch, capsys):
     실패 = [{"keyword": "k", "url": f"u/{i}", "_실패": "글을 못 읽음(500 · 9999)"} for i in range(5)]
     보낸 = _main준비(monkeypatch, 요약([], 실패))
+    assert G.main() == 1, "실패로 끝나야 실패카드 장치가 카드를 낸다"
+    assert 보낸 == []
+    출력 = capsys.readouterr().out
+    assert "::error::" in 출력 and "읽는 방법이 막힘" in 출력
+
+
+def test_돌지_못한_고장도_문자없이_실패로_끝난다(monkeypatch, capsys):
+    보낸 = _main준비(monkeypatch, 요약([]))
+
+    def 터짐(*a):
+        raise KeyError("SPREADSHEET_ID")
+    monkeypatch.setattr(G, "검수하기", 터짐)
     assert G.main() == 1
-    assert len(보낸) == 1 and "읽는 방법이 막힘" in 보낸[0].splitlines()[0]
+    assert 보낸 == []
+    assert "::error::" in capsys.readouterr().out
+
+
+def test_보고문에_시트_주소를_기록하지_않는다(monkeypatch, capsys):
+    """시트 주소는 열쇠값 — 문자 대신 기록으로 옮기면서 주소까지 기록에 남기지 않는다."""
+    monkeypatch.setattr(G, "SheetsClient", lambda *a: types.SimpleNamespace(
+        spreadsheet=types.SimpleNamespace(url="https://docs.google.com/spreadsheets/d/비밀")))
+    monkeypatch.setattr(G, "검수하기", lambda *a: 요약([결과("a", "불합격", 치명=["글자수"])]))
+    monkeypatch.setattr(G, "알림보내기", lambda 본문: pytest.fail("보내면 안 된다"))
+    monkeypatch.setenv("SPREADSHEET_ID", "x")
+    monkeypatch.setenv("SERVICE_ACCOUNT_JSON", "{}")
+    assert G.main() == 0
+    assert "비밀" not in capsys.readouterr().out
 
 
 # ── 같은 v3 글 읽기 주소를 쓰던 다른 자리 ─────────────────────────────────
@@ -339,7 +367,7 @@ def _발행검수_스텝들():
     return {s.get("name"): s for s in wf["jobs"]["audit"]["steps"]}
 
 
-@pytest.mark.parametrize("스텝", ["Notify on failure", "자가치유 보고"])
+@pytest.mark.parametrize("스텝", ["자가치유 보고"])
 def test_손으로_notify0_돌리면_뒤_알림_스텝도_안_돈다(스텝):
     """2026-10-21: notify=0 으로 손 시험을 돌렸더니 성공으로 끝나면 '자가치유 보고'가
     '✅ 복구됨' 문자를 보내고 이슈를 닫게 돼 있었다(그 스텝이 돌기 전에 취소해 막음). notify=0 은
@@ -347,3 +375,13 @@ def test_손으로_notify0_돌리면_뒤_알림_스텝도_안_돈다(스텝):
     조건 = _발행검수_스텝들()[스텝]["if"]
     assert "github.event.inputs.notify != '0'" in 조건
     assert "github.event_name != 'workflow_dispatch'" in 조건    # 정기 실행은 그대로 알린다
+
+
+def test_자가치유_말고는_텔레그램_열쇠를_받는_스텝이_없다():
+    """★2026-11-01 알림 새 기준(판정표 B13): 검수 결과 · 고장 문자는 끊었다. 사장님께 문자를 보낼 수 있는 곳은
+    자가치유(사장님 몫 — 열쇠 · 로그인 · 결제일 때만)뿐이다."""
+    for 이름, 스텝 in _발행검수_스텝들().items():
+        if 이름 == "자가치유 보고":
+            continue
+        글 = str(스텝.get("env", {})) + str(스텝.get("run", ""))
+        assert "TELEGRAM" not in 글 and "send_report" not in 글 and "send_telegram" not in 글, 이름

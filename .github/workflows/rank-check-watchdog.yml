@@ -1,7 +1,12 @@
 name: naver-rank-check-watchdog
 # 워치독: rank-check 워크플로가 실패할 때만 실행.
-# run_attempt == 1 → 1회 자동 재시도 + 텔레그램 알림.
-# run_attempt >= 2 → 재시도 없음 + 사람 확인 요청 알림.
+# run_attempt == 1 → 1회 자동 재시도.
+# ★2026-11-01 알림 새 기준(판정표 N1): 사장님 텔레그램은 실패 사유가 '결제·한도'(사장님만 푸는 원인)일 때만.
+#   그 밖의 실패(우리 코드 · 기계 미배정 · 모름)는 문자를 보내지 않고 이 워치독을 실패로 끝낸다.
+#   rank-check.yml 에는 자가치유 단계가 붙어 있어, 실패카드 장치(D:/ai-office/설치/실패카드 · 30분마다)가
+#   rank-check 의 실패 실행을 읽어 연속 2번째부터 맥가이버 고침 카드를 낸다.
+#   사장님 원문(10-31 21:2x): "인간이 개입해야 하는 상황에 대한 기준만 만들어두고 좀 쓸데없는 보고좀 없애봐".
+#   ※ 이 파일에는 자가치유 스크립트 이름을 적지 않는다 — 적으면 실패카드 장치가 워치독도 따로 세어 같은 고장 카드가 두 장 된다.
 # ⚠️ 코드 자동 수정 없음 — "gh run rerun"(같은 코드 재실행)만.
 # 참고: rank-check.yml 내부에도 1회 자가복구(90초)가 있어, 총 자동 복구는
 #   [1차→내부재시도] → 워치독 rerun(attempt2) → [1차→내부재시도] ≈ main 4회 실행 후 '사람 확인' 알림.
@@ -149,9 +154,11 @@ jobs:
           echo "streak=$streak" >> "$GITHUB_OUTPUT"
           echo "[WATCHDOG] 최근 연속 실패=$streak"
 
+      # ★2026-11-01 알림 새 기준(판정표 N1): 결제·한도(cause=billing)일 때만 보낸다 — 사장님만 푸는 원인.
+      #   예전엔 '어느 경우에도 알림을 생략하지 않는다'(2026-08-07)였다. 이제 나머지는 실패카드가 받는다(맨 아래 스텝).
       - name: 텔레그램 알림 발송
         id: notify
-        if: always()
+        if: ${{ always() && steps.cause.outputs.cause == 'billing' }}
         continue-on-error: true
         shell: bash
         env:
@@ -173,8 +180,10 @@ jobs:
       # ★알림 통로 자체가 죽는 경우(PyPI 장애·setup-python 실패 등) 대비.
       #   위 스텝은 checkout+파이썬+pip 을 거치므로 그 중 하나만 깨져도 사장님은 아무것도 못 받는다.
       #   curl 은 러너 기본 도구라 준비가 필요 없다 — 통로를 하나 더 둔다.
+      # ★2026-11-01: 결제·한도일 때만(위 알림과 같은 조건). 위 스텝이 건너뛰어진(skipped) 날 이 스텝이
+      #   '못 돌았다'로 읽고 보내지 않게 사유를 함께 본다.
       - name: 알림 최후수단 (알림 스크립트가 못 돌았을 때만)
-        if: ${{ always() && steps.notify.outcome != 'success' }}
+        if: ${{ always() && steps.cause.outputs.cause == 'billing' && steps.notify.outcome != 'success' }}
         continue-on-error: true
         shell: bash
         env:
@@ -195,3 +204,23 @@ jobs:
             -d chat_id="${TELEGRAM_CHAT_ID}" \
             --data-urlencode "text=${text}" >/dev/null
           echo "[WATCHDOG] 최후수단 통로로 발송함"
+
+      # ★2026-11-01 알림 새 기준(판정표 N1): 사장님께 문자를 보내지 않은 실패도 기록에 남기고 실패로 끝낸다.
+      #   이 워치독이 깨어났다는 것 자체가 상노 점검(rank-check)이 실패했다는 뜻이다. 고침 카드는 실패카드
+      #   장치가 rank-check 실행을 읽어 낸다(그쪽에 자가치유 단계가 붙어 있다).
+      - name: 실패 기록 남기기 (사장님 문자 대신)
+        if: always()
+        shell: bash
+        env:
+          CAUSE: ${{ steps.cause.outputs.cause || 'unknown' }}
+          STREAK: ${{ steps.streak.outputs.streak || '0' }}
+          RETRY: ${{ steps.rerun_step.outcome || 'skipped' }}
+          CONCLUSION: ${{ github.event.workflow_run.conclusion }}
+        run: |
+          echo "::error::상노 점검 실패(결론=${CONCLUSION} · 사유=${CAUSE} · 연속=${STREAK} · 자동 재시도=${RETRY}) ${RUN_URL}"
+          if [ "${CAUSE}" = "billing" ]; then
+            echo "[WATCHDOG] 결제·한도 — 사장님께 보냈다(위 알림 스텝)"
+          else
+            echo "[WATCHDOG] 사장님 문자 안 보냄(알림 새 기준) — 실패카드 장치가 상노 점검 실패 실행을 읽어 카드를 낸다"
+          fi
+          exit 1

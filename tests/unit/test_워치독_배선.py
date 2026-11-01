@@ -75,7 +75,10 @@ class Test워치독이_실제로_깨어나는가:
 
 class Test알림_통로가_둘인가:
     def test_알림은_앞_스텝이_어떻게_되든_돈다(self, 잡):
-        assert _스텝(잡, "notify")["if"] == "always()"
+        """★2026-11-01 알림 새 기준(판정표 N1): 결제·한도일 때만 — 그 조건 안에서는 앞 스텝과 상관없이 돈다."""
+        조건 = str(_스텝(잡, "notify")["if"])
+        assert "always()" in 조건
+        assert "steps.cause.outputs.cause == 'billing'" in 조건
 
     def test_알림_실패를_삼키지_않는다(self, 잡):
         """★`|| true` 가 실제로 한 번 되돌아왔던 자리다. 삼키면 최후수단이 안 돈다."""
@@ -139,3 +142,34 @@ class Test재시도가_판별보다_먼저_돌아도_되는가:
         run = _스텝(잡, "streak")["run"]
         assert "databaseId != ${RUN_ID}" in run
         assert "streak=1" in run, "이번 실패를 안 세면 1회 적게 나온다"
+
+
+class Test알림_새_기준:
+    """★2026-11-01(판정표 N1): 사장님 문자는 결제·한도뿐. 나머지는 실패로 끝내고 실패카드가 받는다."""
+
+    def test_결제가_아니면_알림_스텝이_안_돈다(self, 잡):
+        조건 = str(_스텝(잡, "notify")["if"])
+        for 다른 in ("runner", "code", "unknown"):
+            assert f"== '{다른}'" not in 조건
+
+    def test_최후수단도_결제일_때만(self, 잡):
+        """알림 스텝이 건너뛰어진 날(skipped)을 '못 돌았다'로 읽고 보내면 새 기준이 무너진다."""
+        최후 = Test알림_통로가_둘인가._최후수단(잡)
+        assert "steps.cause.outputs.cause == 'billing'" in str(최후["if"])
+
+    def test_마지막에_실패로_끝내는_스텝이_있다(self, 잡):
+        마지막 = 잡["steps"][-1]
+        assert str(마지막.get("if")) == "always()"
+        assert not 마지막.get("continue-on-error"), "실패를 삼키면 기록이 초록불로 묻힌다"
+        명령 = _명령만(마지막["run"])
+        assert "::error::" in 명령 and "exit 1" in 명령
+        assert "telegram" not in 명령.lower()
+
+    def test_워크플로에_자가치유_스크립트_이름이_없다(self):
+        """실패카드 장치는 본문에 그 이름이 있는 워크플로만 센다 — 워치독까지 세면 같은 고장이 두 장."""
+        assert "자가치유" + ".py" not in WF.read_text(encoding="utf-8")
+
+    def test_순위검사에는_자가치유가_붙어_있다(self):
+        """실패카드 장치가 상노 점검 실패를 보려면 rank-check.yml 쪽에 자가치유 단계가 있어야 한다."""
+        본문 = (WF.parent / "rank-check.yml").read_text(encoding="utf-8")
+        assert "scripts/자가치유.py" in 본문

@@ -20,7 +20,9 @@ on:
         required: false
         default: '1'
       notify:
-        description: "텔레그램으로 보고할까요 (1=보낸다 / 0=안 보냄)"
+        # ★2026-11-01 알림 새 기준(판정표 B13): 검수 보고 · 고장 문자는 이제 안 보낸다. 이 값은 손 시험에서
+        #   자가치유 단계(사장님 몫 — 열쇠 · 로그인 · 결제일 때만 문자)를 끌지 정하는 데만 쓴다.
+        description: "자가치유 단계를 돌릴까요 (1=돈다 / 0=손 시험이라 안 돎)"
         required: false
         default: '1'
 
@@ -56,16 +58,16 @@ jobs:
           ./.venv/bin/python -m pip install --upgrade pip
           ./.venv/bin/python -m pip install -r requirements.txt
 
-      # 검수 결과 보고(매일)와 고장 경보를 이 스텝 안에서 스스로 보낸다.
-      # 아래 'Notify on failure' 는 파이썬이 아예 못 뜬 경우만 받는 마지막 그물이다.
+      # ★2026-11-01 알림 새 기준(판정표 B13): 검수 결과는 직원 일 결과라 사장님 텔레그램을 보내지 않는다 —
+      #   결과는 시트 '발행 검수' 탭과 이 실행 기록에 남고, 진짜 고장은 이 스텝이 실패로 끝나
+      #   실패카드 장치(D:/ai-office/설치/실패카드 · 30분마다)가 아래 자가치유 단계가 붙은 이 실행을 읽어 카드를 낸다.
+      #   그래서 텔레그램 열쇠를 이 스텝에 넘기지 않는다.
       - name: Run 발행 검수
         id: audit
         shell: bash
         env:
           SPREADSHEET_ID: ${{ secrets.SPREADSHEET_ID }}
           SERVICE_ACCOUNT_JSON: ${{ secrets.SERVICE_ACCOUNT_JSON }}
-          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           GEOMSU_LIMIT: ${{ github.event.inputs.limit || '150' }}
           GEOMSU_WRITE: ${{ github.event.inputs.write || '1' }}
           GEOMSU_NOTIFY: ${{ github.event.inputs.notify || '1' }}
@@ -77,42 +79,20 @@ jobs:
           set -o pipefail
           ./.venv/bin/python -u -m scripts.balhaeng_geomsu 2>&1 | tee geomsu.log
 
-      # 스크립트가 스스로 알리지 못한 경우(설치 실패·제한시간 초과로 취소·강제중단)
-      # 만 여기서 알린다. ★`failure()` 는 '취소'에서 돌지 않는다 — 제한시간을 넘겨
-      # 취소로 끝나는 날이 바로 알아야 하는 날이라 `!cancelled()` 로 넓힌다
-      # (이 레포 rank-check.yml 이 같은 이유로 쓰는 방식).
-      # ★"로그를 확인해 주세요" 만 보내지 않는다 — 마지막 기록을 같이 보낸다.
-      - name: Notify on failure
-        # 손 시험(workflow_dispatch · notify=0)은 텔레그램 0통 — 뒤 알림 스텝도 그 입력을 따른다(2026-10-21)
-        if: ${{ !cancelled() && steps.audit.outcome != 'success' && (github.event_name != 'workflow_dispatch' || github.event.inputs.notify != '0') }}
+      # ★2026-11-01 알림 새 기준(판정표 B13): 예전 'Notify on failure'(파이썬이 못 뜬 날 사장님께 마지막 기록 8줄을
+      #   보내던 그물)를 기록만 남기는 스텝으로 바꿨다. job 은 위 스텝 실패로 이미 실패다 — 실패카드가 받는다.
+      #   '취소'(제한시간)도 기록이 남게 always() 로 둔다.
+      - name: 실패 기록 남기기 (사장님 문자 대신)
+        if: ${{ always() && steps.audit.outcome != 'success' }}
         continue-on-error: true
         shell: bash
-        env:
-          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-          PYTHONIOENCODING: 'utf-8'
         run: |
-          if [ -f .geomsu_alerted ]; then
-            echo "이미 이유를 담아 알렸다 — 두 번 보내지 않는다"
-            exit 0
+          echo "::error::발행 검수가 끝까지 돌지 못했습니다(단계 결과=${{ steps.audit.outcome }}) — 마지막 기록:"
+          if [ -f geomsu.log ]; then
+            grep -v '^[[:space:]]*$' geomsu.log | tail -n 8
+          else
+            echo "(로그 파일이 남지 않았습니다 — 파이썬이 뜨기 전에 멈춘 것)"
           fi
-          # ★venv 설치가 깨진 경우가 바로 이 알림이 가장 필요한 때다.
-          #   .venv 를 쓰면 그때 알림도 같이 죽는다 → 시스템 파이썬으로 보낸다
-          #   (src/notify 는 표준 라이브러리만 쓴다).
-          python - <<'PY' || true
-          import os
-          from src.notify import send_report
-          꼬리 = ""
-          try:
-              with open("geomsu.log", encoding="utf-8", errors="replace") as f:
-                  줄 = [x.rstrip() for x in f if x.strip()]
-              꼬리 = "\n".join(줄[-8:])
-          except Exception:
-              꼬리 = "(로그 파일이 남지 않았습니다 — 파이썬이 뜨기 전에 멈춘 것)"
-          send_report("🚨 발행 검수가 중간에 멈췄습니다\n"
-                      f"마지막 기록:\n{꼬리}\n\n{os.environ.get('RUN_URL','')}")
-          PY
 
       # ── 자가치유 보고 (2026-07-24) ──────────────────────────────────────
       # ★손 시험(notify=0)에서는 돌지 않는다 — 2026-10-21 손 시험 때 성공으로 끝나면 '✅ 복구됨' 문자를

@@ -157,12 +157,13 @@ class Test전체_흐름:
         H.main(["--이름", "상위노출 순위검사", "--결과", "cancelled"])
         assert 보낸것 == []
 
-    def test_TIMEOUT_MIN_이_없어도_워크플로_파일에서_한계를_읽는다(self, H, monkeypatch):
+    def test_TIMEOUT_MIN_이_없어도_워크플로_파일에서_한계를_읽는다(self, H, monkeypatch, capsys):
         """★2026-09-03. 이게 그 구멍이었다.
 
         발행검수(balhaeng-geomsu.yml)는 timeout-minutes: 120 을 적어 놓고도
         env TIMEOUT_MIN 이 없어서, 120분을 다 채우고 잘려도 **문자가 0통**이었다.
         값을 두 벌 적게 하는 구조 자체를 없앤다 — 선언한 자리에서 읽는다.
+        ★2026-11-01 알림 새 기준(판정표 B2): 잘림은 문자 대신 기록 한 줄 — 실패카드 장치가 카드를 낸다.
         """
         보낸것 = self._스파이(H, monkeypatch)
         monkeypatch.delenv("TIMEOUT_MIN", raising=False)
@@ -170,8 +171,9 @@ class Test전체_흐름:
         monkeypatch.setenv("GITHUB_WORKSPACE", str(저장소루트))
         monkeypatch.setattr(H, "_경과분", lambda *a: 119.5)
         H.main(["--이름", "발행본 검수", "--결과", "cancelled"])
-        assert len(보낸것) == 1 and "시간 초과" in 보낸것[0]
-        assert "120분" in 보낸것[0], f"한계를 잘못 읽었다: {보낸것[0]}"
+        assert 보낸것 == []
+        출력 = capsys.readouterr().out
+        assert "시간 한계(120분)를 채우고 잘림" in 출력, f"한계를 잘못 읽었다: {출력}"
 
     def test_주석에_적힌_숫자가_실제_한계를_이기지_않는다(self, H, tmp_path, monkeypatch):
         """설명글이 검사를 대신 통과시켜 주는 일은 없어야 한다."""
@@ -193,14 +195,17 @@ class Test전체_흐름:
         monkeypatch.setenv("GITHUB_WORKSPACE", str(tmp_path))
         assert H._워크플로가_밝힌_한계분("y.yml") == 45
 
-    def test_시간한계를_다_채운_취소는_시간초과로_알린다(self, H, monkeypatch):
+    def test_시간한계를_다_채운_취소는_시간초과로_기록한다(self, H, monkeypatch, capsys):
         # ★2026-08-20 교훈: 경쟁사-댓글이 7/29~8/16 매일 밤 180분을 채우고 잘렸는데
         #   '취소'라는 이름 때문에 알림 0통 — 침묵이 기본값이 되면 고장이 숨는다.
+        #   ★2026-11-01: 문자 대신 기록 + 실패카드(장치가 '한계를 채우고 잘린 취소'를 실패로 센다).
         보낸것 = self._스파이(H, monkeypatch)
         monkeypatch.setenv("TIMEOUT_MIN", "180")
         monkeypatch.setattr(H, "_경과분", lambda *a: 179.7)
         H.main(["--이름", "댓글 경쟁제품 수집", "--결과", "cancelled"])
-        assert len(보낸것) == 1 and "시간 초과" in 보낸것[0]
+        assert 보낸것 == []
+        출력 = capsys.readouterr().out
+        assert "시간 한계(180분)를 채우고 잘림" in 출력 and "실패카드" in 출력, 출력
 
     def test_일찍_잘린_취소는_사람취소로_보고_조용히_둔다(self, H, monkeypatch):
         보낸것 = self._스파이(H, monkeypatch)
@@ -209,13 +214,14 @@ class Test전체_흐름:
         H.main(["--이름", "댓글 경쟁제품 수집", "--결과", "cancelled"])
         assert 보낸것 == []
 
-    def test_경과를_못_재면_한계가_밝혀진_워크플로는_알린다(self, H, monkeypatch):
-        # 조회 실패까지 침묵으로 접으면 '경보를 조건부로 삼키는' 병이 재발한다 — 알리는 쪽으로.
+    def test_경과를_못_재면_한계가_밝혀진_워크플로는_시간초과로_기록한다(self, H, monkeypatch, capsys):
+        # 조회 실패까지 '사람 취소'로 접으면 '경보를 조건부로 삼키는' 병이 재발한다 — 잘림 쪽으로 기록한다.
         보낸것 = self._스파이(H, monkeypatch)
         monkeypatch.setenv("TIMEOUT_MIN", "180")
         monkeypatch.setattr(H, "_경과분", lambda *a: None)
         H.main(["--이름", "댓글 경쟁제품 수집", "--결과", "cancelled"])
-        assert len(보낸것) == 1 and "시간 초과" in 보낸것[0]
+        assert 보낸것 == []
+        assert "채우고 잘림" in capsys.readouterr().out
 
     def test_임계_넘으면_이슈를_연다(self, H, monkeypatch):
         보낸것 = self._스파이(H, monkeypatch)
@@ -227,7 +233,16 @@ class Test전체_흐름:
                             lambda *a: 연것.append(a) or "http://issue/1")
         H.main(["--이름", "상위노출 순위검사", "--결과", "failure"])
         assert 연것, "3회 연속이면 Claude 가 집을 자리를 만들어야 한다"
-        assert "http://issue/1" in 보낸것[0]
+        assert 보낸것 == [], "우리 코드 문제는 사장님 몫이 아니다(알림 새 기준 · 판정표 B2)"
+
+    def test_사장님몫이면_이슈_링크를_담아_보낸다(self, H, monkeypatch):
+        보낸것 = self._스파이(H, monkeypatch)
+        monkeypatch.setattr(H, "연속실패_재기", lambda *a, **k: {"연속": 3, "이상": False, "직전실패시각": ""})
+        monkeypatch.setattr(H, "실패로그_원인",
+                            lambda *a: ("열쇠(토큰)가 만료됨 · 'Run' 에서", "Secrets 확인", "HTTP Error 401"))
+        monkeypatch.setattr(H, "이슈_열기", lambda *a: "http://issue/1")
+        H.main(["--이름", "상위노출 순위검사", "--결과", "failure"])
+        assert len(보낸것) == 1 and "http://issue/1" in 보낸것[0]
 
     def test_임계_전이면_이슈를_안_연다(self, H, monkeypatch):
         self._스파이(H, monkeypatch)
@@ -497,15 +512,16 @@ class Test긴_연속실패:
 
 
 class Test긴_연속실패_전체흐름:
-    def _스파이(self, H, monkeypatch):
+    def _스파이(self, H, monkeypatch, 원인="우리 코드 문제"):
         보낸것 = []
         monkeypatch.setattr(H, "텔레그램", lambda s: 보낸것.append(s) or True)
         monkeypatch.setattr(H, "이슈_열기", lambda *a: "http://issue")
-        monkeypatch.setattr(H, "실패로그_원인", lambda *a: ("우리 코드 문제", "고쳐야 합니다", ""))
+        monkeypatch.setattr(H, "실패로그_원인", lambda *a: (원인, "고쳐야 합니다", ""))
         return 보낸것
 
     def test_31회째_정기_실패도_그날_첫_실패면_알린다(self, H, monkeypatch, capsys):
-        보낸것 = self._스파이(H, monkeypatch)
+        """하루 한 통 규칙은 사장님 몫 실패에 그대로 걸린다(직원 몫은 문자 자체가 없다)."""
+        보낸것 = self._스파이(H, monkeypatch, 원인="열쇠(토큰)가 만료됨")
         monkeypatch.setenv("GITHUB_EVENT_NAME", "schedule")
         monkeypatch.setattr(H, "_api", _쪽나눠주는_api(
             _쪽(["failure"] * 30, 시각="2020-01-01T00:00:00Z")))
@@ -513,16 +529,35 @@ class Test긴_연속실패_전체흐름:
         assert len(보낸것) == 1 and "31회 연속" in 보낸것[0], 보낸것
         assert "31회" in capsys.readouterr().out, "로그에 연속 수 줄이 있어야 다음 회차에 확인한다"
 
+    def test_31회째_직원몫_실패는_문자없이_연속수_줄만_남긴다(self, H, monkeypatch, capsys):
+        """실패카드 장치가 이 로그와 실패 실행을 읽는다 — '[자가치유] 연속 실패' 줄은 그대로 있어야 한다."""
+        보낸것 = self._스파이(H, monkeypatch)
+        monkeypatch.setenv("GITHUB_EVENT_NAME", "schedule")
+        monkeypatch.setattr(H, "_api", _쪽나눠주는_api(
+            _쪽(["failure"] * 30, 시각="2020-01-01T00:00:00Z")))
+        H.main(["--이름", "상위노출 순위검사", "--결과", "failure"])
+        assert 보낸것 == []
+        출력 = capsys.readouterr().out
+        assert "[자가치유] 연속 실패 31회" in 출력 and "실패카드" in 출력, 출력
+
     def test_검사만_실패하는_작업은_문자를_안_보낸다(self, H, monkeypatch, capsys):
         """★2026-10-21 사장님 "이상한 보고가 너무 많아 진짜" — 검사만 실패하고 수집·보고는
-        그대로 도는 곳은 Claude 가 고칠 일이라, 문자 대신 아침 건강 보고에 한 줄."""
+        그대로 도는 곳은 Claude 가 고칠 일. 11-01부터는 모든 작업이 같은 규칙(직원 몫 → 실패카드)."""
         보낸것 = self._스파이(H, monkeypatch)
         monkeypatch.setenv("WORKFLOW_FILE", "slot-rank-audit.yml")
         monkeypatch.setenv("GITHUB_EVENT_NAME", "schedule")
         monkeypatch.setattr(H, "_api", _쪽나눠주는_api(_쪽(["success"])))
         H.main(["--이름", "구좌순위 화면대조", "--결과", "failure"])
         assert 보낸것 == []
-        assert "아침 건강 보고" in capsys.readouterr().out
+        assert "실패카드" in capsys.readouterr().out
+
+    def test_검사만_실패하는_작업도_사장님몫이면_보낸다(self, H, monkeypatch):
+        """실패카드 장치는 사장님 몫이면 카드를 안 내고, 아침 보고도 11-01부터 고장 줄을 안 싣는다."""
+        보낸것 = self._스파이(H, monkeypatch, 원인="결제")
+        monkeypatch.setenv("WORKFLOW_FILE", "slot-rank-audit.yml")
+        monkeypatch.setattr(H, "_api", _쪽나눠주는_api(_쪽(["success"])))
+        H.main(["--이름", "구좌순위 화면대조", "--결과", "failure"])
+        assert len(보낸것) == 1
 
     def test_검사만_실패하는_작업은_시간초과도_문자를_안_보낸다(self, H, monkeypatch):
         보낸것 = self._스파이(H, monkeypatch)
@@ -532,8 +567,17 @@ class Test긴_연속실패_전체흐름:
         H.main(["--이름", "구좌순위 화면대조", "--결과", "cancelled"])
         assert 보낸것 == []
 
-    def test_수집_실패는_그대로_바로_보낸다(self, H, monkeypatch):
+    def test_수집_실패도_직원몫이면_안_보낸다(self, H, monkeypatch):
+        """★2026-11-01 알림 새 기준(판정표 B2): 예전엔 수집 실패를 바로 보냈다. 이제 원인으로만 가른다."""
         보낸것 = self._스파이(H, monkeypatch)
+        monkeypatch.setenv("WORKFLOW_FILE", "rank-check.yml")
+        monkeypatch.setattr(H, "_api", _쪽나눠주는_api(_쪽(["success"])))
+        H.main(["--이름", "상위노출 순위검사", "--결과", "failure"])
+        assert 보낸것 == []
+
+    @pytest.mark.parametrize("원인", ["열쇠(토큰)가 만료됨", "로그인 · 'Run' 에서", "결제"])
+    def test_수집_실패가_사장님몫이면_첫_실패에_보낸다(self, H, monkeypatch, 원인):
+        보낸것 = self._스파이(H, monkeypatch, 원인=원인)
         monkeypatch.setenv("WORKFLOW_FILE", "rank-check.yml")
         monkeypatch.setattr(H, "_api", _쪽나눠주는_api(_쪽(["success"])))
         H.main(["--이름", "상위노출 순위검사", "--결과", "failure"])
@@ -638,3 +682,60 @@ def test_조회_실패는_실패아님이_아니라_모름이다(H, monkeypatch)
     """팀 사본(2026-08-24)과 같게 — 못 본 것을 '평소 성공'으로 바꿔 말하지 않는다."""
     monkeypatch.setattr(H, "_api", lambda 경로, 방법="GET", **kw: None)
     assert H.직전이_실패였나("o/r", "w.yml", "1") is None
+
+
+# ── 2026-11-01 알림 새 기준(판정표 B2): 사장님 몫은 분류 결과로 가른다 (팀 사본 시험과 같은 내용) ──
+class Test사장님몫_가르기:
+    def _로그(self, H, monkeypatch, 본문):
+        def api(경로, 방법="GET", 본문2=None, raw=False):
+            if "/jobs?" in 경로:
+                return {"jobs": [{"id": 7, "conclusion": "failure",
+                                  "steps": [{"name": "Run", "conclusion": "failure"}]}]}
+            if "/logs" in 경로:
+                return 본문
+            return None
+        monkeypatch.setattr(H, "_api", api)
+        return H.실패로그_원인("r", "999")
+
+    def test_실패카드_설정의_사장님몫_이름과_같다(self, H):
+        """실패카드 장치는 이 이름이면 카드를 안 낸다 — 이름이 갈라지면 그 실패는 아무에게도 안 간다."""
+        import json
+        설정 = pathlib.Path("D:/ai-office/설치/실패카드/설정.json")
+        if not 설정.exists():
+            pytest.skip("실패카드 설정이 없는 PC(GitHub 러너)")
+        assert set(json.loads(설정.read_text(encoding="utf-8"))["사장님몫_원인"]) == set(H.사장님몫_원인)
+        사전이름 = {이름 for _, 이름, _ in H.원인사전}
+        assert set(H.사장님몫_원인) <= 사전이름
+
+    @pytest.mark.parametrize("로그,기대", [
+        ("RuntimeError: 로그인이 필요합니다 — 쿠키가 비었음", "로그인"),
+        ("openai.RateLimitError: Error code: 429 - {'type': 'insufficient_quota'}", "결제"),
+        ("Error: The job was not started because recent account payments have failed", "결제"),
+        ("fatal: Authentication failed for 'https://github.com/x'", "열쇠(토큰)가 만료됨"),
+        ("requests.exceptions.HTTPError: 401 Unauthorized for url", "열쇠(토큰)가 만료됨"),
+    ])
+    def test_사장님몫_모양을_그_이름으로_부른다(self, H, monkeypatch, 로그, 기대):
+        원인, _, 증거 = self._로그(H, monkeypatch, 로그)
+        assert 원인.startswith(기대) and H.사장님몫인가(원인), 원인
+        assert 증거
+
+    def test_뒤따른_코드오류가_사장님몫을_덮지_않는다(self, H, monkeypatch):
+        원인, _, _ = self._로그(H, monkeypatch,
+                             "Traceback (most recent call last):\n"
+                             "urllib.error.HTTPError: HTTP Error 401: Unauthorized\n"
+                             "During handling ...\nTypeError: 'NoneType' object is not subscriptable\n")
+        assert 원인.startswith("열쇠"), 원인
+
+    def test_직원몫_원인은_사장님몫이_아니다(self, H):
+        for 원인 in ("우리 코드 문제", "시간 초과 · 'Run' 에서", "알 수 없음", "상대 서버가 아픔",
+                   "권한이 막힘(또는 한도)", "하루 사용량 한도 초과"):
+            assert not H.사장님몫인가(원인), 원인
+
+    def test_직원몫이면_텔레그램_함수가_불리지_않는다(self, H, monkeypatch, capsys):
+        보낸것 = []
+        monkeypatch.setattr(H, "텔레그램", lambda s: 보낸것.append(s) or True)
+        monkeypatch.setattr(H, "연속실패_재기", lambda *a, **k: {"연속": 1, "이상": False, "직전실패시각": ""})
+        self._로그(H, monkeypatch, "AttributeError: 'NoneType' object has no attribute 'x'")
+        rc = H.main(["--이름", "상위노출 순위검사", "--결과", "failure"])
+        assert rc == 0 and 보낸것 == []
+        assert "직원 몫 실패" in capsys.readouterr().out

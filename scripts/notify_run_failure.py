@@ -1,6 +1,9 @@
 """워치독 실패 알림 스크립트. rank-check 워크플로 실패 시 텔레그램으로 보고.
 
 호출: scripts/notify_run_failure.py
+  ★2026-11-01 알림 새 기준(판정표 N1): 워치독은 실패 사유가 결제·한도(CAUSE=billing)일 때만 이 스크립트를 부른다.
+    그 밖의 사유 문구(runner · code · unknown)는 되살릴 수 있게 남겨 둔 것이다 — 지금은 워치독이 실패로 끝나고
+    실패카드 장치가 rank-check 실패 실행을 읽어 카드를 낸다.
 환경변수:
   RUN_URL     — 실패한 run 의 GitHub 링크
   RUN_ATTEMPT — 실패 run 의 run_attempt 숫자 (문자열)
