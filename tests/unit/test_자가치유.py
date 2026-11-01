@@ -743,6 +743,34 @@ class Test사장님몫_가르기:
                                                 "AttributeError: 'NoneType' object has no attribute 'x'\n")
         assert not H.사장님몫인가(원인), 원인
 
+    @pytest.mark.parametrize("줄", [
+        '2026-11-01T00:00:00Z ##[group]Run python x.py\n2026-11-01T00:00:00Z if ($LASTEXITCODE -ne 0) { throw "PC 파이썬을 못 찾음 — 로그인 세션이 아닐 수 있음" }\n2026-11-01T00:00:01Z ##[endgroup]\nE   assert 1 == 2\n',
+        "로그인 세션 쿠키 되살림: 성공\nE   assert 1 == 2\n", "세션이 만료되지 않았습니다\nE   assert 1 == 2\n",
+        "로그인 실패 0건\nE   assert 1 == 2\n", "login failed: False\nE   assert 1 == 2\n", "결제 오류 없음\nE   assert 1 == 2\n"])
+    def test_스크립트_원문_부정_줄은_사장님몫이_아니다(self, H, monkeypatch, 줄):
+        """같은 회사 검토(11-01): GitHub 가 찍는 스크립트 원문 · 부정 줄의 '로그인' 으로 검사 실패가 사장님 문자가 될 뻔했다."""
+        원인, _, _ = self._로그(H, monkeypatch, 줄)
+        assert not H.사장님몫인가(원인), 원인
+
+    @pytest.mark.parametrize("줄,기대", [
+        ("RuntimeError: 캡차·추가 인증이 떴습니다(captcha, 보안문자)", "사람 확인 퍼즐"),
+        ("RuntimeError: 캡차/추가 인증이 떴습니다 — 사장님이 한 번 로그인해 주세요.", "사람 확인 퍼즐"),
+        ("자동입력 방지문자를 입력해주세요", "사람 확인 퍼즐")])
+    def test_우리_프로그램이_찍는_캡차_글을_잡는다(self, H, monkeypatch, 줄, 기대):
+        원인, _, _ = self._로그(H, monkeypatch, 줄)
+        assert 원인.startswith(기대), 원인
+
+    def test_실패카드_설정의_원문_모양이_원인사전과_같다(self, H):
+        """같은 회사 검토(11-01): 이름만 견주고 모양은 안 견줬다 — 모양이 갈라지면 문자도 카드도 없이 지나간다."""
+        import json
+        설정 = pathlib.Path("D:/ai-office/설치/실패카드/설정.json")
+        if not 설정.exists():
+            pytest.skip("실패카드 설정이 없는 PC(GitHub 러너)")
+        원문 = json.loads(설정.read_text(encoding="utf-8"))["사장님몫_원문"]
+        사전 = {이름: 패턴 for 패턴, 이름, _ in H.원인사전}
+        for 이름 in H.사장님몫_원인:
+            assert 사전[이름] == "(?i:" + 원문[이름] + ")", 이름
+
     def test_캡차_낱말만_있는_로그는_사장님몫이_아니다(self, H, monkeypatch):
         """'캡차 없음 확인' 같은 점검 줄에 걸려 사장님께 헛문자가 가면 안 된다 — 떴다 · 필요 모양만 잡는다."""
         원인, _, _ = self._로그(H, monkeypatch, "captcha 없음 확인\nAttributeError: 'NoneType' object has no attribute 'x'")
