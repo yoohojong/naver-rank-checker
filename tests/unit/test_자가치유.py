@@ -735,6 +735,14 @@ class Test사장님몫_가르기:
                    "권한이 막힘(또는 한도)", "하루 사용량 한도 초과"):
             assert not H.사장님몫인가(원인), 원인
 
+    @pytest.mark.parametrize("점검줄", ["captcha required: False", "자동입력 방지문자 없음 확인",
+                                     "비밀번호를 입력했습니다. 로그인 완료"])
+    def test_부정_완료_표현은_사장님몫이_아니다(self, H, monkeypatch, 점검줄):
+        """GPT 2차 검토 1(11-01): 점검 줄에 걸려 코드 오류를 사장님 몫으로 부르면 헛문자 + 실패카드도 막힌다."""
+        원인, _, _ = self._로그(H, monkeypatch, 점검줄 + "\nTraceback (most recent call last):\n"
+                                                "AttributeError: 'NoneType' object has no attribute 'x'\n")
+        assert not H.사장님몫인가(원인), 원인
+
     def test_캡차_낱말만_있는_로그는_사장님몫이_아니다(self, H, monkeypatch):
         """'캡차 없음 확인' 같은 점검 줄에 걸려 사장님께 헛문자가 가면 안 된다 — 떴다 · 필요 모양만 잡는다."""
         원인, _, _ = self._로그(H, monkeypatch, "captcha 없음 확인\nAttributeError: 'NoneType' object has no attribute 'x'")

@@ -102,13 +102,15 @@ import urllib.request
     # ★같은 날 GPT 검토 3: 비밀번호를 넣으라는 화면 · 연결(OAuth) 승인을 다시 하라는 화면도 사장님 손이다 → '로그인'.
     (r"(?i:로그인이 필요|로그인 세션|세션이 만료|로그인 (?:실패|만료)|login (?:is )?required|login failed"
      r"|not logged in|please log ?in|session (?:has )?expired|sign in required"
-     r"|비밀번호를 입력|password (?:is )?required|enter (?:your )?password"
+     r"|비밀번호를 입력(?:해 ?주세요|하세요|하십시오)|password is required|please enter your password"
      r"|연결 승인이 필요|consent_required|interaction_required|re-?authori[sz]ation required)",
      "로그인",
      "사장님 확인이 필요합니다 — 로그인이 풀렸습니다. 다시 로그인해 주셔야 다음 회차가 돕니다."),
     # ★같은 날 GPT 검토 3: 사람 확인 퍼즐(캡차)은 사장님만 푼다. 이름은 신고.py 사장님몫_이름과 같은 글자.
-    (r"(?i:captcha (?:required|detected|challenge)|(?:캡차|캡챠)(?:가)? ?(?:떴|나타|감지됨|필요)|보안문자를 입력|자동입력 방지문자"
-     r"|사람인지 확인|are you a robot|verify you are human)",
+    #   GPT 2차 검토 1: 'captcha required: False' · '자동입력 방지문자 없음 확인' 같은 점검 줄에 걸리면 헛문자가 가고
+    #   실패카드도 막힌다 → 떴다는 사실 · 풀어 달라는 화면 글만 잡는다.
+    (r"(?i:(?:캡차|캡챠)가 (?:떴|나타났)|캡차 화면이 (?:떴|나타났)|captcha challenge (?:appeared|shown)"
+     r"|보안문자를 입력해 ?주세요|사람인지 확인해 ?주세요|verify you are human|are you a robot\?)",
      "사람 확인 퍼즐",
      "사장님 확인이 필요합니다 — 사람 확인 퍼즐(캡차)이 떠서 멈췄습니다. 그 화면을 열어 풀어 주셔야 다음 회차가 돕니다."),
     (r"(?i:결제 (?:실패|필요|오류)|결제가 (?:필요|실패)|Payment Required|HTTP Error 402|\b402 Payment\b"
@@ -169,7 +171,7 @@ _API = "https://api.github.com"
 
 # 두 저장소에 같은 파일을 복사해 쓴다. 한쪽만 고치면 조용히 갈라지므로
 # 양쪽 테스트가 이 값을 대조한다(독립검토 L-4).
-버전 = "2026-11-01.2"
+버전 = "2026-11-01.3"
 
 # ★문자 대신 아침 건강 보고로 옮긴 작업 (2026-10-21 사장님 "이상한 보고가 너무 많아 진짜").
 #   판정 원칙(2026-08-27 "경보 진짜 필요한것만"): **이 문자를 받고 사장님이 하실 수 있는
