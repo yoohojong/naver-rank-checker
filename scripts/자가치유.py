@@ -99,10 +99,18 @@ import urllib.request
      r"|Bad credentials|invalid_grant|token (?:has )?expired|토큰이 만료|Authentication failed)",
      "열쇠(토큰)가 만료됨",
      "사장님 확인이 필요합니다 — GitHub Secrets 의 토큰을 새로 넣어야 합니다."),
+    # ★같은 날 GPT 검토 3: 비밀번호를 넣으라는 화면 · 연결(OAuth) 승인을 다시 하라는 화면도 사장님 손이다 → '로그인'.
     (r"(?i:로그인이 필요|로그인 세션|세션이 만료|로그인 (?:실패|만료)|login (?:is )?required|login failed"
-     r"|not logged in|please log ?in|session (?:has )?expired|sign in required)",
+     r"|not logged in|please log ?in|session (?:has )?expired|sign in required"
+     r"|비밀번호를 입력|password (?:is )?required|enter (?:your )?password"
+     r"|연결 승인이 필요|consent_required|interaction_required|re-?authori[sz]ation required)",
      "로그인",
      "사장님 확인이 필요합니다 — 로그인이 풀렸습니다. 다시 로그인해 주셔야 다음 회차가 돕니다."),
+    # ★같은 날 GPT 검토 3: 사람 확인 퍼즐(캡차)은 사장님만 푼다. 이름은 신고.py 사장님몫_이름과 같은 글자.
+    (r"(?i:captcha (?:required|detected|challenge)|(?:캡차|캡챠)(?:가)? ?(?:떴|나타|감지됨|필요)|보안문자를 입력|자동입력 방지문자"
+     r"|사람인지 확인|are you a robot|verify you are human)",
+     "사람 확인 퍼즐",
+     "사장님 확인이 필요합니다 — 사람 확인 퍼즐(캡차)이 떠서 멈췄습니다. 그 화면을 열어 풀어 주셔야 다음 회차가 돕니다."),
     (r"(?i:결제 (?:실패|필요|오류)|결제가 (?:필요|실패)|Payment Required|HTTP Error 402|\b402 Payment\b"
      r"|billing account|payment failed|insufficient[_ ]quota|exceeded your current quota"
      r"|credit balance is too low|recent account payments have failed"
@@ -143,7 +151,7 @@ import urllib.request
 #   이름은 실패카드 장치 설정(D:/ai-office/설치/실패카드/설정.json "사장님몫_원인")과 같은 글자다 —
 #   그 장치는 이 셋이면 카드를 안 내고 "자가치유 문자로 감"으로 넘기므로, 여기서 안 보내면 아무에게도 안 간다.
 #   그 밖의 원인은 문자 대신 실패카드 장치가 이 실행을 읽어 맥가이버 고침 카드를 낸다.
-사장님몫_원인 = ("열쇠(토큰)가 만료됨", "로그인", "결제")
+사장님몫_원인 = ("열쇠(토큰)가 만료됨", "로그인", "결제", "사람 확인 퍼즐")
 
 
 def 사장님몫인가(원인: str) -> bool:
@@ -161,7 +169,7 @@ _API = "https://api.github.com"
 
 # 두 저장소에 같은 파일을 복사해 쓴다. 한쪽만 고치면 조용히 갈라지므로
 # 양쪽 테스트가 이 값을 대조한다(독립검토 L-4).
-버전 = "2026-11-01.1"
+버전 = "2026-11-01.2"
 
 # ★문자 대신 아침 건강 보고로 옮긴 작업 (2026-10-21 사장님 "이상한 보고가 너무 많아 진짜").
 #   판정 원칙(2026-08-27 "경보 진짜 필요한것만"): **이 문자를 받고 사장님이 하실 수 있는
@@ -297,6 +305,7 @@ def 연속실패_재기(저장소: str, 워크플로: str, 이번run: str, 이�
             if 결론 in 실패군:
                 n += 1
                 if not 결과["직전실패시각"]:
+                    결과["직전실패id"] = str(run.get("id") or "")   # GPT 검토 2(11-01) — 그 회차가 문자를 보냈나 보려고
                     # ★**시작 시각**을 쓴다 (GPT 2차 검토 10-21 로 바꿈).
                     #   그 회차가 '보낼까'를 정한 때는 시작과 끝 사이 어딘가다. 끝난 시각을 쓰면
                     #   23:59:50 에 정하고 00:00:10 에 끝난 회차 뒤로 **그날 하루가 통째로 조용**하다
@@ -761,6 +770,14 @@ def _본체(argv=None) -> int:
             print(f"[자가치유] 직원 몫 실패(원인: {원인}) — 사장님 문자 안 보냄(알림 새 기준) · "
                   f"실패카드 장치가 이 실행을 읽어 고침 카드를 냅니다")
             return 0
+        # ★GPT 검토 2(11-01): '하루 한 통'은 직전 실패가 문자를 보냈다고 보고 거른다. 그런데 직전 실패가 직원 몫이었으면
+        #   문자는 0통이었다 — 오늘 첫 사장님 몫 실패를 '이미 알렸다'로 삼키게 된다. 직전 실패의 원인을 다시 읽어
+        #   직원 몫이었으면(또는 못 읽었으면) 보낸다. 한 통 더 가는 것이 침묵보다 낫다 — 이 파일의 원칙.
+        if not 차례 and 셈.get("직전실패id"):
+            직전원인 = 실패로그_원인(저장소, 셈["직전실패id"])[0]
+            if not 사장님몫인가(직전원인):
+                차례 = True
+                print(f"[자가치유] 직전 실패는 직원 몫이었음(원인: {직전원인}) — 문자를 안 보냈으므로 이번에 보냄")
         print(f"[자가치유] 사장님 몫 실패(원인: {원인}) — 사장님께 알릴 차례: {'예' if 차례 else '아니오(하루 한 통)'}")
         if 차례:
             문장 = 문장_만들기(a.이름, 결과, 연속, 원인, 안내, 증거,

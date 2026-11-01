@@ -713,6 +713,10 @@ class Test사장님몫_가르기:
         ("Error: The job was not started because recent account payments have failed", "결제"),
         ("fatal: Authentication failed for 'https://github.com/x'", "열쇠(토큰)가 만료됨"),
         ("requests.exceptions.HTTPError: 401 Unauthorized for url", "열쇠(토큰)가 만료됨"),
+        # GPT 검토 3(11-01): 캡차 · 비밀번호 · 연결 승인도 사장님 손이다
+        ("RuntimeError: 캡차가 떴습니다 — 사람 확인이 필요", "사람 확인 퍼즐"),
+        ("RuntimeError: 비밀번호를 입력해주세요 화면에서 멈춤", "로그인"),
+        ("google.auth.exceptions.RefreshError: 연결 승인이 필요합니다(consent_required)", "로그인"),
     ])
     def test_사장님몫_모양을_그_이름으로_부른다(self, H, monkeypatch, 로그, 기대):
         원인, _, 증거 = self._로그(H, monkeypatch, 로그)
@@ -730,6 +734,43 @@ class Test사장님몫_가르기:
         for 원인 in ("우리 코드 문제", "시간 초과 · 'Run' 에서", "알 수 없음", "상대 서버가 아픔",
                    "권한이 막힘(또는 한도)", "하루 사용량 한도 초과"):
             assert not H.사장님몫인가(원인), 원인
+
+    def test_캡차_낱말만_있는_로그는_사장님몫이_아니다(self, H, monkeypatch):
+        """'캡차 없음 확인' 같은 점검 줄에 걸려 사장님께 헛문자가 가면 안 된다 — 떴다 · 필요 모양만 잡는다."""
+        원인, _, _ = self._로그(H, monkeypatch, "captcha 없음 확인\nAttributeError: 'NoneType' object has no attribute 'x'")
+        assert not H.사장님몫인가(원인), 원인
+
+    def test_오늘_앞선_직원몫_실패가_사장님몫_첫_문자를_막지_않는다(self, H, monkeypatch):
+        """GPT 검토 2(11-01): 직원 몫 실패 3번(문자 0통) 뒤 같은 날 로그인 실패 — '오늘은 이미 알렸다'로 삼키면 0통이었다."""
+        from datetime import datetime, timezone
+        보낸것 = []
+        monkeypatch.setattr(H, "텔레그램", lambda s: 보낸것.append(s) or True)
+        monkeypatch.setattr(H, "이슈_열기", lambda *a, **k: "")
+        지금 = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")   # GitHub 모양
+        monkeypatch.setattr(H, "연속실패_재기", lambda *a, **k: {"연속": 4, "이상": False, "직전실패시각": 지금,
+                                                            "직전실패id": "111"})
+        def 원인(저장소, run):
+            return (("로그인", "다시 로그인", "로그인이 필요") if str(run) != "111"
+                    else ("우리 코드 문제", "코드를 고침", "TypeError"))
+        monkeypatch.setattr(H, "실패로그_원인", 원인)
+        monkeypatch.setenv("GITHUB_RUN_ID", "222")
+        monkeypatch.setenv("GITHUB_REPOSITORY", "o/r")
+        assert H.main(["--이름", "카외 자동수집", "--결과", "failure"]) == 0
+        assert len(보낸것) == 1, "오늘 첫 사장님 몫 실패인데 문자가 안 갔습니다"
+
+    def test_직전도_사장님몫이면_하루_한_통을_지킨다(self, H, monkeypatch):
+        from datetime import datetime, timezone
+        보낸것 = []
+        monkeypatch.setattr(H, "텔레그램", lambda s: 보낸것.append(s) or True)
+        monkeypatch.setattr(H, "이슈_열기", lambda *a, **k: "")
+        지금 = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")   # GitHub 모양
+        monkeypatch.setattr(H, "연속실패_재기", lambda *a, **k: {"연속": 4, "이상": False, "직전실패시각": 지금,
+                                                            "직전실패id": "111"})
+        monkeypatch.setattr(H, "실패로그_원인", lambda 저장소, run: ("로그인", "다시 로그인", "로그인이 필요"))
+        monkeypatch.setenv("GITHUB_RUN_ID", "222")
+        monkeypatch.setenv("GITHUB_REPOSITORY", "o/r")
+        assert H.main(["--이름", "카외 자동수집", "--결과", "failure"]) == 0
+        assert 보낸것 == [], "직전 실패가 이미 사장님께 갔으면 같은 날 또 보내지 않는다"
 
     def test_직원몫이면_텔레그램_함수가_불리지_않는다(self, H, monkeypatch, capsys):
         보낸것 = []
