@@ -298,8 +298,9 @@ def test_회차_끄고_켜도_시트_쓰기와_검색_수가_같고_기록만_�
         assert c1 == dict(c0), r1  # 더해진 것은 그 칸 하나뿐
     assert all("_substitute" not in dict(cols) for _, _, cols in w1)
     # 2행 = 옛 글 1위 + 시트 다른 글 2위(출처 다 읽음 = 완전 확인) · 3행 = 제 글 찾음 = 맞대지 않아 빈칸
-    assert sub_cells[2].startswith("인기글 1위 https://cafe.naver.com/ccrs5500/777989")
-    assert " / 인기글 2위 https://cafe.naver.com/cantsb/3406915" in sub_cells[2]
+    # 2026-11-01: 시트 칸에는 1위 한 개만('대체노출 1위 <링크>') · 2위는 기록 파일에만
+    assert sub_cells[2].startswith("대체노출 1위 https://cafe.naver.com/ccrs5500/777989")
+    assert "cantsb/3406915" not in sub_cells[2] and " / " not in sub_cells[2]
     assert sub_cells[3] == ""
     # 빈 링크 줄은 시트 지금 링크(all_known_links)가 비면 원래도 검색하지 않는다(고침 전과 같음).
     # 이 시험은 카페 허용 목록이 비어 있어 2번(링크 줄 2개)만 검색한다.

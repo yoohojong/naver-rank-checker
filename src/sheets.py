@@ -87,6 +87,9 @@ HEADER_RAW_CAFE_EVER_ONETOP = "raw_카페1등달성"
 # 만들기·쓰기는 SUBSTITUTE_SCAN 이 켜졌을 때만(src/substitute.py). 칸 위치 = 맨 오른쪽에 덧붙임(열 끼워 넣기 X).
 HEADER_SUBSTITUTE = "대체 노출"
 HEADER_RAW_SUBSTITUTE = "raw_대체노출"
+# 2026-11-01 사장님 "표기할떄 아예 대체노출 1위 초록색 링크": '대체 노출' 칸 글자가 '대체노출 1위' 로 시작하면 초록 글자.
+# 칸마다 색칠하지 않고 조건부 서식 규칙 하나로 건다(수식 모드의 보이는 수식 칸에도 결과 글자로 맞음).
+COLOR_SUBSTITUTE_RANK1_TEXT = {"red": 24 / 255, "green": 128 / 255, "blue": 56 / 255}  # #188038
 
 STALE_DISPLAY_K = "재검사필요"
 INPUT_KEY_VERSION = "v1"
@@ -605,6 +608,8 @@ class SheetsClient:
                     ctx=f"{tab_name} (substitute visible formula)",
                 )
                 formula_rows = max_row - 1
+        formats_added = self._ensure_substitute_rank1_format(ws, tab_name, mapping[HEADER_SUBSTITUTE])
+        if formula_mode:
             idx = mapping[HEADER_RAW_SUBSTITUTE]
             _sheets_api_retry(
                 lambda: self.spreadsheet.batch_update({"requests": [{
@@ -616,7 +621,74 @@ class SheetsClient:
                 }]}),
                 ctx=f"{tab_name} (substitute hide raw)",
             )
-        return {"headers_added": len(missing), "formula_rows": formula_rows}
+        return {"headers_added": len(missing), "formula_rows": formula_rows, "formats_added": formats_added}
+
+    def _conditional_formats_by_sheet(self) -> Optional[dict]:
+        """{sheetId: [조건부 서식 규칙…]} — 회차에 한 번만 읽는다(탭마다 읽지 않음). 못 읽으면 None."""
+        cached = getattr(self, "_cf_by_sheet", None)
+        if cached is not None:
+            return cached
+        try:
+            meta = _sheets_api_retry(
+                lambda: self.spreadsheet.fetch_sheet_metadata(
+                    {"fields": "sheets(properties(sheetId),conditionalFormats)"}
+                ),
+                ctx="substitute conditional formats read",
+            )
+        except Exception as e:  # noqa: BLE001 — 못 읽으면 규칙을 더하지 않는다(겹쳐 쌓이는 쪽보다 안전)
+            print(f"  [대체노출] 조건부 서식 목록 못 읽음 = {type(e).__name__}: {e}"[:200])
+            return None
+        if not isinstance(meta, dict):
+            return None
+        out: dict = {}
+        for sheet in meta.get("sheets") or []:
+            sid = ((sheet or {}).get("properties") or {}).get("sheetId")
+            if sid is not None:
+                out[sid] = list(sheet.get("conditionalFormats") or [])
+        self._cf_by_sheet = out
+        return out
+
+    def _ensure_substitute_rank1_format(self, ws, tab_name: str, col_idx: int) -> int:
+        """'대체 노출' 칸(2행부터 끝까지)에 '대체노출 1위' 로 시작 → 초록 글자 규칙을 없을 때만 하나 건다.
+
+        같은 규칙 = 같은 조건(TEXT_STARTS_WITH '대체노출 1위') + 같은 칸(startColumnIndex~endColumnIndex).
+        이미 있으면 안 더함 = 회차마다 돌아도 1개. 목록을 못 읽으면 더하지 않는다. 실패해도 회차는 계속.
+        돌려주는 값 = 더한 규칙 수(0/1).
+        """
+        from src.substitute import RANK1_CELL_PREFIX  # 지연 import — substitute 가 시트 모듈을 몰라도 되게
+
+        by_sheet = self._conditional_formats_by_sheet()
+        if by_sheet is None:
+            return 0
+        rules = by_sheet.setdefault(ws.id, [])
+        for rule in rules:
+            cond = ((rule or {}).get("booleanRule") or {}).get("condition") or {}
+            values = [v.get("userEnteredValue") for v in cond.get("values") or []]
+            if cond.get("type") != "TEXT_STARTS_WITH" or values != [RANK1_CELL_PREFIX]:
+                continue
+            for rg in rule.get("ranges") or []:
+                if rg.get("startColumnIndex") == col_idx and rg.get("endColumnIndex") == col_idx + 1:
+                    return 0
+        new_rule = {
+            "ranges": [{"sheetId": ws.id, "startRowIndex": 1,
+                        "startColumnIndex": col_idx, "endColumnIndex": col_idx + 1}],
+            "booleanRule": {
+                "condition": {"type": "TEXT_STARTS_WITH", "values": [{"userEnteredValue": RANK1_CELL_PREFIX}]},
+                "format": {"textFormat": {"foregroundColor": COLOR_SUBSTITUTE_RANK1_TEXT}},
+            },
+        }
+        try:
+            _sheets_api_retry(
+                lambda: self.spreadsheet.batch_update(
+                    {"requests": [{"addConditionalFormatRule": {"rule": new_rule, "index": 0}}]}
+                ),
+                ctx=f"{tab_name} (substitute rank1 green)",
+            )
+        except Exception as e:  # noqa: BLE001 — 색만 못 입힘 = 글자는 그대로 적힌다
+            print(f"  [대체노출] {tab_name}: 초록 글자 규칙 못 걸음 = {type(e).__name__}: {e}"[:200])
+            return 0
+        rules.append(new_rule)
+        return 1
 
     def write_stale_formula_results(
         self,

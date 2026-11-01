@@ -13,7 +13,12 @@
     상위노출_이력(링크 칸)에서 회차마다 읽는다.
 
 2026-10-30 품질 1차 반려 고침: ① 글 비교 열쇠는 카페+글번호(다른 카페 같은 번호 = 다른 글)
-② 옛 글 출처를 못 읽으면 맞댄 줄마다 error(시트 '확인 못 함' · 집계 맞대기실패) — '대체 없음'과 가름.
+② 옛 글 출처를 못 읽으면 맞댄 줄마다 error(기록 파일 · 집계 맞대기실패) — '대체 없음'과 가름.
+
+2026-11-01 사장님: "대체노출 일단 1위인것만 측정? 표기만 해주면 되는거고, 2 ~ 5위는 솔직히 필요없어"
+· "대체노출이 2 ~ 5위면 따로 덮어씌울 필요 없는거지. 원래 링크있는것들은 그대로 유지해 표기방식.
+확인못함은 말이안됨." → 시트 칸에는 '대체노출 1위 <링크>' 한 개만 적고(초록 글자 = sheets.py 조건부 서식),
+2위 이하·찾기 오류·목록 실패는 빈칸. 사유와 2위 이하 전부는 기록 파일(substitute_cell · hits · error)에 그대로 남는다.
 
 한 스위치: 환경값 SUBSTITUTE_SCAN=0 이면 통째로 끈다(기본 켬). 끄면 회차 결과는 고침 전과 같다.
 주인: 순위체커(카페외부). 되돌리는 법: SUBSTITUTE_SCAN=0 또는 이 파일과 main.py 의 호출 4곳 되돌림.
@@ -105,7 +110,7 @@ class OurLinkIndex:
     per_keyword: dict = field(default_factory=dict)  # (탭, 키워드) → {link_key: 출처}
     counts: dict = field(default_factory=dict)  # 출처별 링크 수 / '못 읽음' 사유
     # 2026-10-30 지적 2: 못 읽은 옛 글 출처 {출처: 사유}. 비어 있지 않으면 이 회차의 '대체 없음'은
-    # 완전한 없음이 아니다 → 맞댄 줄마다 error 로 남겨 시트 칸 '확인 못 함' · 집계 맞대기실패로 간다.
+    # 완전한 없음이 아니다 → 맞댄 줄마다 error 로 남겨 기록 파일 · 집계 맞대기실패로 간다(시트 칸은 빈칸 · 11-01).
     source_errors: dict = field(default_factory=dict)
     # 2026-10-30 지적 3: 확인된 카페 별칭 {"slug:이름": "id:번호"}. 여기 없는 별칭은 같은 카페로 보지 않는다.
     aliases: dict = field(default_factory=dict)
@@ -260,8 +265,9 @@ def scan(html: str, index: Optional[OurLinkIndex], tab: str, keyword: str, own_l
 
 
 def format_cell(hits: list[dict]) -> str:
-    """시트 새 칸 '대체 노출'에 적을 글자. 없으면 빈칸.
+    """기록 파일(substitute_cell)에 남길 전체 목록 글자. 없으면 빈칸.
 
+    2026-11-01부터 시트 칸에는 이 글자가 아니라 rank1_cell(1위 한 개)만 적는다 — 2위 이하는 기록에만.
     예: "인기글 1위 https://cafe.naver.com/a/1 / 인기글 2위 https://cafe.naver.com/b/2"
     순위 = 카페 구좌 순위(M 칸과 같은 셈), 없으면 통합 순위.
     """
@@ -272,26 +278,45 @@ def format_cell(hits: list[dict]) -> str:
     return " / ".join(parts)
 
 
-ERROR_CELL_PREFIX = "확인 못 함"
+# 2026-11-01 사장님 원문 위 머리말. 시트 칸 앞머리 — sheets.py 조건부 서식(초록 글자)도 이 글자로 고른다.
+RANK1_CELL_PREFIX = "대체노출 1위"
+
+
+def _hit_rank(h: dict):
+    """순위 = 카페 구좌 순위(M 칸과 같은 셈), 없으면 통합 순위."""
+    return h.get("cafe_rank") or h.get("rank")
+
+
+def rank1_cell(hits: list[dict]) -> str:
+    """시트 '대체 노출' 칸 글자 — 우리 다른 글이 1위일 때만 '대체노출 1위 <링크>' 한 개. 아니면 빈칸.
+
+    1위가 둘 이상(다른 구좌)이면 화면 위쪽(먼저 찾은) 하나만. 2위 이하는 칸에 적지 않는다.
+    """
+    for h in hits or []:
+        try:
+            rank = int(_hit_rank(h) or 0)
+        except (TypeError, ValueError):
+            continue
+        if rank == 1 and h.get("url"):
+            return f"{RANK1_CELL_PREFIX} {h['url']}"
+    return ""
 
 
 def cell_text(sub_row: dict) -> str:
-    """기록 줄 하나 → 시트 칸 글자. 찾기 오류는 빈칸(=없음)으로 바꾸지 않고 '확인 못 함 (사유)' 로 적는다.
+    """기록 줄 하나 → 시트 칸 글자 (2026-11-01 고침).
 
-    옛 글 출처 일부를 못 읽은 채 찾은 대체(부분 자료)는 '확인 못 함 (사유) — 찾은 것: …' —
-    찾은 글은 보여 주되 완전 확인으로 읽히지 않게 앞머리를 '확인 못 함' 으로 둔다(2026-10-30 지적 2).
+    - 찾은 우리 다른 글 중 1위가 있으면 '대체노출 1위 <링크>' — 맞대기 오류·옛 글 출처 못 읽음이 같이 있어도 적는다
+      (1위로 뜬 것은 화면에서 직접 본 사실이라서).
+    - 그 밖(2위 이하만 · 없음 · 찾기 오류)은 빈칸. '확인 못 함' 글자는 시트에 쓰지 않는다(사장님 "확인못함은 말이안됨").
+      오류 사유는 기록 파일 error · 로그 줄에만 남는다.
     """
-    err = str(sub_row.get("error") or "").strip()
-    found = str(sub_row.get("substitute_cell") or "")
-    if err:
-        text = f"{ERROR_CELL_PREFIX} ({err[:80]})"
-        return f"{text} — 찾은 것: {found}" if found else text
-    return found
+    return rank1_cell(sub_row.get("hits") or [])
 
 
 def prepare_sheet_columns(client, data: dict, *, formula_mode: bool) -> dict:
-    """회차 앞: 탭마다 '대체 노출' 칸(수식 모드면 숨김 raw 칸도)을 없을 때만 만든다. 스위치 끔 = 아무것도 안 함."""
-    out = {"enabled": substitute_enabled(), "tabs": 0, "headers_added": 0, "errors": {}}
+    """회차 앞: 탭마다 '대체 노출' 칸(수식 모드면 숨김 raw 칸도)과 1위 초록 글자 규칙을 없을 때만 만든다.
+    스위치 끔 = 아무것도 안 함."""
+    out = {"enabled": substitute_enabled(), "tabs": 0, "headers_added": 0, "formats_added": 0, "errors": {}}
     if not out["enabled"]:
         return out
     for tab_name, rows in (data or {}).items():
@@ -299,6 +324,7 @@ def prepare_sheet_columns(client, data: dict, *, formula_mode: bool) -> dict:
             res = client.ensure_substitute_columns(tab_name, rows, formula_mode=formula_mode)
             out["tabs"] += 1
             out["headers_added"] += int(res.get("headers_added", 0) or 0)
+            out["formats_added"] += int(res.get("formats_added", 0) or 0)  # 1위 초록 글자 규칙(11-01)
         except Exception as e:  # 칸 못 만듦 = 그 탭은 쓰기 때 칸이 없어 건너뜀(판정·회차는 계속)
             out["errors"][tab_name] = f"{type(e).__name__}: {e}"[:200]
     return out
@@ -309,18 +335,19 @@ def apply_cells(tab_updates: dict, substitute_rows: list[dict], header: str, *,
     """회차 끝: 시트에 쓸 RowUpdate 마다 '대체 노출' 값을 넣는다.
 
     - 스위치 끔 = 아무것도 넣지 않음(칸 쓰기 없음 = 고침 전과 같음).
-    - 맞댄 줄 = 대체 글자 또는 '확인 못 함 (사유)'. 맞대지 않은 줄(제 글 찾음) = 빈칸(지난 값 지움).
-    - 우리 글 목록 자체를 못 만듦(index_error) = 모든 줄 '확인 못 함 (사유)'(빈칸=없음 으로 속이지 않음).
+    - 맞댄 줄 = 1위 대체가 있으면 '대체노출 1위 <링크>', 아니면 빈칸.
+      맞대지 않은 줄(제 글 찾음) = 빈칸(지난 값 지움) — 그 줄의 K/L/M/O 표기는 여기서 건드리지 않는다.
+    - 우리 글 목록 자체를 못 만듦(index_error) = 모든 줄 빈칸(2026-11-01: '확인 못 함' 글자 안 씀).
+      사유는 main 의 '[대체노출] 목록 구성 실패' 로그 줄과 회차 요약 substitute_index_counts 에 남는다.
     돌려주는 값 = 값을 넣은 RowUpdate 수.
     """
     if not enabled:
         return 0
-    by_row = {(r["tab"], r["row"]): cell_text(r) for r in substitute_rows or []}
-    err_text = f"{ERROR_CELL_PREFIX} ({str(index_error)[:80]})" if index_error else ""
+    by_row = {} if index_error else {(r["tab"], r["row"]): cell_text(r) for r in substitute_rows or []}
     n = 0
     for tab_name, updates in (tab_updates or {}).items():
         for upd in updates:
-            upd.columns[header] = err_text or by_row.get((tab_name, upd.row), "")
+            upd.columns[header] = by_row.get((tab_name, upd.row), "")
             n += 1
     return n
 

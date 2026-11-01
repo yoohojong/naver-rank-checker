@@ -1,6 +1,8 @@
 """대체 노출 시트 칸 쓰기 (2026-10-29 사장님 승인 10-29 17:5x).
 
-지키는 것: 대체 있음 = 글자 · 없음 = 빈칸 · 찾기 오류 = '확인 못 함 (사유)'(빈칸으로 바꾸지 않음)
+지키는 것 (2026-11-01 사장님 "대체노출 일단 1위인것만 … 2 ~ 5위는 솔직히 필요없어" · "확인못함은 말이안됨"):
+1위 대체 있음 = '대체노출 1위 <링크>' 한 개 · 2위 이하만/없음/찾기 오류/목록 실패 = 빈칸(1위를 찾았으면 오류여도 1위)
+· '확인 못 함' 글자는 시트에 안 씀 · 1위 초록 글자 조건부 서식은 두 번 걸어도 1개
 · 머리글은 없을 때만 한 번 · SUBSTITUTE_SCAN=0 = 칸 만들기·쓰기 안 함 · 수식 모드 = 숨김 raw 칸에 값.
 """
 import json
@@ -70,15 +72,33 @@ def _plain_write(sub_rows, upd_rows=(2,), *, enabled=True, index_error=""):
 
 
 class TestSubstituteCellPlain:
-    def test_대체_있음_한개_글자를_씀(self):
+    def test_1위_대체만_한개_적힘(self):
         n, w, _ = _plain_write([_sub_row(2, [_hit(URL_A, 1)])])
         assert n == 1
-        assert w["G2"] == f"인기글 1위 {URL_A}"
+        assert w["G2"] == f"대체노출 1위 {URL_A}"
         assert w["C2"] == "미노출"  # K 는 그대로
 
-    def test_대체_두개_순서대로_슬래시로_이음(self):
+    def test_1위와_2위가_같이_있으면_1위_한개만(self):
         _, w, _ = _plain_write([_sub_row(2, [_hit(URL_A, 1), _hit(URL_B, 2)])])
-        assert w["G2"] == f"인기글 1위 {URL_A} / 인기글 2위 {URL_B}"
+        assert w["G2"] == f"대체노출 1위 {URL_A}"
+
+    def test_2위가_먼저_찾혀도_1위를_고름(self):
+        _, w, _ = _plain_write([_sub_row(2, [_hit(URL_B, 2, area="스마트블록"), _hit(URL_A, 1)])])
+        assert w["G2"] == f"대체노출 1위 {URL_A}"
+
+    @pytest.mark.parametrize("rank", [2, 3, 4, 5])
+    def test_2_5위만_있으면_빈칸(self, rank):
+        _, w, _ = _plain_write([_sub_row(2, [_hit(URL_B, rank)])])
+        assert w["G2"] == ""
+        assert w["C2"] == "미노출"  # K 는 그대로
+
+    def test_카페순위_없으면_통합순위로_1위_판정(self):
+        hit = {"url": URL_A, "area": "AB", "rank": 1, "cafe_rank": None, "block": "", "source": "시트"}
+        _, w, _ = _plain_write([_sub_row(2, [hit])])
+        assert w["G2"] == f"대체노출 1위 {URL_A}"
+        hit2 = {"url": URL_A, "area": "AB", "rank": 2, "cafe_rank": None, "block": "", "source": "시트"}
+        _, w2, _ = _plain_write([_sub_row(2, [hit2])])
+        assert w2["G2"] == ""
 
     def test_대체_없음과_맞대지_않은_줄은_빈칸(self):
         # 2행 = 맞댔는데 없음, 3행 = 제 글을 찾아 맞대지 않음(기록 줄 없음)
@@ -86,14 +106,30 @@ class TestSubstituteCellPlain:
         assert w["G2"] == ""
         assert w["G3"] == ""
 
-    def test_찾기_오류는_빈칸이_아니라_확인못함(self):
+    def test_찾기_오류는_빈칸_확인못함_안씀(self):
         _, w, _ = _plain_write([_sub_row(2, [], error="ValueError: 깨진 화면")])
-        assert w["G2"].startswith("확인 못 함 (")
-        assert "깨진 화면" in w["G2"]
+        assert w["G2"] == ""
 
-    def test_우리글_목록_못만들면_모든_줄_확인못함(self):
+    def test_오류여도_1위를_찾았으면_1위_적힘(self):
+        _, w, _ = _plain_write([_sub_row(2, [_hit(URL_A, 1), _hit(URL_B, 2)], error="옛 글 출처 못 읽음: 글장부(x)")])
+        assert w["G2"] == f"대체노출 1위 {URL_A}"
+
+    def test_오류이고_2위뿐이면_빈칸(self):
+        _, w, _ = _plain_write([_sub_row(2, [_hit(URL_B, 2)], error="옛 글 출처 못 읽음: 이력(x)")])
+        assert w["G2"] == ""
+
+    def test_우리글_목록_못만들면_모든_줄_빈칸(self):
         _, w, _ = _plain_write([], upd_rows=(2, 3), index_error="APIError: 429")
-        assert w["G2"] == w["G3"] == "확인 못 함 (APIError: 429)"
+        assert w["G2"] == w["G3"] == ""
+
+    def test_시트_칸에_확인못함_글자가_어떤_경우에도_없음(self):
+        cases = [
+            _sub_row(2, [], error="ValueError: x"),
+            _sub_row(2, [_hit(URL_B, 3)], error="ValueError: x"),
+            _sub_row(2, [_hit(URL_A, 1)], error="ValueError: x"),
+        ]
+        for c in cases:
+            assert "확인 못 함" not in sub.cell_text(c)
 
     def test_스위치_0이면_칸값을_넣지도_쓰지도_않음(self, monkeypatch):
         monkeypatch.setenv("SUBSTITUTE_SCAN", "0")
@@ -147,7 +183,7 @@ class TestSubstituteFormulaMode:
     def test_수식모드_칸만들기_보이는칸은_수식_raw는_숨김(self):
         client, ws = _client(FORMULA_HEADERS)
         out = client.ensure_substitute_columns(TAB, [{"_row": 2}, {"_row": 3}], formula_mode=True)
-        assert out == {"headers_added": 2, "formula_rows": 2}
+        assert out == {"headers_added": 2, "formula_rows": 2, "formats_added": 0}  # 서식 목록 못 읽음(MagicMock) = 안 더함
         w = _written(ws)
         assert w["W1"] == HEADER_SUBSTITUTE and w["X1"] == HEADER_RAW_SUBSTITUTE
         # 보이는 칸 수식 = 입력 키가 같을 때만 raw 값 (K/L/M/O 와 같은 규칙)
@@ -166,7 +202,7 @@ class TestSubstituteFormulaMode:
                         HEADER_SUBSTITUTE, enabled=True)
         client.write_stale_formula_results(TAB, [upd], row_context={2: row}, checked_at="2026-10-30 01:00 KST")
         w = _written(ws)
-        assert w["X2"] == f"인기글 1위 {URL_A} / 인기글 2위 {URL_B}"
+        assert w["X2"] == f"대체노출 1위 {URL_A}"
         assert "W2" not in w  # 보이는 수식 칸은 덮지 않음
 
     def test_수식모드_대체키_없으면_raw칸_안건드림(self):
@@ -185,3 +221,111 @@ class TestSubstituteFormulaMode:
         out = client.ensure_substitute_columns(TAB, [{"_row": 2}], formula_mode=True)
         assert out["headers_added"] == 0
         ws.batch_update.assert_not_called()
+
+
+# ── 2026-11-01 1위 초록 글자 조건부 서식 ──────────────────────────────────
+
+def _rule_requests(client):
+    out = []
+    for call in client.spreadsheet.batch_update.call_args_list:
+        for req in call.args[0]["requests"]:
+            if "addConditionalFormatRule" in req:
+                out.append(req["addConditionalFormatRule"])
+    return out
+
+
+def _with_live_rules(client):
+    """spreadsheet.batch_update 로 더한 규칙을 다음 fetch_sheet_metadata 가 돌려주게(실제 시트처럼)."""
+    rules: list = []
+
+    def fetch(params=None):
+        return {"sheets": [{"properties": {"sheetId": 777}, "conditionalFormats": list(rules)}]}
+
+    def batch(body):
+        for req in body["requests"]:
+            if "addConditionalFormatRule" in req:
+                rules.append(req["addConditionalFormatRule"]["rule"])
+        return {}
+
+    client.spreadsheet.fetch_sheet_metadata.side_effect = fetch
+    client.spreadsheet.batch_update.side_effect = batch
+    return rules
+
+
+class TestSubstituteRank1Format:
+    def test_초록_글자_규칙_내용(self):
+        client, _ = _client(PLAIN_HEADERS)
+        _with_live_rules(client)
+        out = client.ensure_substitute_columns(TAB, [{"_row": 2}], formula_mode=False)
+        assert out["formats_added"] == 1
+        (req,) = _rule_requests(client)
+        rule = req["rule"]
+        assert req["index"] == 0
+        assert rule["ranges"] == [{"sheetId": 777, "startRowIndex": 1, "startColumnIndex": 6, "endColumnIndex": 7}]  # G
+        cond = rule["booleanRule"]["condition"]
+        assert cond == {"type": "TEXT_STARTS_WITH", "values": [{"userEnteredValue": "대체노출 1위"}]}
+        assert cond["values"][0]["userEnteredValue"] == sub.RANK1_CELL_PREFIX
+        color = rule["booleanRule"]["format"]["textFormat"]["foregroundColor"]
+        assert "#%02X%02X%02X" % tuple(round(color[c] * 255) for c in ("red", "green", "blue")) == "#188038"
+
+    def test_같은_클라이언트로_두번_불러도_규칙_1개(self):
+        client, _ = _client(PLAIN_HEADERS)
+        rules = _with_live_rules(client)
+        client.ensure_substitute_columns(TAB, [{"_row": 2}], formula_mode=False)
+        out2 = client.ensure_substitute_columns(TAB, [{"_row": 2}], formula_mode=False)
+        assert out2["formats_added"] == 0
+        assert len(rules) == 1
+
+    def test_다음_회차_새_클라이언트도_시트_규칙을_읽고_안_더함(self):
+        client1, _ = _client(PLAIN_HEADERS)
+        rules = _with_live_rules(client1)
+        client1.ensure_substitute_columns(TAB, [{"_row": 2}], formula_mode=False)
+        client2, _ = _client(PLAIN_HEADERS)
+        client2.spreadsheet.fetch_sheet_metadata.return_value = {
+            "sheets": [{"properties": {"sheetId": 777}, "conditionalFormats": list(rules)}]}
+        out = client2.ensure_substitute_columns(TAB, [{"_row": 2}], formula_mode=False)
+        assert out["formats_added"] == 0
+        assert _rule_requests(client2) == []
+
+    def test_다른_칸이나_다른_조건의_규칙은_같은_규칙으로_안_봄(self):
+        client, _ = _client(PLAIN_HEADERS)
+        other_col = {"ranges": [{"sheetId": 777, "startRowIndex": 1, "startColumnIndex": 2, "endColumnIndex": 3}],
+                     "booleanRule": {"condition": {"type": "TEXT_STARTS_WITH",
+                                                   "values": [{"userEnteredValue": "대체노출 1위"}]}}}
+        other_cond = {"ranges": [{"sheetId": 777, "startRowIndex": 1, "startColumnIndex": 6, "endColumnIndex": 7}],
+                      "booleanRule": {"condition": {"type": "TEXT_CONTAINS",
+                                                    "values": [{"userEnteredValue": "인기글"}]}}}
+        client.spreadsheet.fetch_sheet_metadata.return_value = {
+            "sheets": [{"properties": {"sheetId": 777}, "conditionalFormats": [other_col, other_cond]}]}
+        out = client.ensure_substitute_columns(TAB, [{"_row": 2}], formula_mode=False)
+        assert out["formats_added"] == 1
+
+    def test_서식_목록_못_읽으면_안_더함(self):
+        client, _ = _client(PLAIN_HEADERS)
+        client.spreadsheet.fetch_sheet_metadata.side_effect = RuntimeError("403")
+        out = client.ensure_substitute_columns(TAB, [{"_row": 2}], formula_mode=False)
+        assert out["formats_added"] == 0
+        assert _rule_requests(client) == []
+
+    def test_수식모드는_보이는_칸에_규칙_raw칸은_아님(self):
+        client, _ = _client(FORMULA_HEADERS)
+        rules = _with_live_rules(client)
+        out = client.ensure_substitute_columns(TAB, [{"_row": 2}], formula_mode=True)
+        assert out["formats_added"] == 1 and len(rules) == 1
+        rg = rules[0]["ranges"][0]
+        assert (rg["startColumnIndex"], rg["endColumnIndex"]) == (22, 23)  # W = 보이는 '대체 노출'(X = 숨김 raw)
+
+    def test_수식모드_머리글_이미_있을_때_두번_불러도_1개(self):
+        headers = FORMULA_HEADERS + [HEADER_SUBSTITUTE, HEADER_RAW_SUBSTITUTE]
+        client, _ = _client(headers)
+        rules = _with_live_rules(client)
+        client.ensure_substitute_columns(TAB, [{"_row": 2}], formula_mode=True)
+        client.ensure_substitute_columns(TAB, [{"_row": 2}], formula_mode=True)
+        assert len(rules) == 1
+        assert rules[0]["ranges"][0]["startColumnIndex"] == 22
+
+    def test_prepare_sheet_columns_가_더한_규칙_수를_모음(self):
+        client = MagicMock()
+        client.ensure_substitute_columns.return_value = {"headers_added": 0, "formula_rows": 0, "formats_added": 1}
+        out = sub.prepare_sheet_columns(client, {TAB: [{"_row": 2}], "탭2": [{"_row": 2}]}, formula_mode=False)
+        assert out["formats_added"] == 2

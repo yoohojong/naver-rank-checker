@@ -733,7 +733,7 @@ def run_cycle() -> dict:
             substitute_index_counts = dict(our_index.counts)
             print(f"[대체노출] 우리 글 목록: {substitute_index_counts}")
             if our_index.source_errors:
-                print(f"[대체노출] ⚠️ {our_index.source_error_text()} — 맞댄 줄은 '확인 못 함'으로 적음(대체 없음과 가름)")
+                print(f"[대체노출] ⚠️ {our_index.source_error_text()} — 맞댄 줄은 기록 파일에 error 로 남김(시트 칸엔 1위 대체만 · 없으면 빈칸)")
         except Exception as e:
             substitute_index_counts = {"error": f"{type(e).__name__}: {e}"[:200]}
             print(f"[대체노출] 목록 구성 실패 = {e} (판정은 그대로 진행)")

@@ -1,7 +1,8 @@
 """대체 노출 품질 1차 반려(2026-10-30) 고침 시험.
 
 지적 2 — 옛 글 출처(글장부 · 이력)를 못 읽으면 '대체 없음'과 가른다:
-  글장부만 / 이력만 / 둘 다 못 읽음 3조건 모두 줄 기록 error · 시트 칸 '확인 못 함' · trace · 집계 맞대기실패까지.
+  글장부만 / 이력만 / 둘 다 못 읽음 3조건 모두 줄 기록 error · trace · 집계 맞대기실패까지.
+  (2026-11-01 사장님 "확인못함은 말이안됨" — 시트 칸은 '확인 못 함' 대신 빈칸, 1위 대체를 찾았으면 1위 글자.)
   부분 자료로 찾은 대체는 '완전 확인'(대체 · 애프터)으로 세지 않는다.
 지적 3 — 카페+글번호를 함께 쓴다:
   다른 카페의 같은 글번호는 대체 매치 · 제 글 제외 · 중복 제거 세 곳 모두 부딪치지 않는다.
@@ -82,7 +83,7 @@ def _one_row_pipeline(idx, row: dict):
 
 @pytest.mark.parametrize("name,ledger_err,archive_err", FAIL_CASES, ids=[c[0] for c in FAIL_CASES])
 def test_출처_못읽음_대체없음은_확인못함으로_끝까지(name, ledger_err, archive_err):
-    # 화면에 우리 글이 하나도 없는 줄 — 출처를 다 읽었다면 빈칸(없음)이지만, 못 읽었으니 '확인 못 함'
+    # 화면에 우리 글이 하나도 없는 줄 — 못 읽은 출처가 있어도 시트 칸은 빈칸(11-01), 사유는 기록 error 에만
     idx = substitute.build_index({TAB: [_row(NOWHERE, keyword="x", r=10)]}, [], [],
                                  ledger_error=ledger_err, archive_error=archive_err)
     cols, recs, trace, cnt = _one_row_pipeline(idx, _row(MISSING))
@@ -92,8 +93,7 @@ def test_출처_못읽음_대체없음은_확인못함으로_끝까지(name, led
     assert rec["error"].startswith("옛 글 출처 못 읽음:")
     for src, err in (("글장부", ledger_err), ("이력", archive_err)):
         assert (f"{src}({err})" in rec["error"]) is bool(err)
-    cell = cols[HEADER_SUBSTITUTE]
-    assert cell.startswith("확인 못 함 (옛 글 출처 못 읽음") and "찾은 것" not in cell
+    assert cols[HEADER_SUBSTITUTE] == ""  # '확인 못 함' 글자를 시트에 쓰지 않음(11-01)
     assert trace[0]["substitute_error"] == rec["error"] and trace[0]["substitute_complete"] is False
     assert cnt["전체"]["맞대기실패"] == 1 and cnt["전체"]["대체"] == 0 and cnt["전체"]["대체_확인못함"] == 0
 
@@ -106,8 +106,8 @@ def test_출처_못읽음_부분자료로_찾은_대체는_완전확인으로_�
     cols, recs, trace, cnt = _one_row_pipeline(idx, _row(MISSING))
     rec = recs[0]
     assert rec["substitute_count"] == 1 and rec["complete"] is False and rec["error"]
-    cell = cols[HEADER_SUBSTITUTE]
-    assert cell.startswith("확인 못 함 (") and f"— 찾은 것: 인기글 2위 {OTHER_SHEET}" in cell
+    assert cols[HEADER_SUBSTITUTE] == ""  # 찾은 것이 2위뿐 = 시트 칸 빈칸(11-01) · 기록에는 hits 그대로
+    assert rec["substitute_cell"].startswith(f"인기글 2위 {OTHER_SHEET}")
     assert trace[0]["substitute_complete"] is False and trace[0]["substitute_count"] == 1
     t = cnt["전체"]
     assert (t["대체"], t["애프터"], t["맞대기실패"], t["대체_확인못함"]) == (0, 0, 1, 1)
@@ -118,7 +118,8 @@ def test_출처_다_읽으면_종전대로_빈칸과_대체():
     idx = substitute.build_index({TAB: [_row(OTHER_SHEET, keyword="x", r=10)]}, [], [])
     cols, recs, trace, cnt = _one_row_pipeline(idx, _row(MISSING))
     assert recs[0]["error"] == "" and recs[0]["complete"] is True
-    assert cols[HEADER_SUBSTITUTE].startswith(f"인기글 2위 {OTHER_SHEET}")
+    assert cols[HEADER_SUBSTITUTE] == ""  # 2위 대체는 시트 칸에 적지 않음(11-01)
+    assert recs[0]["substitute_cell"].startswith(f"인기글 2위 {OTHER_SHEET}")  # 기록에는 남음
     assert (cnt["전체"]["대체"], cnt["전체"]["애프터"], cnt["전체"]["맞대기실패"]) == (1, 1, 0)
     idx0 = substitute.build_index({TAB: [_row(NOWHERE, keyword="x", r=10)]}, [], [])
     cols0, recs0, _, cnt0 = _one_row_pipeline(idx0, _row(MISSING))
@@ -198,7 +199,12 @@ def test_회차_출처_실패가_기록_시트칸_trace_집계까지(tmp_path, m
     urls = [h["url"].split("?")[0] for h in rec["hits"]]
     assert urls == ([OTHER_SHEET] if ledger_fail else [ON_PAGE, OTHER_SHEET])
     cell = writes[(TAB, 2)][HEADER_SUBSTITUTE]
-    assert cell.startswith("확인 못 함 (옛 글 출처 못 읽음") and "— 찾은 것: 인기글" in cell
+    # 11-01: 출처 오류가 있어도 1위 대체(ON_PAGE)를 찾았으면 1위 글자 · 2위(OTHER_SHEET)뿐이면 빈칸
+    if ledger_fail:
+        assert cell == ""
+    else:
+        assert cell.startswith(f"대체노출 1위 {ON_PAGE}")
+    assert "확인 못 함" not in cell
     assert writes[(TAB, 3)][HEADER_SUBSTITUTE] == ""  # 제 글 찾은 줄 = 맞대지 않음
     assert writes[(TAB, 2)][HEADER_AREA].startswith("미노출")  # K 그대로
     assert summary["substitute_scan_errors"] == 1 and summary["substitute_rows_with_hits_partial"] == 1
