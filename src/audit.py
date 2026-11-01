@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Iterable, Optional
 
 from src.sheets import RowUpdate, HEADER_AREA, HEADER_LINK, HEADER_L, HEADER_M, HEADER_JISIKIN
+from src.substitute import K_OVERLAY_KEY
 from src.transitions import parse_K_with_stamp
 
 
@@ -149,6 +150,8 @@ def build_update_trace(
                 trace["substitute_scanned"] = sub is not None
                 trace["substitute_count"] = int(sub.get("substitute_count", 0)) if sub else 0
                 trace["substitute_cell"] = sub.get("substitute_cell", "") if sub else ""
+                # 2026-11-01: K 칸을 '대체노출 1위'(이 주소 링크)로 덮어 보인 줄이면 그 주소. 아니면 빈칸.
+                trace["substitute_k_overlay"] = _clean(upd.columns.get(K_OVERLAY_KEY, ""))
                 # 완전 확인 = 맞댄 줄 + 오류 없음(옛 글 출처 다 읽음 포함). 부분 자료 대체는 False (2026-10-30 지적 2)
                 trace["substitute_complete"] = bool(sub) and not sub.get("error")
                 if sub and sub.get("error"):

@@ -7,8 +7,8 @@
 
 지키는 것:
   - 새 검색 0번: 판정에 쓴 html 을 그대로 다시 읽기만 한다(crawler 를 부르지 않는다).
-  - 노출영역(K)·L·M·O 는 손대지 않는다: 결과는 cols["_substitute"] 메타 키 → 회차 끝에
-    기록 파일(.harness/substitutes/*.jsonl)로만 간다. 시트 새 칸 쓰기는 사장님 승인 뒤 별도.
+  - 판정 값(K 글자 · raw_노출영역 · L·M·O · 실패 횟수)은 손대지 않는다: 결과는 cols["_substitute"] 메타 키 →
+    회차 끝에 기록 파일(.harness/substitutes/*.jsonl). 시트에는 1위 대체만 K 칸 '보이는 글자'로 덮는다(아래 11-01).
   - 공개 저장소에 우리 글 목록을 두지 않는다: 옛 글은 비공개 시트의 숨긴 탭(LEDGER_TAB_NAME)과
     상위노출_이력(링크 칸)에서 회차마다 읽는다.
 
@@ -17,11 +17,13 @@
 
 2026-11-01 사장님: "대체노출 일단 1위인것만 측정? 표기만 해주면 되는거고, 2 ~ 5위는 솔직히 필요없어"
 · "대체노출이 2 ~ 5위면 따로 덮어씌울 필요 없는거지. 원래 링크있는것들은 그대로 유지해 표기방식.
-확인못함은 말이안됨." → 시트 칸에는 '대체노출 1위 <링크>' 한 개만 적고(초록 글자 = sheets.py 조건부 서식),
-2위 이하·찾기 오류·목록 실패는 빈칸. 사유와 2위 이하 전부는 기록 파일(substitute_cell · hits · error)에 그대로 남는다.
+확인못함은 말이안됨." · "아니지 지금 노출영역칸이지 … 덮어씌워졌는데 대체노출이면 우리가 쓴 링크는 아직 안떴구나
+대체노출로 떴구나가 바로 보이잖아" → 따로 칸 없이 노출영역(K) 칸을 '대체노출 1위'(초록 글자 + 그 글 링크)로 덮어 보인다.
+2위 이하·찾기 오류·목록 실패는 K 평소 값. 옛 '대체 노출' · 'raw_대체노출' 칸은 회차 앞에 없앤다(sheets.ensure_substitute_k).
+사유와 2위 이하 전부는 기록 파일(substitute_cell · hits · error)에 그대로 남는다.
 
 한 스위치: 환경값 SUBSTITUTE_SCAN=0 이면 통째로 끈다(기본 켬). 끄면 회차 결과는 고침 전과 같다.
-주인: 순위체커(카페외부). 되돌리는 법: SUBSTITUTE_SCAN=0 또는 이 파일과 main.py 의 호출 4곳 되돌림.
+주인: 순위체커(카페외부). 되돌리는 법: SUBSTITUTE_SCAN=0(덮어쓰기 · 칸 정리 · 초록 규칙 모두 멈춤) 또는 이 파일과 main.py 의 호출 되돌림.
 """
 from __future__ import annotations
 
@@ -110,7 +112,7 @@ class OurLinkIndex:
     per_keyword: dict = field(default_factory=dict)  # (탭, 키워드) → {link_key: 출처}
     counts: dict = field(default_factory=dict)  # 출처별 링크 수 / '못 읽음' 사유
     # 2026-10-30 지적 2: 못 읽은 옛 글 출처 {출처: 사유}. 비어 있지 않으면 이 회차의 '대체 없음'은
-    # 완전한 없음이 아니다 → 맞댄 줄마다 error 로 남겨 기록 파일 · 집계 맞대기실패로 간다(시트 칸은 빈칸 · 11-01).
+    # 완전한 없음이 아니다 → 맞댄 줄마다 error 로 남겨 기록 파일 · 집계 맞대기실패로 간다(K 는 평소 값 · 11-01).
     source_errors: dict = field(default_factory=dict)
     # 2026-10-30 지적 3: 확인된 카페 별칭 {"slug:이름": "id:번호"}. 여기 없는 별칭은 같은 카페로 보지 않는다.
     aliases: dict = field(default_factory=dict)
@@ -283,7 +285,7 @@ def _rank_num(h: dict) -> float:
 def format_cell(hits: list[dict]) -> str:
     """기록 파일(substitute_cell)에 남길 전체 목록 글자. 없으면 빈칸.
 
-    2026-11-01부터 시트 칸에는 이 글자가 아니라 rank1_cell(1위 한 개)만 적는다 — 2위 이하는 기록에만.
+    2026-11-01부터 시트에는 이 글자를 쓰지 않는다 — 1위만 K 칸에 덮어 보인다(rank1_url · apply_cells).
     예: "인기글 1위 https://cafe.naver.com/a/1 / 인기글 2위 https://cafe.naver.com/b/2"
     순위 = 카페 구좌 순위(M 칸과 같은 셈), 없으면 통합 순위.
     """
@@ -294,8 +296,16 @@ def format_cell(hits: list[dict]) -> str:
     return " / ".join(parts)
 
 
-# 2026-11-01 사장님 원문 위 머리말. 시트 칸 앞머리 — sheets.py 조건부 서식(초록 글자)도 이 글자로 고른다.
+# 2026-11-01 사장님 원문 위 머리말. 노출영역(K) 칸에 보이는 글자 — sheets.py 조건부 서식(초록 글자)도 이 글자로 고른다.
 RANK1_CELL_PREFIX = "대체노출 1위"
+
+# 2026-11-01 사장님 "아니지 지금 노출영역칸이지 … 덮어씌워졌는데 대체노출이면 우리가 쓴 링크는 아직 안떴구나
+# 대체노출로 떴구나가 바로 보이잖아" → 따로 칸을 두지 않고 노출영역(K) 칸에 '대체노출 1위'(초록 글자 + 그 글 링크)로 덮어 보인다.
+# RowUpdate.columns 에 싣는 메타 키(값 = 1위로 뜬 우리 다른 글 주소). 시트 머리글이 아니므로 write_results 는 값으로 쓰지 않고,
+# sheets.py 쓰기 함수가 이 키를 보고 K 칸을 링크 수식으로 바꿔 쓴다. 판정 값(K 글자 · raw_노출영역 · 실패 횟수)은 그대로다.
+K_OVERLAY_KEY = "_대체노출1위_링크"
+# 덮어쓰는 줄 = 제 글을 못 찾은 줄만. 사장님이 손으로 적은 K(확인중 등)와 노출 줄은 덮지 않는다.
+OVERLAY_K_BASES = frozenset({"미노출", "누락", "삭제"})
 
 
 def _hit_rank(h: dict):
@@ -303,73 +313,73 @@ def _hit_rank(h: dict):
     return h.get("cafe_rank") or h.get("rank")
 
 
-def rank1_cell(hits: list[dict]) -> str:
-    """시트 '대체 노출' 칸 글자 — 우리 다른 글이 1위일 때만 '대체노출 1위 <링크>' 한 개. 아니면 빈칸.
+def rank1_url(hits: list[dict]) -> str:
+    """우리 다른 글이 1위로 떠 있으면 그 글 주소 하나, 아니면 빈 글자.
 
-    1위가 둘 이상(다른 구좌)이면 화면 위쪽(먼저 찾은) 하나만. 2위 이하는 칸에 적지 않는다.
+    1위가 둘 이상(다른 구좌)이면 화면 위쪽(먼저 찾은) 하나만. 2위 이하는 쓰지 않는다(기록 파일에만).
     """
     for h in hits or []:
         try:
             rank = int(_hit_rank(h) or 0)
         except (TypeError, ValueError):
             continue
-        if rank == 1 and h.get("url"):
-            return f"{RANK1_CELL_PREFIX} {h['url']}"
+        url = str(h.get("url") or "").strip()
+        if rank == 1 and url.startswith("http"):
+            return url
     return ""
 
 
-def cell_text(sub_row: dict) -> str:
-    """기록 줄 하나 → 시트 칸 글자 (2026-11-01 고침).
+def _k_base(k_full: object) -> str:
+    from src.transitions import parse_K_with_stamp  # 지연 import — 기록 쪽만 쓰는 곳에서 무겁지 않게
 
-    - 찾은 우리 다른 글 중 1위가 있으면 '대체노출 1위 <링크>' — 맞대기 오류·옛 글 출처 못 읽음이 같이 있어도 적는다
-      (1위로 뜬 것은 화면에서 직접 본 사실이라서).
-    - 그 밖(2위 이하만 · 없음 · 찾기 오류)은 빈칸. '확인 못 함' 글자는 시트에 쓰지 않는다(사장님 "확인못함은 말이안됨").
-      오류 사유는 기록 파일 error · 로그 줄에만 남는다.
-    """
-    return rank1_cell(sub_row.get("hits") or [])
+    base, _ = parse_K_with_stamp(str(k_full or "").strip())
+    return base
 
 
-def prepare_sheet_columns(client, data: dict, *, formula_mode: bool) -> dict:
-    """회차 앞: 탭마다 '대체 노출' 칸(수식 모드면 숨김 raw 칸도)과 1위 초록 글자 규칙을 없을 때만 만든다.
-    스위치 끔 = 아무것도 안 함.
+def prepare_sheet_columns(client, data: dict) -> dict:
+    """회차 앞: 탭마다 ① 옛 '대체 노출' · 'raw_대체노출' 칸을 없애고 ② 노출영역(K) 칸에
+    '대체노출 1위' 로 시작 → 초록 글자 규칙을 하나로 맞춘다. 스위치 끔 = 아무것도 안 함.
 
-    2026-11-01 GPT 1차 지적 A: 이번 회차에 처리 못 하는 줄(검색 실패 · 키워드 빈 줄)은 apply_cells 가
-    닿지 않아 옛 형식 값('확인 못 함 …' · '인기글 2위 …')이 남는다 → 탭마다 '대체노출 1위'로 시작하지 않는
-    값을 회차 앞에 한 번에 비운다(stale_cleared = 비운 칸 수). 지적 C·D: 같은 초록 규칙이 여럿이면 하나만
-    (formats_removed), 범위·색이 다르면 고침(formats_fixed)."""
-    keys = ("headers_added", "formats_added", "formats_fixed", "formats_removed", "stale_cleared")
+    칸 없애기는 머리글이 정확히 그 이름인 열만, 지우기 직전에 1행을 다시 읽어 맞을 때만(sheets.py).
+    실패해도 판정 · 회차는 계속(errors 에 사유)."""
+    keys = ("columns_removed", "formats_added", "formats_fixed", "formats_removed")
     out = {"enabled": substitute_enabled(), "tabs": 0, **{k: 0 for k in keys}, "errors": {}}
     if not out["enabled"]:
         return out
-    for tab_name, rows in (data or {}).items():
+    for tab_name in (data or {}):
         try:
-            res = client.ensure_substitute_columns(tab_name, rows, formula_mode=formula_mode)
+            res = client.ensure_substitute_k(tab_name)
             out["tabs"] += 1
             for k in keys:
                 out[k] += int(res.get(k, 0) or 0)
-        except Exception as e:  # 칸 못 만듦 = 그 탭은 쓰기 때 칸이 없어 건너뜀(판정·회차는 계속)
+        except Exception as e:  # 칸 정리 · 서식 실패 = 글자만 덮어쓰이고 색이 없을 뿐(판정·회차는 계속)
             out["errors"][tab_name] = f"{type(e).__name__}: {e}"[:200]
     return out
 
 
-def apply_cells(tab_updates: dict, substitute_rows: list[dict], header: str, *,
+def apply_cells(tab_updates: dict, substitute_rows: list[dict], *,
                 enabled: bool, index_error: str = "") -> int:
-    """회차 끝: 시트에 쓸 RowUpdate 마다 '대체 노출' 값을 넣는다.
+    """회차 끝: 1위 대체가 있는 줄의 RowUpdate 에 K_OVERLAY_KEY(1위 글 주소)를 싣는다.
 
-    - 스위치 끔 = 아무것도 넣지 않음(칸 쓰기 없음 = 고침 전과 같음).
-    - 맞댄 줄 = 1위 대체가 있으면 '대체노출 1위 <링크>', 아니면 빈칸.
-      맞대지 않은 줄(제 글 찾음) = 빈칸(지난 값 지움) — 그 줄의 K/L/M/O 표기는 여기서 건드리지 않는다.
-    - 우리 글 목록 자체를 못 만듦(index_error) = 모든 줄 빈칸(2026-11-01: '확인 못 함' 글자 안 씀).
-      사유는 main 의 '[대체노출] 목록 구성 실패' 로그 줄과 회차 요약 substitute_index_counts 에 남는다.
-    돌려주는 값 = 값을 넣은 RowUpdate 수.
+    - 스위치 끔 · 우리 글 목록 못 만듦(index_error) = 아무것도 싣지 않음(K 는 평소 규칙 그대로).
+    - 싣는 줄 = 이번 K 가 미노출 · 누락 · 삭제(제 글 못 찾음)이고 같은 화면에 우리 다른 글이 1위인 줄.
+      2위 이하만 · 대체 없음 · 찾기 오류(hits 없음) · 제 글 찾은 줄 · 사장님 손 K = 싣지 않음 → K 는 평소 값.
+      출처 일부를 못 읽었어도 1위로 뜬 것은 화면에서 직접 본 사실이라 싣는다(사유는 기록 파일 error).
+    - 싣지 않은 줄의 지난 회차 덮어쓰기는 쓰기 쪽이 평소 K 로 되돌린다(수식 모드 = 회차 앞 K 수식 다시 쓰기,
+      보통 모드 = K 값을 RAW 로 다시 씀). '확인 못 함' 글자는 어디에도 쓰지 않는다.
+    돌려주는 값 = 실은 줄 수.
     """
-    if not enabled:
+    if not enabled or index_error:
         return 0
-    by_row = {} if index_error else {(r["tab"], r["row"]): cell_text(r) for r in substitute_rows or []}
+    url_by_row = {(r["tab"], r["row"]): rank1_url(r.get("hits") or []) for r in substitute_rows or []}
     n = 0
     for tab_name, updates in (tab_updates or {}).items():
         for upd in updates:
-            upd.columns[header] = by_row.get((tab_name, upd.row), "")
+            upd.columns.pop(K_OVERLAY_KEY, None)
+            url = url_by_row.get((tab_name, upd.row), "")
+            if not url or _k_base(upd.columns.get("노출영역", "")) not in OVERLAY_K_BASES:
+                continue
+            upd.columns[K_OVERLAY_KEY] = url
             n += 1
     return n
 

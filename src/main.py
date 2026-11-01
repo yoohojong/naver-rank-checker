@@ -35,7 +35,7 @@ from src.sheets import (
     SheetsClient, RowUpdate,
     rank_result_to_columns,
     HEADER_AREA, HEADER_L, HEADER_M, HEADER_JISIKIN, HEADER_LINK, HEADER_TYPE,
-    HEADER_KEYWORD, HEADER_LAST_CHECKED_INPUT_KEY, HEADER_LAST_CHECKED_AT, HEADER_SUBSTITUTE,
+    HEADER_KEYWORD, HEADER_LAST_CHECKED_INPUT_KEY, HEADER_LAST_CHECKED_AT,
     HEADER_RAW_AREA, HEADER_RAW_L, HEADER_RAW_M, HEADER_RAW_JISIKIN,
     STALE_DISPLAY_K,
 )
@@ -212,6 +212,12 @@ def _process_row(
     keyword = (row.get("키워드") or "").strip()
     link = (row.get("링크") or "").strip()
     prev_K_full = (row.get(HEADER_AREA) or "").strip()  # D-030: full K (= base + 시점 가능)
+    # 2026-11-01 대체 노출 1위: K 칸이 '대체노출 1위'(덮어 보인 글자)면 지난 판정이 아니다 → 숨김 raw_노출영역
+    # (판정 값)으로 잇는다. 숨김 칸이 없는 시트는 빈칸(첫 추적처럼). 이 글자를 사장님 손 K 로 여겨 굳히지 않게.
+    if prev_K_full.startswith(substitute_module.RANK1_CELL_PREFIX):
+        prev_K_full = (row.get(HEADER_RAW_AREA) or "").strip()
+        if prev_K_full.startswith(substitute_module.RANK1_CELL_PREFIX):
+            prev_K_full = ""
     prev_K_base, _ = parse_K_with_stamp(prev_K_full)  # D-030: base 만 추출 (= 기존 logic 호환)
 
     # D-030 (2026-05-18): today_stamp 기본값 = 호출 측 미전달 시 함수 안 KST 자동 (= test 호환).
@@ -733,16 +739,14 @@ def run_cycle() -> dict:
             substitute_index_counts = dict(our_index.counts)
             print(f"[대체노출] 우리 글 목록: {substitute_index_counts}")
             if our_index.source_errors:
-                print(f"[대체노출] ⚠️ {our_index.source_error_text()} — 맞댄 줄은 기록 파일에 error 로 남김(시트 칸엔 1위 대체만 · 없으면 빈칸)")
+                print(f"[대체노출] ⚠️ {our_index.source_error_text()} — 맞댄 줄은 기록 파일에 error 로 남김(K 칸엔 1위 대체만 덮어 보임 · 없으면 평소 값)")
         except Exception as e:
             substitute_index_counts = {"error": f"{type(e).__name__}: {e}"[:200]}
             print(f"[대체노출] 목록 구성 실패 = {e} (판정은 그대로 진행)")
     else:
         print("[대체노출] SUBSTITUTE_SCAN=0 — 끔")
-    # 대체 노출 칸 만들기(없을 때만 · 맨 오른쪽 덧붙임). 스위치 끔이면 부르지 않는다.
-    substitute_column_setup = substitute_module.prepare_sheet_columns(
-        client, data, formula_mode=stale_formula_mode_enabled,
-    )
+    # 2026-11-01: 옛 '대체 노출' · 'raw_대체노출' 칸 없애기 + K 칸 '대체노출 1위' 초록 글자 규칙. 스위치 끔이면 안 함.
+    substitute_column_setup = substitute_module.prepare_sheet_columns(client, data)
     if substitute_column_setup["enabled"]:
         print(f"[대체노출] 시트 칸: {substitute_column_setup}")
 
@@ -886,7 +890,7 @@ def run_cycle() -> dict:
     # 3) 그 link 가진 모든 RowUpdate K = "중복노출(매치 구좌)" 갱신
     _d029_apply_pass2_duplicate(tab_updates, today_stamp=today_kst_stamp)
 
-    # 3.5.1. 대체 노출 기록 — 메타 키를 꺼내(지우며) 파일로만 남긴다. 시트 칸 쓰기 없음.
+    # 3.5.1. 대체 노출 기록 — 메타 키를 꺼내(지우며) 파일로 남긴다(2위 이하 · 사유 전부).
     substitute_path = f".harness/substitutes/{run_id}_{artifact_ts}_substitute.jsonl"
     substitute_rows = substitute_module.collect_rows(tab_updates, row_context, run_id, today_kst_stamp)
     try:
@@ -898,9 +902,10 @@ def run_cycle() -> dict:
             )
     except Exception as e:
         print(f"[대체노출] 저장 실패 = {e} (cron 진행)")
-    # 3.5.2. 대체 노출 시트 칸 값 (사장님 승인 10-29 17:5x) — 스위치 끔이면 넣지 않음.
-    substitute_cells_rows = substitute_module.apply_cells(
-        tab_updates, substitute_rows, HEADER_SUBSTITUTE,
+    # 3.5.2. 대체 노출 1위 → K 칸 덮어 보이기 표시(2026-11-01 사장님 "노출영역칸이지") — 스위치 끔이면 안 함.
+    # 판정 값(K 글자 · raw_노출영역)은 그대로이고, 쓰기 함수가 보이는 K 만 '대체노출 1위'(링크)로 바꾼다.
+    substitute_k_overlay_rows = substitute_module.apply_cells(
+        tab_updates, substitute_rows,
         enabled=substitute_module.substitute_enabled(),
         index_error=(substitute_index_counts.get("error", "") if our_index is None else ""),
     )
@@ -1193,7 +1198,7 @@ def run_cycle() -> dict:
     summary["substitute_rows_with_hits_partial"] = sum(
         1 for r in substitute_rows if r["substitute_count"] and r.get("error"))
     summary["substitute_path"] = substitute_path
-    summary["substitute_cells_rows"] = substitute_cells_rows
+    summary["substitute_k_overlay_rows"] = substitute_k_overlay_rows
     summary["substitute_column_setup"] = substitute_column_setup
     # 회차 시간 전후 견주기용 — 맞대기·목록 만들기에 걸린 초와 맞댄 글 수 (2026-10-29)
     summary["substitute_scan_seconds"] = round(our_index.scan_seconds, 2) if our_index else 0.0

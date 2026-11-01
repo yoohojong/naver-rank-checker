@@ -1145,9 +1145,8 @@ class TestD024Guard:
         D-024 (2026-05-14): 직접 frozenset 검증 = 미래 회귀 방지 가드.
         """
         assert HEADER_TYPE not in SYSTEM_OUTPUT_COLUMNS
-        # 허용 4 컬럼 + 2026-10-29 D-062 시스템 출력 '대체 노출'(사장님 승인 10-29 17:5x)
-        from src.sheets import HEADER_SUBSTITUTE
-        assert SYSTEM_OUTPUT_COLUMNS == frozenset({HEADER_AREA, HEADER_L, HEADER_M, HEADER_JISIKIN, HEADER_SUBSTITUTE})
+        # 허용 4 컬럼 (2026-10-29 D-062 '대체 노출' 칸은 2026-11-01 사장님 결정으로 뺌 — K 칸에 덮어 보임)
+        assert SYSTEM_OUTPUT_COLUMNS == frozenset({HEADER_AREA, HEADER_L, HEADER_M, HEADER_JISIKIN})
 
     def test_HEADER_TYPE_in_mix_update_거부(self):
         """유형(입력) + 노출영역(출력) mix update 시 = 노출영역만 write.
@@ -1341,12 +1340,11 @@ class TestD026EmptyLinkColumnGuard:
         assert HEADER_JISIKIN in SYSTEM_OUTPUT_COLUMNS_EMPTY_LINK
         # HEADER_TYPE 포함 X (= D-024 가드 유지)
         assert HEADER_TYPE not in SYSTEM_OUTPUT_COLUMNS_EMPTY_LINK
-        # 정확히 6 컬럼 = 4 시스템 + HEADER_LINK + 2026-10-29 D-062 시스템 출력 '대체 노출'(사장님 승인 10-29 17:5x).
-        # 개수만 보지 않고 집합 전체를 못 박는다 — 새 칸은 '대체 노출' 하나만 늘었다.
-        from src.sheets import HEADER_SUBSTITUTE
+        # 정확히 5 컬럼 = 4 시스템 + HEADER_LINK. 개수만 보지 않고 집합 전체를 못 박는다
+        # (2026-10-29 D-062 '대체 노출' 칸은 2026-11-01 사장님 결정으로 뺌 — K 칸에 덮어 보임).
         assert SYSTEM_OUTPUT_COLUMNS_EMPTY_LINK == frozenset(
-            {HEADER_AREA, HEADER_L, HEADER_M, HEADER_JISIKIN, HEADER_LINK, HEADER_SUBSTITUTE})
-        assert len(SYSTEM_OUTPUT_COLUMNS_EMPTY_LINK) == 6
+            {HEADER_AREA, HEADER_L, HEADER_M, HEADER_JISIKIN, HEADER_LINK})
+        assert len(SYSTEM_OUTPUT_COLUMNS_EMPTY_LINK) == 5
 
 
 class TestExposureResultAlignment:

@@ -286,22 +286,23 @@ def test_회차_끄고_켜도_시트_쓰기와_검색_수가_같고_기록만_�
     (tmp_path / "on").mkdir()
     s0, w0, n0 = _run_cycle(tmp_path / "off", monkeypatch, enabled=False)
     s1, w1, n1 = _run_cycle(tmp_path / "on", monkeypatch, enabled=True)
-    # 시트에 가는 값: 켬 = 끔 + '대체 노출' 칸 하나만 더해짐(D-062 사장님 승인 10-29 17:5x). K/L/M/O·그 밖 칸은 같다.
+    # 시트에 가는 값: 켬 = 끔 + 1위 대체 줄에만 K 덮어쓰기 표시(K_OVERLAY_KEY = 그 글 주소) 하나.
+    # K/L/M/O 판정 값 · 그 밖 칸은 같다(2026-11-01 사장님 "노출영역칸이지" — 따로 칸 없음).
     assert w0 and len(w0) == len(w1)
     from src.sheets import HEADER_SUBSTITUTE
-    assert all(HEADER_SUBSTITUTE not in dict(cols) for _, _, cols in w0)  # 끔 = 칸 쓰기 없음
-    sub_cells = {}
+    key = substitute.K_OVERLAY_KEY
+    assert all(key not in dict(cols) and HEADER_SUBSTITUTE not in dict(cols) for _, _, cols in w0)  # 끔 = 표시 없음
+    overlay = {}
     for (t0, r0, c0), (t1, r1, c1) in zip(w0, w1):
         c1 = dict(c1)
         assert (t0, r0) == (t1, r1)
-        sub_cells[r1] = c1.pop(HEADER_SUBSTITUTE)  # 켬 = 줄마다 그 칸이 꼭 있다
-        assert c1 == dict(c0), r1  # 더해진 것은 그 칸 하나뿐
+        assert HEADER_SUBSTITUTE not in c1  # 옛 '대체 노출' 칸은 쓰지 않는다
+        overlay[r1] = c1.pop(key, "")
+        assert c1 == dict(c0), r1  # 더해진 것은 덮어쓰기 표시 하나뿐
     assert all("_substitute" not in dict(cols) for _, _, cols in w1)
-    # 2행 = 옛 글 1위 + 시트 다른 글 2위(출처 다 읽음 = 완전 확인) · 3행 = 제 글 찾음 = 맞대지 않아 빈칸
-    # 2026-11-01: 시트 칸에는 1위 한 개만('대체노출 1위 <링크>') · 2위는 기록 파일에만
-    assert sub_cells[2].startswith("대체노출 1위 https://cafe.naver.com/ccrs5500/777989")
-    assert "cantsb/3406915" not in sub_cells[2] and " / " not in sub_cells[2]
-    assert sub_cells[3] == ""
+    # 2행 = 옛 글 1위 + 시트 다른 글 2위(출처 다 읽음 = 완전 확인) → K 를 1위 글 링크로 덮음 · 3행 = 제 글 찾음 = 덮지 않음
+    assert overlay[2].startswith("https://cafe.naver.com/ccrs5500/777989")
+    assert overlay[3] == ""
     # 빈 링크 줄은 시트 지금 링크(all_known_links)가 비면 원래도 검색하지 않는다(고침 전과 같음).
     # 이 시험은 카페 허용 목록이 비어 있어 2번(링크 줄 2개)만 검색한다.
     assert n0 == n1 == 2

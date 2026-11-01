@@ -23,7 +23,9 @@ from src.crawler import CafeStatus
 from src.health import HealthMonitor
 from src.main import _process_row
 from src.parser import OurPostHit
-from src.sheets import HEADER_AREA, HEADER_SUBSTITUTE, RowUpdate
+from src.sheets import HEADER_AREA, RowUpdate
+
+OVERLAY = substitute.K_OVERLAY_KEY  # 2026-11-01: 1위 대체면 K 칸을 그 글 링크로 덮는 표시(값 = 주소)
 
 FIX = Path(__file__).resolve().parents[1] / "fixtures" / "naver"
 STAMP = "10/30 09:00"
@@ -74,7 +76,7 @@ def _one_row_pipeline(idx, row: dict):
     updates = {TAB: [RowUpdate(row=row["_row"], columns=cols)]}
     ctx = {(TAB, row["_row"]): row}
     recs = substitute.collect_rows(updates, ctx, "t", "fixed")
-    substitute.apply_cells(updates, recs, HEADER_SUBSTITUTE, enabled=True, index_error="")
+    substitute.apply_cells(updates, recs, enabled=True, index_error="")
     trace = build_update_trace(updates, ctx, [], substitute_by_row={(TAB, r["row"]): r for r in recs})
     return cols, recs, trace, _counter().count(trace, recs)
 
@@ -93,7 +95,7 @@ def test_출처_못읽음_대체없음은_확인못함으로_끝까지(name, led
     assert rec["error"].startswith("옛 글 출처 못 읽음:")
     for src, err in (("글장부", ledger_err), ("이력", archive_err)):
         assert (f"{src}({err})" in rec["error"]) is bool(err)
-    assert cols[HEADER_SUBSTITUTE] == ""  # '확인 못 함' 글자를 시트에 쓰지 않음(11-01)
+    assert OVERLAY not in cols  # 대체 없음 = K 평소 값 · '확인 못 함' 글자는 어디에도 안 씀(11-01)
     assert trace[0]["substitute_error"] == rec["error"] and trace[0]["substitute_complete"] is False
     assert cnt["전체"]["맞대기실패"] == 1 and cnt["전체"]["대체"] == 0 and cnt["전체"]["대체_확인못함"] == 0
 
@@ -106,7 +108,7 @@ def test_출처_못읽음_부분자료로_찾은_대체는_완전확인으로_�
     cols, recs, trace, cnt = _one_row_pipeline(idx, _row(MISSING))
     rec = recs[0]
     assert rec["substitute_count"] == 1 and rec["complete"] is False and rec["error"]
-    assert cols[HEADER_SUBSTITUTE] == ""  # 찾은 것이 2위뿐 = 시트 칸 빈칸(11-01) · 기록에는 hits 그대로
+    assert OVERLAY not in cols  # 찾은 것이 2위뿐 = K 평소 값(11-01) · 기록에는 hits 그대로
     assert rec["substitute_cell"].startswith(f"인기글 2위 {OTHER_SHEET}")
     assert trace[0]["substitute_complete"] is False and trace[0]["substitute_count"] == 1
     t = cnt["전체"]
@@ -118,12 +120,12 @@ def test_출처_다_읽으면_종전대로_빈칸과_대체():
     idx = substitute.build_index({TAB: [_row(OTHER_SHEET, keyword="x", r=10)]}, [], [])
     cols, recs, trace, cnt = _one_row_pipeline(idx, _row(MISSING))
     assert recs[0]["error"] == "" and recs[0]["complete"] is True
-    assert cols[HEADER_SUBSTITUTE] == ""  # 2위 대체는 시트 칸에 적지 않음(11-01)
+    assert OVERLAY not in cols  # 2위 대체는 K 를 덮지 않음(11-01)
     assert recs[0]["substitute_cell"].startswith(f"인기글 2위 {OTHER_SHEET}")  # 기록에는 남음
     assert (cnt["전체"]["대체"], cnt["전체"]["애프터"], cnt["전체"]["맞대기실패"]) == (1, 1, 0)
     idx0 = substitute.build_index({TAB: [_row(NOWHERE, keyword="x", r=10)]}, [], [])
     cols0, recs0, _, cnt0 = _one_row_pipeline(idx0, _row(MISSING))
-    assert cols0[HEADER_SUBSTITUTE] == "" and recs0[0]["complete"] is True
+    assert OVERLAY not in cols0 and recs0[0]["complete"] is True
     assert cnt0["전체"]["맞대기실패"] == 0
 
 
@@ -198,14 +200,14 @@ def test_회차_출처_실패가_기록_시트칸_trace_집계까지(tmp_path, m
     # 글장부를 읽었으면 옛 글(1위)도 찾고, 못 읽었으면 시트 다른 글(2위)만 — 어느 쪽이든 부분 자료
     urls = [h["url"].split("?")[0] for h in rec["hits"]]
     assert urls == ([OTHER_SHEET] if ledger_fail else [ON_PAGE, OTHER_SHEET])
-    cell = writes[(TAB, 2)][HEADER_SUBSTITUTE]
-    # 11-01: 출처 오류가 있어도 1위 대체(ON_PAGE)를 찾았으면 1위 글자 · 2위(OTHER_SHEET)뿐이면 빈칸
+    over = writes[(TAB, 2)].get(OVERLAY, "")
+    # 11-01: 출처 오류가 있어도 1위 대체(ON_PAGE)를 찾았으면 K 를 그 글 링크로 덮음 · 2위(OTHER_SHEET)뿐이면 덮지 않음
     if ledger_fail:
-        assert cell == ""
+        assert over == ""
     else:
-        assert cell.startswith(f"대체노출 1위 {ON_PAGE}")
-    assert "확인 못 함" not in cell
-    assert writes[(TAB, 3)][HEADER_SUBSTITUTE] == ""  # 제 글 찾은 줄 = 맞대지 않음
+        assert over.startswith(ON_PAGE)
+    assert all("확인 못 함" not in str(v) for v in writes[(TAB, 2)].values())
+    assert OVERLAY not in writes[(TAB, 3)]  # 제 글 찾은 줄 = 맞대지 않음
     assert writes[(TAB, 2)][HEADER_AREA].startswith("미노출")  # K 그대로
     assert summary["substitute_scan_errors"] == 1 and summary["substitute_rows_with_hits_partial"] == 1
     tr = {r["row"]: r for r in trace}

@@ -81,14 +81,15 @@ CAFE_HISTORY_CLEAR_DAYS = 3
 # 한 번이라도 카페 구좌 1위 달성하면 "Y"(영구). 이후엔 떨어져도 실패 색칠 안 함.
 # 사장님 2026-07-16: "한번이라도 1위 떴으면 그 후 누락돼도 상관없는 키워드". 색칠(연노랑~빨강)=1위 무경험만.
 HEADER_RAW_CAFE_EVER_ONETOP = "raw_카페1등달성"
-# 2026-10-29 대체 노출 (사장님 승인 10-29 17:5x "기존에 하던거랑 그거까지 해서"): 제 글을 못 찾은 줄에
-# 같은 검색 화면에 뜬 우리 다른 글을 적는 시스템 출력 칸. 사장님 입력 칸이 아니다.
-# 수식 모드 = 숨김 raw_대체노출 에 값을 쓰고, 보이는 '대체 노출' 은 K/L/M/O 와 같은 수식(입력이 바뀌면 빈칸).
-# 만들기·쓰기는 SUBSTITUTE_SCAN 이 켜졌을 때만(src/substitute.py). 칸 위치 = 맨 오른쪽에 덧붙임(열 끼워 넣기 X).
+# 2026-10-29 대체 노출: 처음엔 맨 오른쪽에 따로 칸('대체 노출' · 수식 모드 숨김 'raw_대체노출')을 두었다.
+# 2026-11-01 사장님 "대체노출 열이 살아있어" · "아니지 지금 노출영역칸이지" → 따로 칸 없이 노출영역(K) 칸을
+# '대체노출 1위'(그 글 링크)로 덮어 보인다. 아래 두 이름은 회차 앞에 없앨 옛 칸의 머리글로만 쓴다(ensure_substitute_k).
 HEADER_SUBSTITUTE = "대체 노출"
 HEADER_RAW_SUBSTITUTE = "raw_대체노출"
-# 2026-11-01 사장님 "표기할떄 아예 대체노출 1위 초록색 링크": '대체 노출' 칸 글자가 '대체노출 1위' 로 시작하면 초록 글자.
-# 칸마다 색칠하지 않고 조건부 서식 규칙 하나로 건다(수식 모드의 보이는 수식 칸에도 결과 글자로 맞음).
+OLD_SUBSTITUTE_HEADERS = (HEADER_SUBSTITUTE, HEADER_RAW_SUBSTITUTE)
+# 2026-11-01 사장님 "표기할떄 아예 대체노출 1위 초록색 링크": K 칸 글자가 '대체노출 1위' 로 시작하면 초록 글자.
+# 칸마다 색칠하지 않고 조건부 서식 규칙 하나로 건다(수식 모드의 보이는 K 수식 칸에도 결과 글자로 맞음).
+# K 칸 배경(_background_color_for_k · 직접 서식)은 판정 값대로 두고 글자색만 바꾼다.
 COLOR_SUBSTITUTE_RANK1_TEXT = {"red": 24 / 255, "green": 128 / 255, "blue": 56 / 255}  # #188038
 
 STALE_DISPLAY_K = "재검사필요"
@@ -119,7 +120,6 @@ STALE_FORMULA_WRITE_COLUMNS = frozenset({
     HEADER_RAW_CAFE_FAIL_MAX,
     HEADER_RAW_CAFE_ONETOP_SINCE,
     HEADER_RAW_CAFE_EVER_ONETOP,
-    HEADER_RAW_SUBSTITUTE,             # 2026-10-29 대체 노출 — 칸이 있을 때만 쓰임(SUBSTITUTE_SCAN 켬 + ensure_substitute_columns)
 })
 
 # D-023 (2026-05-14) 영구 룰: 사장님 시트 사용자 입력 컬럼 = 자동 갱신 절대 X.
@@ -129,14 +129,14 @@ STALE_FORMULA_WRITE_COLUMNS = frozenset({
 # 근거: T-M14.2 commit 10c1ca5 = 사장님 작업 link silent 덮어쓰기 사고 → D-023 신규 영구 가드.
 # D-024 (2026-05-14) 추가: 유형(C) = 사장님 의도 기록 = 보호 (T-M13 학습 정합 + D-005 폐기, D-024 적용).
 # critic Opus 검증 후 사장님 단호 시그널 "ㄱ" (= B+예) 정합 일괄 적용.
-# 2026-10-29 D-062: 시스템 출력 칸 '대체 노출' 하나 추가(사장님 승인 10-29 17:5x). 그 밖은 그대로.
-SYSTEM_OUTPUT_COLUMNS = frozenset({HEADER_AREA, HEADER_L, HEADER_M, HEADER_JISIKIN, HEADER_SUBSTITUTE})
+# 2026-10-29 D-062 로 '대체 노출' 칸을 더했다가 2026-11-01 사장님 결정으로 뺐다(K 칸에 덮어 보임 — 같은 4칸).
+SYSTEM_OUTPUT_COLUMNS = frozenset({HEADER_AREA, HEADER_L, HEADER_M, HEADER_JISIKIN})
 
 # D-026 Phase C+D (2026-05-16) 부분 완화: 빈 link 행 = 자동 채움 logic 허용.
 # main.py 가 빈 link 행 + 키워드 검색 결과에 다른 행 우리 link 매치 시 = K="중복노출" + link 자동 채움.
 # 사장님 시점 = 새 노출 자동 발견 = HEADER_LINK 채움 허용 (다만 기존 link 행 = D-023 가드 그대로 적용).
 # 적용 규칙: write_results 가 행 현재 link 값 read 후 = 빈 link 행만 EMPTY_LINK 화이트리스트 사용.
-SYSTEM_OUTPUT_COLUMNS_EMPTY_LINK = frozenset({HEADER_AREA, HEADER_L, HEADER_M, HEADER_JISIKIN, HEADER_LINK, HEADER_SUBSTITUTE})
+SYSTEM_OUTPUT_COLUMNS_EMPTY_LINK = frozenset({HEADER_AREA, HEADER_L, HEADER_M, HEADER_JISIKIN, HEADER_LINK})
 PLAIN_EXPOSED_BASES = frozenset({"AB", "스마트블록", "인기글"})
 
 # 데이터 탭 아닌 특수 탭 — load_all_data_tabs 가 skip.
@@ -421,6 +421,20 @@ class SheetsClient:
             )
         return f'=IF(AND(LEN({current_ref})>0,{current_ref}={last_ref}),{raw_ref},"")'
 
+    def _build_k_overlay_formula(self, mapping: dict[str, int], row: int, url: str) -> str:
+        """수식 모드 보이는 K — 입력 키가 같으면 '대체노출 1위'(그 글 링크), 아니면 평소 K 수식 그대로.
+
+        2026-11-01 사장님 "노출영역칸이지". 입력(키워드 · 링크)이 바뀌면 평소 수식이 '재검사필요'/빈칸을 보인다.
+        숨김 raw_노출영역(판정 값)은 그대로라 다음 회차 판정 · 실패 횟수 · 이력은 덮어쓰기를 모른다.
+        회차 앞 ensure_stale_formula_mode 가 K 칸 전부를 평소 수식으로 다시 쓰므로, 이번 회차에 1위 대체가
+        없는 줄은 저절로 평소 값으로 돌아온다.
+        """
+        current_ref = gspread.utils.rowcol_to_a1(row, mapping[HEADER_CURRENT_INPUT_KEY] + 1)
+        last_ref = gspread.utils.rowcol_to_a1(row, mapping[HEADER_LAST_CHECKED_INPUT_KEY] + 1)
+        normal = self._build_visible_output_formula(mapping, row, HEADER_RAW_AREA, k_column=True)
+        return (f'=IF(AND(LEN({current_ref})>0,{current_ref}={last_ref}),'
+                f'{_k_overlay_hyperlink(url)},{normal[1:]})')
+
     def ensure_stale_formula_mode(self, tab_name: str, rows: list[dict]) -> dict:
         """Ensure hidden raw/input-key columns and visible K/L/M/O formulas exist."""
         ws = self.spreadsheet.worksheet(tab_name)
@@ -548,164 +562,77 @@ class SheetsClient:
             )
         return {"headers_added": len(missing_headers), "rows_backfilled": rows_backfilled, "formula_rows": max(0, max_row - 1)}
 
-    def ensure_substitute_columns(self, tab_name: str, rows: list[dict], *, formula_mode: bool) -> dict:
-        """2026-10-29 대체 노출 칸 만들기 (사장님 승인 10-29 17:5x). SUBSTITUTE_SCAN 켬일 때만 main 이 부른다.
+    def ensure_substitute_k(self, tab_name: str) -> dict:
+        """2026-11-01 대체 노출 1위를 K 칸에 덮어 보이기 — 회차 앞 한 번(SUBSTITUTE_SCAN 켬일 때만 main 이 부른다).
 
-        - 머리글이 없을 때만 맨 오른쪽에 덧붙인다(열 끼워 넣기 X · 이미 있으면 그대로 = 두 번 돌려도 1개).
-        - 수식 모드: 숨김 'raw_대체노출' 도 덧붙여 숨기고, 보이는 '대체 노출' 은 K/L/M/O 와 같은 수식
-          (입력 키가 바뀌면 빈칸). 수식 아닌 길: 보이는 칸 하나만 — write_results 가 값을 바로 쓴다.
-        - 사장님 입력 칸은 읽기만 한다(D-023).
-        - 2026-11-01: 값 칸의 옛 형식 값 비우기(stale_cleared) · 1위 초록 글자 규칙 하나로 맞추기(formats_*).
+        ① 옛 '대체 노출' · 'raw_대체노출' 칸을 없앤다(_remove_old_substitute_columns — 머리글이 정확히 그 이름이고
+           지우기 직전에 다시 읽은 1행에서도 같을 때만). 사장님 "대체노출 열이 살아있어".
+        ② 노출영역(K) 칸(2행~끝)에 '대체노출 1위' 로 시작 → 초록 글자 규칙을 딱 하나로 맞춘다.
+        K 값 · K 배경색 · K 의 다른 조건부 서식 · 다른 열 · 행은 손대지 않는다. 실패해도 회차는 계속.
         """
         ws = self.spreadsheet.worksheet(tab_name)
-        headers = ws.row_values(1)
-        mapping = map_headers_to_columns(headers)
-        wanted = [HEADER_SUBSTITUTE] + ([HEADER_RAW_SUBSTITUTE] if formula_mode else [])
-        if formula_mode:
-            need = [HEADER_CURRENT_INPUT_KEY, HEADER_LAST_CHECKED_INPUT_KEY]
-            missing_need = [h for h in need if h not in mapping]
-            if missing_need:
-                print(f"  [대체노출] {tab_name}: 수식 모드 칸 {missing_need} 없음 — 대체 노출 칸 만들지 않음")
-                return {"headers_added": 0, "formula_rows": 0}
-        missing = [h for h in wanted if h not in mapping]
-        if missing:
-            try:
-                col_count = int(getattr(ws, "col_count", len(headers)) or len(headers))
-            except (TypeError, ValueError):
-                col_count = len(headers)
-            append_start_col = max(len(headers) + 1, 17)  # P1 = 시각 칸 자리 비워 둠 (ensure_stale_formula_mode 와 같은 규칙)
-            needed_cols = max(0, append_start_col + len(missing) - 1 - col_count)
-            if needed_cols:
-                _sheets_api_retry(lambda: ws.add_cols(needed_cols), ctx=f"{tab_name} (substitute add cols)")
-            header_cells = [
-                {"range": gspread.utils.rowcol_to_a1(1, append_start_col + offset), "values": [[h]]}
-                for offset, h in enumerate(missing)
-            ]
-            _sheets_api_retry(
-                lambda: ws.batch_update(header_cells, value_input_option="RAW"),
-                ctx=f"{tab_name} (substitute headers)",
-            )
-            expanded = list(headers)
-            while len(expanded) < append_start_col - 1:
-                expanded.append("")
-            expanded.extend(missing)
-            headers = expanded
-            mapping = map_headers_to_columns(headers)
+        stats = {"columns_removed": self._remove_old_substitute_columns(ws, tab_name),
+                 "formats_added": 0, "formats_fixed": 0, "formats_removed": 0}
+        try:
+            mapping = map_headers_to_columns(
+                _sheets_api_retry(lambda: ws.row_values(1), ctx=f"{tab_name} (substitute K header)"))
+        except Exception as e:  # noqa: BLE001 — 머리글을 못 읽으면 서식만 못 맞춤
+            print(f"  [대체노출] {tab_name}: 머리글 못 읽음 = {type(e).__name__}: {e} — 초록 글자 규칙 건너뜀"[:200])
+            return stats
+        if HEADER_AREA not in mapping:
+            print(f"  [대체노출] {tab_name}: '{HEADER_AREA}' 칸 없음 — 초록 글자 규칙 건너뜀")
+            return stats
+        stats.update(self._ensure_substitute_rank1_format(ws, tab_name, mapping[HEADER_AREA]))
+        return stats
 
-        # 2026-11-01 GPT 1차 지적 A: 이번 회차에 처리 못 하는 줄에 남은 옛 형식 값을 회차 앞에 비운다.
-        # 값 칸 = 수식 모드면 숨김 raw(보이는 칸은 수식이라 손대지 않음), 아니면 보이는 칸. 이번에 새로 만든 칸은 빈칸.
-        value_header = HEADER_RAW_SUBSTITUTE if formula_mode else HEADER_SUBSTITUTE
-        stale_cleared = 0
-        if value_header not in missing:
-            stale_cleared = self._clear_stale_substitute_values(
-                ws, tab_name, rows, mapping[value_header], value_header,
-            )
+    def _remove_old_substitute_columns(self, ws, tab_name: str) -> int:
+        """옛 '대체 노출' · 'raw_대체노출' 칸을 한 칸씩 없앤다. 돌려주는 값 = 없앤 칸 수.
 
-        formula_rows = 0
-        if formula_mode:
-            max_row = max([int(row.get("_row") or 0) for row in (rows or [])] + [1])
-            if max_row >= 2:
-                col_letter = _column_letter(mapping[HEADER_SUBSTITUTE] + 1)
-                values = [
-                    [self._build_visible_output_formula(mapping, r, HEADER_RAW_SUBSTITUTE)]
-                    for r in range(2, max_row + 1)
-                ]
-                _sheets_api_retry(
-                    lambda: ws.batch_update(
-                        [{"range": f"{col_letter}2:{col_letter}{max_row}", "values": values}],
-                        value_input_option="USER_ENTERED",
-                    ),
-                    ctx=f"{tab_name} (substitute visible formula)",
-                )
-                formula_rows = max_row - 1
-        format_stats = self._ensure_substitute_rank1_format(ws, tab_name, mapping[HEADER_SUBSTITUTE])
-        if formula_mode:
-            idx = mapping[HEADER_RAW_SUBSTITUTE]
-            _sheets_api_retry(
-                lambda: self.spreadsheet.batch_update({"requests": [{
-                    "updateDimensionProperties": {
-                        "range": {"sheetId": ws.id, "dimension": "COLUMNS", "startIndex": idx, "endIndex": idx + 1},
-                        "properties": {"hiddenByUser": True},
-                        "fields": "hiddenByUser",
-                    }
-                }]}),
-                ctx=f"{tab_name} (substitute hide raw)",
-            )
-        return {"headers_added": len(missing), "formula_rows": formula_rows,
-                "stale_cleared": stale_cleared, **format_stats}
-
-    def _clear_stale_substitute_values(self, ws, tab_name: str, rows: list[dict], col_idx: int,
-                                       value_header: str) -> int:
-        """'대체 노출' 값 칸에서 '대체노출 1위' 로 시작하지 않는 비지 않은 값을 batch 한 번으로 빈칸으로 만든다.
-
-        2026-11-01 GPT 2차 지적 1: 회차 앞에 읽은 값 · 행 번호로 지울 칸을 정하면, 읽은 뒤 사장님이 줄을
-        정렬했을 때 지금 그 자리에 있는 정상 '대체노출 1위 …' 값을 지운다. 그래서
-        - 회차 앞 읽기(rows)는 '비울 것이 있나'만 본다 — 없으면 시트를 다시 읽지도 않는다(정렬은 옛 값을 만들지 않음).
-        - 지울 칸은 비우기 직전에 그 값 칸 하나만 다시 읽어(수식 모드면 숨김 raw 칸) 지금 값으로 정한다.
-        - 쓰기가 503 류로 실패하면 같은 요청을 그대로 다시 보내지 않고, 다시 읽고 다시 정한 뒤 보낸다.
-        - 다시 읽기가 실패하면 지우지 않고 넘어간다(옛 값이 남을 뿐).
-        그 칸 하나만 쓴다 — K/L/M/O · 검사 기준값 · 사장님 입력 칸은 손대지 않는다.
-        실패해도 회차는 계속(돌려주는 값 0). 돌려주는 값 = 비운 칸 수.
+        안전장치:
+        - 머리글이 정확히 그 이름인 열만(앞뒤 빈칸만 무시 · '대체 노출 메모' 같은 비슷한 이름은 안 지움).
+        - 지우기 직전에 1행을 다시 읽어 같은 자리에 같은 머리글이 있을 때만 지운다(그 사이 열을 끼우거나 옮기면 안 지움).
+        - 그 칸에만 걸린 우리 초록 규칙('대체노출 1위' 로 시작)은 같은 요청에서 함께 지운다(남의 규칙 · 넓은 범위 규칙은 그대로).
+        - 한 번에 한 칸 · 오른쪽 칸부터 · 지운 뒤 다시 읽고 다음 칸을 정한다. 행은 지우지 않는다.
+        - 어느 단계든 실패하면 거기서 멈추고 회차는 계속(남은 칸은 다음 회차에 다시 시도). 같은 요청을 그대로 다시 보내지 않는다.
         """
-        from src.substitute import RANK1_CELL_PREFIX  # 지연 import — substitute 가 시트 모듈을 몰라도 되게
-
-        def is_stale(value) -> bool:
-            text = str(value or "").strip()
-            return bool(text) and not text.startswith(RANK1_CELL_PREFIX)
-
-        seen_stale = False
-        for row in rows or []:
+        removed = 0
+        for _ in range(len(OLD_SUBSTITUTE_HEADERS) * 3):  # 같은 이름이 여럿이어도 끝나게
             try:
-                row_num = int(row.get("_row") or 0)
-            except (TypeError, ValueError):
-                continue
-            if row_num >= 2 and is_stale(row.get(value_header)):
-                seen_stale = True
-                break
-        if not seen_stale:
-            return 0
-
-        col_letter = _column_letter(col_idx + 1)
-        for attempt in range(SHEETS_RETRY_MAX_ATTEMPTS):
+                headers = _sheets_api_retry(lambda: ws.row_values(1), ctx=f"{tab_name} (old substitute header)")
+            except Exception as e:  # noqa: BLE001
+                print(f"  [대체노출] {tab_name}: 옛 칸 머리글 못 읽음 = {type(e).__name__}: {e} — 안 지움"[:200])
+                return removed
+            targets = [i for i, h in enumerate(headers or []) if str(h).strip() in OLD_SUBSTITUTE_HEADERS]
+            if not targets:
+                return removed
+            idx = targets[-1]
+            name = str(headers[idx]).strip()
+            self._cf_by_sheet = None  # 규칙 번호는 지우기 직전 목록으로 정한다
+            by_sheet = self._conditional_formats_by_sheet()
+            rules = (by_sheet or {}).get(ws.id, [])
+            rule_idx = [i for i, r in enumerate(rules) if _rank1_rule_only_in_column(r, idx)]
             try:
-                current = _sheets_api_retry(
-                    lambda: ws.col_values(col_idx + 1),
-                    ctx=f"{tab_name} (substitute stale reread)",
-                )
-            except Exception as e:  # noqa: BLE001 — 지금 값을 모르면 지우지 않는다
-                print(f"  [대체노출] {tab_name}: 옛 형식 값 칸 다시 읽기 실패 = {type(e).__name__}: {e} — 안 지움"[:200])
-                return 0
-            if not isinstance(current, list):
-                return 0
-            # 같은 회사 검토 지적: 머리글을 읽은 뒤 사장님이 열을 끼우거나 옮기면 같은 번호가 다른 칸(K/L/M/O · 입력 칸)이 된다
-            # → 다시 읽은 1행이 그 머리글이 아니면 지우지 않는다(재시도 때도 매번 같은 확인)
-            if not current or str(current[0]).strip() != value_header:
-                print(f"  [대체노출] {tab_name}: {col_letter}1 머리글이 '{value_header}' 가 아님(열이 옮겨짐) — 안 지움"[:200])
-                return 0
-            # col_values 는 1행(머리글)부터 · 끝의 빈칸은 잘린 채 돌려준다 → i 번째 = i+1 행
-            stale_rows = [i + 1 for i, value in enumerate(current) if i >= 1 and is_stale(value)]
-            if not stale_rows:
-                return 0
-            cells = [{"range": f"{col_letter}{r}", "values": [[""]]} for r in stale_rows]
+                now = _sheets_api_retry(lambda: ws.row_values(1), ctx=f"{tab_name} (old substitute reread)")
+            except Exception as e:  # noqa: BLE001
+                print(f"  [대체노출] {tab_name}: 지우기 직전 머리글 다시 읽기 실패 = {type(e).__name__}: {e} — 안 지움"[:200])
+                return removed
+            if idx >= len(now or []) or str(now[idx]).strip() != name:
+                print(f"  [대체노출] {tab_name}: {_column_letter(idx + 1)}1 머리글이 '{name}' 가 아님(열이 옮겨짐) — 안 지움")
+                return removed
+            requests = [{"deleteConditionalFormatRule": {"sheetId": ws.id, "index": i}} for i in reversed(rule_idx)]
+            requests.append({"deleteDimension": {"range": {
+                "sheetId": ws.id, "dimension": "COLUMNS", "startIndex": idx, "endIndex": idx + 1}}})
             try:
-                ws.batch_update(cells, value_input_option="RAW")
-            except Exception as e:  # noqa: BLE001 — 못 비움 = 옛 값이 남을 뿐, 회차는 계속
-                status = None
-                if isinstance(e, gspread.exceptions.APIError):
-                    try:
-                        status = e.response.status_code
-                    except Exception:  # noqa: BLE001
-                        status = None
-                if status in SHEETS_RETRY_STATUS_CODES and attempt < SHEETS_RETRY_MAX_ATTEMPTS - 1:
-                    wait = SHEETS_RETRY_BASE_SEC * (2 ** attempt)
-                    print(f"  [대체노출] {tab_name}: 옛 형식 값 비우기 HTTP {status} — {wait}s 뒤 다시 읽고 다시 정함")
-                    time.sleep(wait)
-                    continue
-                print(f"  [대체노출] {tab_name}: 옛 형식 값 {len(cells)}칸 못 비움 = {type(e).__name__}: {e}"[:200])
-                return 0
-            print(f"  [대체노출] {tab_name}: 옛 형식 값 {len(cells)}칸 비움({value_header})")
-            return len(cells)
-        return 0
+                self.spreadsheet.batch_update({"requests": requests})
+            except Exception as e:  # noqa: BLE001 — 서버엔 들어갔을 수 있다 → 다음 회차가 다시 읽고 정한다
+                self._cf_by_sheet = None
+                print(f"  [대체노출] {tab_name}: 옛 '{name}' 칸 못 없앰 = {type(e).__name__}: {e} — 다음 회차에 다시"[:200])
+                return removed
+            self._cf_by_sheet = None  # 열이 빠져 규칙 범위가 옮겨졌다 → 다음 판단은 다시 읽은 목록으로
+            removed += 1
+            print(f"  [대체노출] {tab_name}: 옛 '{name}' 칸({_column_letter(idx + 1)}) 없앰"
+                  + (f" · 그 칸 초록 규칙 {len(rule_idx)}개" if rule_idx else ""))
+        return removed
 
     def _conditional_formats_by_sheet(self) -> Optional[dict]:
         """{sheetId: [조건부 서식 규칙…]} — 회차에 한 번만 읽는다(탭마다 읽지 않음). 못 읽으면 None."""
@@ -733,7 +660,7 @@ class SheetsClient:
         return out
 
     def _ensure_substitute_rank1_format(self, ws, tab_name: str, col_idx: int) -> dict:
-        """'대체 노출' 칸(2행부터 끝까지)에 '대체노출 1위' 로 시작 → 초록 글자 규칙을 딱 하나로 맞춘다.
+        """K(노출영역) 칸(2행부터 끝까지)에 '대체노출 1위' 로 시작 → 초록 글자 규칙을 딱 하나로 맞춘다.
 
         우리 규칙 = 같은 조건(TEXT_STARTS_WITH '대체노출 1위') + 그 칸을 포함하는 범위(옆 칸까지 넓어도 — 2차 지적 2).
         - 없으면 하나 더함(formats_added).
@@ -887,9 +814,10 @@ class SheetsClient:
                 HEADER_RAW_JISIKIN: str(upd.columns.get(HEADER_JISIKIN, "") or ""),
                 HEADER_LAST_CHECKED_AT: checked_at,
             }
-            # 2026-10-29 대체 노출: main 이 SUBSTITUTE_SCAN 켬일 때만 이 키를 넣는다. 없으면 숨김 칸을 건드리지 않는다.
-            if HEADER_SUBSTITUTE in upd.columns:
-                payload[HEADER_RAW_SUBSTITUTE] = str(upd.columns.get(HEADER_SUBSTITUTE, "") or "")
+            # 2026-11-01 대체 노출 1위: 판정 값(raw_노출영역)은 그대로 두고 보이는 K 수식만 링크로 덮는다(_emit).
+            overlay_url = _k_overlay_url(upd.columns)
+            if overlay_url:
+                payload[_PAYLOAD_K_OVERLAY] = overlay_url
             if not sheet_read_ok:
                 legacy_writes.append((upd.row, payload, output_link))
                 continue
@@ -965,10 +893,19 @@ class SheetsClient:
         cells = []
         color_formats = []
         alignment_rows = []
+        k_formula_cells = []  # 2026-11-01 대체 노출 1위 — 보이는 K 수식(USER_ENTERED 로 따로 보냄)
+        k_overlay_ready = all(h in mapping for h in (
+            HEADER_AREA, HEADER_CURRENT_INPUT_KEY, HEADER_LAST_CHECKED_INPUT_KEY, HEADER_RAW_AREA))
 
         def _emit(target_row: int, payload: dict, output_link: str) -> None:
             current_link = _row_current_link(target_row)
             columns = dict(payload)
+            overlay_url = columns.pop(_PAYLOAD_K_OVERLAY, "")
+            if overlay_url and k_overlay_ready:
+                k_formula_cells.append({
+                    "range": gspread.utils.rowcol_to_a1(target_row, mapping[HEADER_AREA] + 1),
+                    "values": [[self._build_k_overlay_formula(mapping, target_row, overlay_url)]],
+                })
             if output_link and current_link != "SENTINEL" and not current_link:
                 columns[HEADER_LINK] = output_link
             for col_name, new_val in columns.items():
@@ -1077,11 +1014,16 @@ class SheetsClient:
         for chunk_start in range(0, len(cells), 500):
             chunk = cells[chunk_start:chunk_start + 500]
             _sheets_api_retry(lambda c=chunk: ws.batch_update(c, value_input_option="RAW"), ctx=f"{tab_name} (stale formula raw write)")
+        # 판정 값을 쓴 뒤에 보이는 K 를 덮는다(수식이 그 판정 값과 입력 키를 본다).
+        for chunk_start in range(0, len(k_formula_cells), 500):
+            chunk = k_formula_cells[chunk_start:chunk_start + 500]
+            _sheets_api_retry(lambda c=chunk: ws.batch_update(c, value_input_option="USER_ENTERED"),
+                              ctx=f"{tab_name} (substitute K overlay)")
         format_payload = color_formats + _exposure_result_alignment_formats(mapping, alignment_rows)
         for chunk_start in range(0, len(format_payload), 500):
             chunk = format_payload[chunk_start:chunk_start + 500]
             _sheets_api_retry(lambda c=chunk: ws.batch_format(c), ctx=f"{tab_name} (stale formula formats)")
-        return len(cells)
+        return len(cells) + len(k_formula_cells)
 
     def clear_stale_formula_cells(self, tab_name: str, row_numbers: list[int]) -> int:
         """T-M9.2 (2026-06-12, D-047): 행 복사 잔해 행의 숨김 시스템 칸만 초기화.
@@ -1167,6 +1109,7 @@ class SheetsClient:
             return "SENTINEL"
 
         cells = []
+        k_formula_cells = []  # 2026-11-01 대체 노출 1위 — K 칸 링크 수식(USER_ENTERED 로 따로 보냄)
         color_updates = []
         alignment_rows = []
         for upd in updates:
@@ -1187,7 +1130,8 @@ class SheetsClient:
                         f"M={upd.columns.get(HEADER_M)!r}, output_link={upd.columns.get(HEADER_LINK)!r})"
                     )
                     continue
-            row_cell_count_before = len(cells)
+            row_cell_count_before = len(cells) + len(k_formula_cells)
+            overlay_url = _k_overlay_url(upd.columns)
             for col_name, new_val in upd.columns.items():
                 if col_name not in mapping:
                     continue  # 사장님 시트에 없는 컬럼은 skip (예: blog_slot_rank)
@@ -1199,11 +1143,18 @@ class SheetsClient:
                     print(f"  [{guard_name}] '{col_name}' = write 거부 (행 {upd.row}, 현재 link 빈={not current_link})")
                     continue
                 col_idx = mapping[col_name] + 1  # gspread 1-indexed
+                if col_name == HEADER_AREA and overlay_url:
+                    # 보이는 글자만 '대체노출 1위'(링크). 다음 회차는 이 글자를 지난 판정으로 읽지 않는다(main._process_row).
+                    k_formula_cells.append({
+                        "range": gspread.utils.rowcol_to_a1(upd.row, col_idx),
+                        "values": [["=" + _k_overlay_hyperlink(overlay_url)]],
+                    })
+                    continue
                 cells.append({
                     "range": gspread.utils.rowcol_to_a1(upd.row, col_idx),
                     "values": [[new_val]],
                 })
-            if len(cells) > row_cell_count_before:
+            if len(cells) + len(k_formula_cells) > row_cell_count_before:
                 color_updates.append(upd)
                 if HEADER_AREA in upd.columns or HEADER_L in upd.columns or HEADER_M in upd.columns:
                     alignment_rows.append(upd.row)
@@ -1212,6 +1163,11 @@ class SheetsClient:
             _sheets_api_retry(
                 lambda: ws.batch_update(cells, value_input_option="RAW"),
                 ctx=tab_name,
+            )
+        if k_formula_cells:
+            _sheets_api_retry(
+                lambda: ws.batch_update(k_formula_cells, value_input_option="USER_ENTERED"),
+                ctx=f"{tab_name} (substitute K overlay)",
             )
 
         # D-043 (2026-05-23): 노출 상태는 초록, 미노출/누락/삭제는 같은 붉은색,
@@ -1233,7 +1189,7 @@ class SheetsClient:
                 lambda: ws.batch_format(format_payload),
                 ctx=f"{tab_name} (format)",
             )
-        return len(cells)
+        return len(cells) + len(k_formula_cells)
 
     def write_type_results(self, tab_name: str, updates: list["RowUpdate"]) -> int:
         """Write confirmed type-preview rows to the C column only.
@@ -1449,8 +1405,38 @@ def rank_result_to_columns(
     return cols
 
 
+_PAYLOAD_K_OVERLAY = "_k_overlay_url"  # write_stale_formula_results 의 줄 묶음(payload) 안에서만 쓰는 열쇠
+
+
+def _k_overlay_url(columns: dict) -> str:
+    """RowUpdate.columns 의 대체 노출 1위 주소(src.substitute.K_OVERLAY_KEY). http 로 시작하지 않으면 빈 글자."""
+    from src.substitute import K_OVERLAY_KEY  # 지연 import — substitute 가 시트 모듈을 몰라도 되게
+
+    url = str((columns or {}).get(K_OVERLAY_KEY) or "").strip()
+    return url if url.startswith("http") else ""
+
+
+def _k_overlay_hyperlink(url: str) -> str:
+    """HYPERLINK("주소","대체노출 1위") — '=' 없이(수식 안에 끼워 쓰려고). 주소의 큰따옴표는 두 번 써서 막는다."""
+    from src.substitute import RANK1_CELL_PREFIX
+
+    safe = str(url).replace('"', '""')
+    return f'HYPERLINK("{safe}","{RANK1_CELL_PREFIX}")'
+
+
+def _rank1_rule_only_in_column(rule: dict, col_idx: int) -> bool:
+    """옛 '대체 노출' 칸을 없앨 때 함께 지울 규칙 = 우리 초록 규칙이고 범위가 전부 그 한 칸 안."""
+    if not _is_rank1_rule(rule, col_idx):
+        return False
+    for rg in rule.get("ranges") or []:
+        rg = rg or {}
+        if rg.get("startColumnIndex", 0) != col_idx or rg.get("endColumnIndex") != col_idx + 1:
+            return False
+    return True
+
+
 def _rank1_rule_target(sheet_id: int, col_idx: int) -> dict:
-    """'대체 노출' 칸 1위 초록 글자 규칙의 맞는 모양(2행~끝 · 한 칸 · #188038)."""
+    """K(노출영역) 칸 1위 초록 글자 규칙의 맞는 모양(2행~끝 · 한 칸 · #188038)."""
     from src.substitute import RANK1_CELL_PREFIX  # 지연 import — substitute 가 시트 모듈을 몰라도 되게
 
     return {
