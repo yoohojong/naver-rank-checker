@@ -397,6 +397,34 @@ class SheetsClient:
         creds_dict = json.loads(service_account_json)
         self.gc = gspread.service_account_from_dict(creds_dict)
         self.spreadsheet = self.gc.open_by_key(spreadsheet_id)
+        # 탭 → 회차 앞에 그대로 둔 '대체노출 1위' K 수식의 줄 번호(ensure_stale_formula_mode 가 채움).
+        self._k_overlay_kept: dict[str, set[int]] = {}
+
+    def _read_k_overlay_formulas(self, ws, tab_name: str, col_letter: str, max_row: int,
+                                 quiet_fail: bool = False):
+        """K 칸 지금 수식 중 '대체노출 1위' 덮어쓰기 수식만 {줄: 수식}.
+
+        못 읽으면 빈 dict(회차 앞 — 예전처럼 전부 평소 수식). quiet_fail=True(회차 끝)면 None — 부르는 쪽이 대신할 값을 쓴다.
+        """
+        marker = f',"{_rank1_prefix()}")'
+        try:
+            got = _sheets_api_retry(
+                lambda: ws.get(f"{col_letter}2:{col_letter}{max_row}",
+                               value_render_option=gspread.utils.ValueRenderOption.formula),
+                ctx=f"{tab_name} (substitute K overlay read)",
+            )
+        except Exception as e:  # 읽기 실패는 덮어쓰기를 한 회차 잃을 뿐 — 회차는 멈추지 않는다
+            print(f"  [대체노출] {tab_name}: K 수식 읽기 실패 = {e}"
+                  + (" (회차 앞 줄 번호로 되돌림)" if quiet_fail else " (이번 회차 앞에는 전부 평소 수식)"))
+            return None if quiet_fail else {}
+        if not isinstance(got, list):
+            return None if quiet_fail else {}
+        out: dict[int, str] = {}
+        for i, cell_row in enumerate(got):
+            text = str(cell_row[0]) if cell_row else ""
+            if text.startswith("=") and "HYPERLINK(" in text and marker in text:
+                out[i + 2] = text
+        return out
 
     def _build_current_input_key_formula(self, mapping: dict[str, int], row: int) -> str:
         keyword_ref = gspread.utils.rowcol_to_a1(row, mapping[HEADER_KEYWORD] + 1)
@@ -426,8 +454,8 @@ class SheetsClient:
 
         2026-11-01 사장님 "노출영역칸이지". 입력(키워드 · 링크)이 바뀌면 평소 수식이 '재검사필요'/빈칸을 보인다.
         숨김 raw_노출영역(판정 값)은 그대로라 다음 회차 판정 · 실패 횟수 · 이력은 덮어쓰기를 모른다.
-        회차 앞 ensure_stale_formula_mode 가 K 칸 전부를 평소 수식으로 다시 쓰므로, 이번 회차에 1위 대체가
-        없는 줄은 저절로 평소 값으로 돌아온다.
+        회차 앞 ensure_stale_formula_mode 는 이 수식을 그대로 두고(회차가 쉬지 않고 이어 돌아 지우면 안 보였다),
+        회차 끝 쓰기가 기록하는 줄마다 이 수식 또는 평소 K 수식을 다시 써서 1위 대체가 사라진 줄을 되돌린다.
         """
         current_ref = gspread.utils.rowcol_to_a1(row, mapping[HEADER_CURRENT_INPUT_KEY] + 1)
         last_ref = gspread.utils.rowcol_to_a1(row, mapping[HEADER_LAST_CHECKED_INPUT_KEY] + 1)
@@ -521,11 +549,20 @@ class SheetsClient:
             ]
             if HEADER_JISIKIN in mapping:
                 formula_specs.append((HEADER_JISIKIN, HEADER_RAW_JISIKIN, False))
+            kept_overlay: dict[int, str] = {}
             for target_header, raw_header, is_k in formula_specs:
                 col = mapping[target_header] + 1
                 col_letter = _column_letter(col)
+                if is_k:
+                    # 2026-11-01 고침: 회차가 거의 쉬지 않고 이어 돌아, 회차 앞에 K 를 전부 평소 수식으로 되돌리면
+                    # '대체노출 1위' 가 몇 초만 보였다(11-01 18시 회차 13줄 → 다음 회차 시작에 전부 지워짐).
+                    # 덮어쓰기 수식은 회차 앞에서는 그대로 두고, 되돌리기는 회차 끝 쓰기(그 줄을 다시 잰 뒤)가 한다.
+                    kept_overlay = self._read_k_overlay_formulas(ws, tab_name, col_letter, max_row)
                 values = []
                 for row_num in range(2, max_row + 1):
+                    if is_k and row_num in kept_overlay:
+                        values.append([kept_overlay[row_num]])
+                        continue
                     formula = (
                         self._build_current_input_key_formula(mapping, row_num)
                         if target_header == HEADER_CURRENT_INPUT_KEY
@@ -537,6 +574,9 @@ class SheetsClient:
                 lambda: ws.batch_update(formula_ranges, value_input_option="USER_ENTERED"),
                 ctx=f"{tab_name} (stale formula visible formulas)",
             )
+            self._k_overlay_kept[tab_name] = set(kept_overlay)
+            if kept_overlay:
+                print(f"  [대체노출] {tab_name}: 지난 회차 '대체노출 1위' {len(kept_overlay)}줄은 회차 앞에 그대로 둠")
 
         hide_requests = []
         for header in STALE_FORMULA_HEADERS:
@@ -896,6 +936,15 @@ class SheetsClient:
         k_formula_cells = []  # 2026-11-01 대체 노출 1위 — 보이는 K 수식(USER_ENTERED 로 따로 보냄)
         k_overlay_ready = all(h in mapping for h in (
             HEADER_AREA, HEADER_CURRENT_INPUT_KEY, HEADER_LAST_CHECKED_INPUT_KEY, HEADER_RAW_AREA))
+        # 되돌릴 줄 = 쓰기 직전 K 칸이 '대체노출 1위' 덮어쓰기 수식인 줄. 회차 앞 줄 번호를 쓰지 않는다:
+        # 회차 도중 줄을 넣고 지우면 어긋난다(검토 지적). 못 읽으면 회차 앞에 그대로 둔 줄 번호로 대신한다.
+        kept_overlay_rows: set[int] = set(getattr(self, "_k_overlay_kept", {}).get(tab_name, set()))
+        if k_overlay_ready and kept_overlay_rows:
+            last_row = max([len(sheet_rows or []), max(kept_overlay_rows), max((u.row for u in updates), default=1)])
+            now_kept = self._read_k_overlay_formulas(
+                ws, tab_name, _column_letter(mapping[HEADER_AREA] + 1), max(2, last_row), quiet_fail=True)
+            if now_kept is not None:
+                kept_overlay_rows = set(now_kept)
 
         def _emit(target_row: int, payload: dict, output_link: str) -> None:
             current_link = _row_current_link(target_row)
@@ -905,6 +954,12 @@ class SheetsClient:
                 k_formula_cells.append({
                     "range": gspread.utils.rowcol_to_a1(target_row, mapping[HEADER_AREA] + 1),
                     "values": [[self._build_k_overlay_formula(mapping, target_row, overlay_url)]],
+                })
+            elif k_overlay_ready and target_row in kept_overlay_rows:
+                # 지난 덮어쓰기 — 다시 재 보니 이번엔 1위 대체가 아님 → 평소 K 수식으로 되돌림
+                k_formula_cells.append({
+                    "range": gspread.utils.rowcol_to_a1(target_row, mapping[HEADER_AREA] + 1),
+                    "values": [[self._build_visible_output_formula(mapping, target_row, HEADER_RAW_AREA, k_column=True)]],
                 })
             if output_link and current_link != "SENTINEL" and not current_link:
                 columns[HEADER_LINK] = output_link
@@ -1414,6 +1469,12 @@ def _k_overlay_url(columns: dict) -> str:
 
     url = str((columns or {}).get(K_OVERLAY_KEY) or "").strip()
     return url if url.startswith("http") else ""
+
+
+def _rank1_prefix() -> str:
+    from src.substitute import RANK1_CELL_PREFIX  # 지연 import — substitute 가 시트 모듈을 몰라도 되게
+
+    return RANK1_CELL_PREFIX
 
 
 def _k_overlay_hyperlink(url: str) -> str:

@@ -228,13 +228,94 @@ class TestFormulaK:
         w, _ = _formula_write([_sub_row(2, [_hit(URL_A, 1)])])
         assert not any(v == URL_A or str(v).startswith(PREFIX) for v, _ in w.values())
 
-    def test_다음_회차_시작에_K수식이_평소_수식으로_돌아옴(self):
-        # 회차 앞 ensure_stale_formula_mode 가 K 칸 전부를 평소 수식으로 다시 쓴다 → 지난 덮어쓰기가 남지 않음
+    def test_K수식을_못_읽으면_회차_앞에_전부_평소_수식(self):
         client, ws = _client(FORMULA_HEADERS)
+        ws.get.side_effect = RuntimeError("읽기 실패")
         client.ensure_stale_formula_mode(TAB, [{"_row": 2}])
         normal = client._build_visible_output_formula(
             {h: i for i, h in enumerate(FORMULA_HEADERS)}, 2, HEADER_RAW_AREA, k_column=True)
         assert _writes(ws)["K2:K2"] == (normal, "USER_ENTERED")
+
+
+# ── 회차가 쉬지 않고 이어 돌아도 덮어쓰기가 보인다 (11-01 18시 회차 13줄이 다음 회차 시작에 지워진 사고) ──
+
+def _mapping():
+    return {h: i for i, h in enumerate(FORMULA_HEADERS)}
+
+
+def _overlay_formula(client, row, url=URL_A):
+    return client._build_k_overlay_formula(_mapping(), row, url)
+
+
+def _start_with(client, ws, k_formulas):
+    """회차 앞: K2.. 칸 지금 수식을 k_formulas 로 보이고 ensure_stale_formula_mode 를 부른다."""
+    ws.get.return_value = [[f] for f in k_formulas]
+    rows = [{"_row": r} for r in range(2, len(k_formulas) + 2)]
+    client.ensure_stale_formula_mode(TAB, rows)
+    k_range = f"K2:K{len(k_formulas) + 1}"
+    for call in ws.batch_update.call_args_list:
+        for item in call.args[0]:
+            if item["range"] == k_range:
+                return [v[0] for v in item["values"]]
+    raise AssertionError("K 수식 쓰기가 없음")
+
+
+def test_회차_앞에_지난_덮어쓰기_수식은_그대로_둠():
+    client, ws = _client(FORMULA_HEADERS)
+    kept = _overlay_formula(client, 2)
+    normal3 = client._build_visible_output_formula(_mapping(), 3, HEADER_RAW_AREA, k_column=True)
+    written = _start_with(client, ws, [kept, normal3])
+    assert written == [kept, normal3]
+    assert client._k_overlay_kept[TAB] == {2}
+
+
+def test_사장님이_손으로_쓴_대체노출_글자는_덮어쓰기로_안_침():
+    # 수식이 아닌 글자 · HYPERLINK 없는 수식은 우리 덮어쓰기가 아니다 → 평소 수식
+    client, ws = _client(FORMULA_HEADERS)
+    written = _start_with(client, ws, [PREFIX, '=IF(A2="","대체노출 1위","")'])
+    normal2 = client._build_visible_output_formula(_mapping(), 2, HEADER_RAW_AREA, k_column=True)
+    assert written[0] == normal2
+    assert client._k_overlay_kept[TAB] == set()
+
+
+def _end_write(client, ws, row, sub_rows):
+    ws.batch_update.reset_mock()
+    vals = [FORMULA_HEADERS] + [["10/20", "", "", f"kw{r}", "", "", "", "", "", OWN] for r in range(2, row + 1)]
+    ws.get_all_values.return_value = vals
+    upd = RowUpdate(row=row, columns={HEADER_AREA: "미노출 (11/1 03:00~)",
+                                      "노출여부(통합탭 순위)": "", "노출여부(카페구좌순위)": ""})
+    _apply([upd], sub_rows)
+    client.write_stale_formula_results(TAB, [upd], row_context={row: {"_row": row, "키워드": f"kw{row}", "링크": OWN}},
+                                       checked_at="2026-11-01 19:00 KST")
+    return _writes(ws)
+
+
+def test_회차_끝_다시_재서_1위_대체면_덮어쓰기_유지():
+    client, ws = _client(FORMULA_HEADERS)
+    _start_with(client, ws, [_overlay_formula(client, 2)])
+    w = _end_write(client, ws, 2, [_sub_row(2, [_hit(URL_B, 1)])])
+    assert w["K2"] == (_overlay_formula(client, 2, URL_B), "USER_ENTERED")
+
+
+@pytest.mark.parametrize("hits,error", [([_hit(URL_B, 2)], ""), ([], "")])
+def test_회차_끝_다시_재서_1위_대체가_아니면_평소_수식으로_되돌림(hits, error):
+    client, ws = _client(FORMULA_HEADERS)
+    _start_with(client, ws, [_overlay_formula(client, 2)])
+    w = _end_write(client, ws, 2, [_sub_row(2, hits, error)])
+    normal = client._build_visible_output_formula(_mapping(), 2, HEADER_RAW_AREA, k_column=True)
+    assert w["K2"] == (normal, "USER_ENTERED")
+
+
+def test_회차_도중_줄이_한칸_내려가도_1위가_아니면_되돌림():
+    # 검토 지적: 회차 앞 2행 덮어쓰기 → 사장님이 위에 줄을 넣어 3행으로 내려감 → 다시 재 보니 1위 아님
+    client, ws = _client(FORMULA_HEADERS)
+    _start_with(client, ws, [_overlay_formula(client, 2)])
+    normal2 = client._build_visible_output_formula(_mapping(), 2, HEADER_RAW_AREA, k_column=True)
+    ws.get.return_value = [[normal2], [_overlay_formula(client, 3)]]  # 쓰기 직전 시트: 덮어쓰기가 3행에
+    w = _end_write(client, ws, 3, [_sub_row(3, [_hit(URL_B, 2)])])
+    assert "K2" not in w  # 옛 줄 번호(2행 = 이제 다른 줄)는 건드리지 않음
+    normal3 = client._build_visible_output_formula(_mapping(), 3, HEADER_RAW_AREA, k_column=True)
+    assert w["K3"] == (normal3, "USER_ENTERED")
 
 
 # ── 다음 회차: 덮인 K 를 지난 판정 값으로 읽지 않는다 ───────────────────────
@@ -423,3 +504,20 @@ class TestKRank1Format:
         client.ensure_substitute_k.return_value = {"columns_removed": 2, "formats_added": 1}
         out = sub.prepare_sheet_columns(client, {TAB: [], "탭2": []})
         assert out["columns_removed"] == 4 and out["formats_added"] == 2 and out["tabs"] == 2
+
+
+def test_덮어쓰기_없던_줄은_회차_끝에도_K수식_안_건드림():
+    client, ws = _client(FORMULA_HEADERS)
+    normal2 = client._build_visible_output_formula(_mapping(), 2, HEADER_RAW_AREA, k_column=True)
+    _start_with(client, ws, [normal2])
+    w = _end_write(client, ws, 2, [_sub_row(2, [_hit(URL_B, 2)])])
+    assert "K2" not in w
+
+
+def test_쓰기_직전_K수식을_못_읽으면_회차_앞_줄_번호로_되돌림():
+    client, ws = _client(FORMULA_HEADERS)
+    _start_with(client, ws, [_overlay_formula(client, 2)])
+    ws.get.side_effect = RuntimeError("읽기 실패")
+    w = _end_write(client, ws, 2, [_sub_row(2, [_hit(URL_B, 2)])])
+    normal = client._build_visible_output_formula(_mapping(), 2, HEADER_RAW_AREA, k_column=True)
+    assert w["K2"] == (normal, "USER_ENTERED")
