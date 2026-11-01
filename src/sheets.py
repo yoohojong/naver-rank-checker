@@ -677,6 +677,11 @@ class SheetsClient:
                 return 0
             if not isinstance(current, list):
                 return 0
+            # 같은 회사 검토 지적: 머리글을 읽은 뒤 사장님이 열을 끼우거나 옮기면 같은 번호가 다른 칸(K/L/M/O · 입력 칸)이 된다
+            # → 다시 읽은 1행이 그 머리글이 아니면 지우지 않는다(재시도 때도 매번 같은 확인)
+            if not current or str(current[0]).strip() != value_header:
+                print(f"  [대체노출] {tab_name}: {col_letter}1 머리글이 '{value_header}' 가 아님(열이 옮겨짐) — 안 지움"[:200])
+                return 0
             # col_values 는 1행(머리글)부터 · 끝의 빈칸은 잘린 채 돌려준다 → i 번째 = i+1 행
             stale_rows = [i + 1 for i, value in enumerate(current) if i >= 1 and is_stale(value)]
             if not stale_rows:

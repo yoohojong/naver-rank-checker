@@ -607,6 +607,15 @@ class TestStaleClearRereadsNow:
         assert out["stale_cleared"] == 0
         assert out["formats_added"] == 1  # 서식은 그대로 진행
 
+    def test_다시_읽은_1행이_대체노출_머리글이_아니면_열이_옮겨진_것_안_지움(self):
+        # 머리글을 읽은 뒤 사장님이 열을 끼워 G 가 다른 칸(K 결과 등)이 됨 → 그 열을 통째로 비우면 안 된다
+        rows = _plain_rows({2: "확인 못 함 (x)"}, last=3)
+        client, ws = _client(PLAIN_HEADERS)
+        ws.col_values.return_value = ["노출영역", "인기글", "미노출"]
+        out = client.ensure_substitute_columns(TAB, rows, formula_mode=False)
+        ws.batch_update.assert_not_called()
+        assert out["stale_cleared"] == 0
+
     def test_회차_앞_읽기에_옛_값이_없으면_다시_읽지도_않음(self):
         rows = _plain_rows({2: f"{PREFIX} {URL_A}"}, last=3)
         client, ws = _client(PLAIN_HEADERS)
