@@ -638,35 +638,69 @@ class SheetsClient:
                                        value_header: str) -> int:
         """'대체 노출' 값 칸에서 '대체노출 1위' 로 시작하지 않는 비지 않은 값을 batch 한 번으로 빈칸으로 만든다.
 
-        읽는 값 = 회차 앞에 읽은 시트 그대로(rows = load_all_data_tabs 결과 · 시트를 다시 읽지 않음).
+        2026-11-01 GPT 2차 지적 1: 회차 앞에 읽은 값 · 행 번호로 지울 칸을 정하면, 읽은 뒤 사장님이 줄을
+        정렬했을 때 지금 그 자리에 있는 정상 '대체노출 1위 …' 값을 지운다. 그래서
+        - 회차 앞 읽기(rows)는 '비울 것이 있나'만 본다 — 없으면 시트를 다시 읽지도 않는다(정렬은 옛 값을 만들지 않음).
+        - 지울 칸은 비우기 직전에 그 값 칸 하나만 다시 읽어(수식 모드면 숨김 raw 칸) 지금 값으로 정한다.
+        - 쓰기가 503 류로 실패하면 같은 요청을 그대로 다시 보내지 않고, 다시 읽고 다시 정한 뒤 보낸다.
+        - 다시 읽기가 실패하면 지우지 않고 넘어간다(옛 값이 남을 뿐).
         그 칸 하나만 쓴다 — K/L/M/O · 검사 기준값 · 사장님 입력 칸은 손대지 않는다.
         실패해도 회차는 계속(돌려주는 값 0). 돌려주는 값 = 비운 칸 수.
         """
         from src.substitute import RANK1_CELL_PREFIX  # 지연 import — substitute 가 시트 모듈을 몰라도 되게
 
-        stale_rows = []
+        def is_stale(value) -> bool:
+            text = str(value or "").strip()
+            return bool(text) and not text.startswith(RANK1_CELL_PREFIX)
+
+        seen_stale = False
         for row in rows or []:
             try:
                 row_num = int(row.get("_row") or 0)
             except (TypeError, ValueError):
                 continue
-            value = str(row.get(value_header) or "").strip()
-            if row_num >= 2 and value and not value.startswith(RANK1_CELL_PREFIX):
-                stale_rows.append(row_num)
-        if not stale_rows:
+            if row_num >= 2 and is_stale(row.get(value_header)):
+                seen_stale = True
+                break
+        if not seen_stale:
             return 0
+
         col_letter = _column_letter(col_idx + 1)
-        cells = [{"range": f"{col_letter}{r}", "values": [[""]]} for r in sorted(set(stale_rows))]
-        try:
-            _sheets_api_retry(
-                lambda: ws.batch_update(cells, value_input_option="RAW"),
-                ctx=f"{tab_name} (substitute clear stale)",
-            )
-        except Exception as e:  # noqa: BLE001 — 못 비움 = 옛 값이 남을 뿐, 회차는 계속
-            print(f"  [대체노출] {tab_name}: 옛 형식 값 {len(cells)}칸 못 비움 = {type(e).__name__}: {e}"[:200])
-            return 0
-        print(f"  [대체노출] {tab_name}: 옛 형식 값 {len(cells)}칸 비움({value_header})")
-        return len(cells)
+        for attempt in range(SHEETS_RETRY_MAX_ATTEMPTS):
+            try:
+                current = _sheets_api_retry(
+                    lambda: ws.col_values(col_idx + 1),
+                    ctx=f"{tab_name} (substitute stale reread)",
+                )
+            except Exception as e:  # noqa: BLE001 — 지금 값을 모르면 지우지 않는다
+                print(f"  [대체노출] {tab_name}: 옛 형식 값 칸 다시 읽기 실패 = {type(e).__name__}: {e} — 안 지움"[:200])
+                return 0
+            if not isinstance(current, list):
+                return 0
+            # col_values 는 1행(머리글)부터 · 끝의 빈칸은 잘린 채 돌려준다 → i 번째 = i+1 행
+            stale_rows = [i + 1 for i, value in enumerate(current) if i >= 1 and is_stale(value)]
+            if not stale_rows:
+                return 0
+            cells = [{"range": f"{col_letter}{r}", "values": [[""]]} for r in stale_rows]
+            try:
+                ws.batch_update(cells, value_input_option="RAW")
+            except Exception as e:  # noqa: BLE001 — 못 비움 = 옛 값이 남을 뿐, 회차는 계속
+                status = None
+                if isinstance(e, gspread.exceptions.APIError):
+                    try:
+                        status = e.response.status_code
+                    except Exception:  # noqa: BLE001
+                        status = None
+                if status in SHEETS_RETRY_STATUS_CODES and attempt < SHEETS_RETRY_MAX_ATTEMPTS - 1:
+                    wait = SHEETS_RETRY_BASE_SEC * (2 ** attempt)
+                    print(f"  [대체노출] {tab_name}: 옛 형식 값 비우기 HTTP {status} — {wait}s 뒤 다시 읽고 다시 정함")
+                    time.sleep(wait)
+                    continue
+                print(f"  [대체노출] {tab_name}: 옛 형식 값 {len(cells)}칸 못 비움 = {type(e).__name__}: {e}"[:200])
+                return 0
+            print(f"  [대체노출] {tab_name}: 옛 형식 값 {len(cells)}칸 비움({value_header})")
+            return len(cells)
+        return 0
 
     def _conditional_formats_by_sheet(self) -> Optional[dict]:
         """{sheetId: [조건부 서식 규칙…]} — 회차에 한 번만 읽는다(탭마다 읽지 않음). 못 읽으면 None."""
@@ -696,7 +730,7 @@ class SheetsClient:
     def _ensure_substitute_rank1_format(self, ws, tab_name: str, col_idx: int) -> dict:
         """'대체 노출' 칸(2행부터 끝까지)에 '대체노출 1위' 로 시작 → 초록 글자 규칙을 딱 하나로 맞춘다.
 
-        우리 규칙 = 같은 조건(TEXT_STARTS_WITH '대체노출 1위') + 같은 칸(startColumnIndex~endColumnIndex).
+        우리 규칙 = 같은 조건(TEXT_STARTS_WITH '대체노출 1위') + 그 칸을 포함하는 범위(옆 칸까지 넓어도 — 2차 지적 2).
         - 없으면 하나 더함(formats_added).
         - 여럿이면 맨 앞 하나만 남기고 지움(formats_removed) — 지적 C. 다른 규칙은 손대지 않는다.
         - 남긴 하나의 범위(2행~끝 · 한 칸)나 글자색(#188038)이 다르면 고침(formats_fixed) — 지적 D.
@@ -1425,17 +1459,24 @@ def _rank1_rule_target(sheet_id: int, col_idx: int) -> dict:
 
 
 def _is_rank1_rule(rule: dict, col_idx: int) -> bool:
-    """우리가 거는 규칙인가 = 같은 조건 + 그 칸을 덮는 범위가 있음."""
+    """우리가 거는 규칙인가 = 같은 조건(값이 정확히 '대체노출 1위') + 그 칸을 포함하는 범위가 있음.
+
+    2026-11-01 GPT 2차 지적 2: 범위가 옆 칸까지 넓은 것(G:H · F:G)도 우리 규칙이다 — 못 알아보면 하나 더 만든다.
+    범위는 _plan_rank1_format 이 그 칸 하나(2행~끝)로 고친다. 조건 값이 다른 규칙은 우리 규칙이 아니다.
+    """
     from src.substitute import RANK1_CELL_PREFIX
 
     cond = ((rule or {}).get("booleanRule") or {}).get("condition") or {}
     values = [(v or {}).get("userEnteredValue") for v in cond.get("values") or []]
     if cond.get("type") != "TEXT_STARTS_WITH" or values != [RANK1_CELL_PREFIX]:
         return False
-    return any(
-        (rg or {}).get("startColumnIndex", 0) == col_idx and (rg or {}).get("endColumnIndex") == col_idx + 1
-        for rg in (rule.get("ranges") or [])
-    )
+    for rg in rule.get("ranges") or []:
+        rg = rg or {}
+        start = rg.get("startColumnIndex", 0)  # API 는 0 값 칸을 빼고 돌려줄 수 있다
+        end = rg.get("endColumnIndex")  # 없음 = 오른쪽 끝까지
+        if start <= col_idx and (end is None or end > col_idx):
+            return True
+    return False
 
 
 def _rank1_rule_is_exact(rule: dict, sheet_id: int, col_idx: int) -> bool:
@@ -1448,9 +1489,13 @@ def _rank1_rule_is_exact(rule: dict, sheet_id: int, col_idx: int) -> bool:
             or rg.get("startColumnIndex", 0) != col_idx or rg.get("endColumnIndex") != col_idx + 1):
         return False
     text_format = (((rule.get("booleanRule") or {}).get("format") or {}).get("textFormat") or {})
-    color = text_format.get("foregroundColor")
-    if color is None:
-        color = ((text_format.get("foregroundColorStyle") or {}).get("rgbColor"))
+    # 2026-11-01 GPT 2차 지적 3: 둘 다 있으면 시트는 foregroundColorStyle 을 쓴다 → 그쪽을 먼저 본다.
+    # Style 이 있는데 rgbColor 가 없으면(테마 색) 초록이 아니다 → 옛 foregroundColor 로 넘어가지 않는다.
+    style = text_format.get("foregroundColorStyle")
+    if style is not None:
+        color = (style or {}).get("rgbColor")
+    else:
+        color = text_format.get("foregroundColor")
     if not isinstance(color, dict):
         return False
     return all(abs(float(color.get(c, 0) or 0) - COLOR_SUBSTITUTE_RANK1_TEXT[c]) < 0.003

@@ -351,6 +351,15 @@ def _plain_rows(values: dict, header=HEADER_SUBSTITUTE, last=6):
             for r in range(2, last + 1)]
 
 
+def _column_now(rows, header=HEADER_SUBSTITUTE):
+    """rows(_row → 값) → 그 칸을 지금 다시 읽은 결과(gspread col_values 모양: 1행 머리글부터)."""
+    last = max(int(r["_row"]) for r in rows)
+    col = [header] + [""] * (last - 1)
+    for r in rows:
+        col[int(r["_row"]) - 1] = r.get(header, "")
+    return col
+
+
 class TestStaleSubstituteClear:
     """지적 A."""
 
@@ -362,6 +371,7 @@ class TestStaleSubstituteClear:
             6: "확인 못 함 (APIError: 429) — 찾은 것: 인기글 1위 x",
         })
         client, ws = _client(PLAIN_HEADERS)
+        ws.col_values.return_value = _column_now(rows)
         out = client.ensure_substitute_columns(TAB, rows, formula_mode=False)
         assert out["stale_cleared"] == 3
         assert ws.batch_update.call_count == 1  # 한 번에
@@ -376,8 +386,10 @@ class TestStaleSubstituteClear:
             {"_row": 4, "_tab": TAB, HEADER_SUBSTITUTE: "", HEADER_RAW_SUBSTITUTE: f"스마트블록 3위 {URL_B}"},
         ]
         client, ws = _client(headers)
+        ws.col_values.return_value = _column_now(rows, HEADER_RAW_SUBSTITUTE)
         out = client.ensure_substitute_columns(TAB, rows, formula_mode=True)
         assert out["stale_cleared"] == 2
+        ws.col_values.assert_called_once_with(24)  # 숨김 raw 칸(X)만 다시 읽음
         clear_calls = [c for c in ws.batch_update.call_args_list
                        if all(item["range"].startswith("X") for item in c.args[0])]
         assert len(clear_calls) == 1
@@ -388,6 +400,7 @@ class TestStaleSubstituteClear:
     def test_비우기_실패해도_회차는_계속(self):
         rows = _plain_rows({2: "확인 못 함 (x)"})
         client, ws = _client(PLAIN_HEADERS)
+        ws.col_values.return_value = _column_now(rows)
         _with_live_rules(client)
         ws.batch_update.side_effect = RuntimeError("500")
         out = client.ensure_substitute_columns(TAB, rows, formula_mode=False)
@@ -532,3 +545,148 @@ class TestRank1FormatRetryAndDedup:
         _LiveSheet(client, [_our_rule()])
         client.ensure_substitute_columns(TAB, [{"_row": 2}], formula_mode=False)
         client.spreadsheet.batch_update.assert_not_called()
+
+
+# ── 2026-11-01 GPT 2차 검토 지적 1~3 ─────────────────────────────────────
+# 1(A). 회차 앞에 읽은 값 · 행 번호로 지울 칸을 정해, 읽은 뒤 사장님이 줄을 정렬하면 지금 그 자리의
+#       정상 '대체노출 1위 …' 값을 지운다 → 비우기 직전에 그 칸만 다시 읽어 지금 값으로 정한다.
+# 2(D). 같은 조건인데 범위가 옆 칸까지 넓은 규칙(G:H)을 우리 규칙으로 못 알아보고 하나 더 만든다.
+# 3(D). 색 판정이 옛 foregroundColor 를 foregroundColorStyle 보다 먼저 본다(실제로는 Style 이 이김).
+
+
+def _api_error(status=503):
+    import gspread
+    resp = MagicMock()
+    resp.status_code = status
+    resp.json.return_value = {"error": {"code": status, "message": "unavailable", "status": "UNAVAILABLE"}}
+    return gspread.exceptions.APIError(resp)
+
+
+class TestStaleClearRereadsNow:
+    """2차 지적 1."""
+
+    def test_읽은_뒤_줄이_정렬돼도_지금_자리의_1위_값은_안_지움(self):
+        # 회차 앞 읽기: 2행 = 옛 값, 3행 = 1위 → 그 뒤 사장님이 정렬해 두 줄이 자리를 바꿈
+        rows = _plain_rows({2: "확인 못 함 (x)", 3: f"{PREFIX} {URL_A}"}, last=3)
+        client, ws = _client(PLAIN_HEADERS)
+        ws.col_values.return_value = [HEADER_SUBSTITUTE, f"{PREFIX} {URL_A}", "확인 못 함 (x)"]
+        out = client.ensure_substitute_columns(TAB, rows, formula_mode=False)
+        ws.col_values.assert_called_once_with(7)  # 그 값 칸(G) 하나만 다시 읽음
+        assert _written(ws) == {"G3": ""}
+        assert out["stale_cleared"] == 1
+
+    def test_재시도는_다시_읽고_다시_정함_같은_요청을_그대로_안_보냄(self, _no_sleep):
+        rows = _plain_rows({2: "확인 못 함 (x)", 3: f"인기글 2위 {URL_B}"}, last=3)
+        client, ws = _client(PLAIN_HEADERS)
+        reads = iter([
+            [HEADER_SUBSTITUTE, "확인 못 함 (x)", f"인기글 2위 {URL_B}"],
+            # 503 사이에 2행이 바뀜(정렬 · 다른 회차가 1위를 씀)
+            [HEADER_SUBSTITUTE, f"{PREFIX} {URL_A}", f"인기글 2위 {URL_B}"],
+        ])
+        ws.col_values.side_effect = lambda *a, **k: next(reads)
+        sent = []
+
+        def batch(cells, **kwargs):
+            sent.append(sorted(c["range"] for c in cells))
+            if len(sent) == 1:
+                raise _api_error(503)
+            return {}
+
+        ws.batch_update.side_effect = batch
+        out = client.ensure_substitute_columns(TAB, rows, formula_mode=False)
+        assert sent == [["G2", "G3"], ["G3"]]
+        assert out["stale_cleared"] == 1
+
+    def test_다시_읽기_실패면_안_지우고_넘어감(self):
+        rows = _plain_rows({2: "확인 못 함 (x)"}, last=3)
+        client, ws = _client(PLAIN_HEADERS)
+        ws.col_values.side_effect = RuntimeError("403")
+        _with_live_rules(client)
+        out = client.ensure_substitute_columns(TAB, rows, formula_mode=False)
+        ws.batch_update.assert_not_called()
+        assert out["stale_cleared"] == 0
+        assert out["formats_added"] == 1  # 서식은 그대로 진행
+
+    def test_회차_앞_읽기에_옛_값이_없으면_다시_읽지도_않음(self):
+        rows = _plain_rows({2: f"{PREFIX} {URL_A}"}, last=3)
+        client, ws = _client(PLAIN_HEADERS)
+        client.ensure_substitute_columns(TAB, rows, formula_mode=False)
+        ws.col_values.assert_not_called()
+        ws.batch_update.assert_not_called()
+
+
+def _wide_rule(start_col, end_col, value=None):
+    return {"ranges": [{"sheetId": 777, "startRowIndex": 1, "startColumnIndex": start_col, "endColumnIndex": end_col}],
+            "booleanRule": {"condition": {"type": "TEXT_STARTS_WITH",
+                                          "values": [{"userEnteredValue": value or PREFIX}]},
+                            "format": {"textFormat": {"foregroundColor": dict(GREEN)}}}}
+
+
+def _prefix_rules(live, value=PREFIX):
+    return [r for r in live.rules if r["booleanRule"]["condition"].get("values") == [{"userEnteredValue": value}]]
+
+
+class TestRank1RuleWideRange:
+    """2차 지적 2."""
+
+    @pytest.mark.parametrize("start_col,end_col", [(6, 8), (5, 7), (5, 9)])  # G:H · F:G · F:I — 모두 G 포함
+    def test_대상칸을_포함한_넓은_범위는_우리_규칙으로_보고_한칸으로_고침(self, _no_sleep, start_col, end_col):
+        client, _ = _client(PLAIN_HEADERS)
+        live = _LiveSheet(client, [_wide_rule(start_col, end_col)])
+        out = client.ensure_substitute_columns(TAB, [{"_row": 2}], formula_mode=False)
+        (rule,) = _prefix_rules(live)
+        assert rule["ranges"] == [{"sheetId": 777, "startRowIndex": 1, "startColumnIndex": 6, "endColumnIndex": 7}]
+        assert out["formats_added"] == 0 and out["formats_fixed"] == 1
+
+    def test_조건값이_다른_넓은_규칙은_손대지_않음(self, _no_sleep):
+        other = _wide_rule(6, 8, value="대체노출")
+        client, _ = _client(PLAIN_HEADERS)
+        live = _LiveSheet(client, [other])
+        out = client.ensure_substitute_columns(TAB, [{"_row": 2}], formula_mode=False)
+        assert other in live.rules  # 그대로
+        assert len(_prefix_rules(live)) == 1 and out["formats_added"] == 1
+
+    def test_대상칸을_안_덮는_규칙은_우리_규칙_아님(self, _no_sleep):
+        other = _wide_rule(7, 9)  # H:I — G 를 안 덮음
+        client, _ = _client(PLAIN_HEADERS)
+        live = _LiveSheet(client, [other])
+        out = client.ensure_substitute_columns(TAB, [{"_row": 2}], formula_mode=False)
+        assert other in live.rules and out["formats_added"] == 1
+
+
+class TestRank1ColorStyleFirst:
+    """2차 지적 3."""
+
+    RED = {"red": 1.0, "green": 0.0, "blue": 0.0}
+
+    def _rule(self, legacy, style):
+        rule = _our_rule()
+        rule["booleanRule"]["format"]["textFormat"] = {"foregroundColor": dict(legacy),
+                                                       "foregroundColorStyle": {"rgbColor": dict(style)}}
+        return rule
+
+    def test_Style이_빨강이면_옛_칸이_초록이어도_고침(self, _no_sleep):
+        client, _ = _client(PLAIN_HEADERS)
+        live = _LiveSheet(client, [self._rule(GREEN, self.RED)])
+        out = client.ensure_substitute_columns(TAB, [{"_row": 2}], formula_mode=False)
+        assert out["formats_fixed"] == 1
+        (rule,) = live.ours()
+        tf = rule["booleanRule"]["format"]["textFormat"]
+        assert "foregroundColorStyle" not in tf
+        assert "#%02X%02X%02X" % tuple(round(tf["foregroundColor"][c] * 255) for c in ("red", "green", "blue")) == "#188038"
+
+    def test_Style이_초록이면_옛_칸이_빨강이어도_안_고침(self, _no_sleep):
+        client, _ = _client(PLAIN_HEADERS)
+        _LiveSheet(client, [self._rule(self.RED, GREEN)])
+        out = client.ensure_substitute_columns(TAB, [{"_row": 2}], formula_mode=False)
+        client.spreadsheet.batch_update.assert_not_called()
+        assert out["formats_fixed"] == 0
+
+    def test_Style이_테마색이면_옛_칸이_초록이어도_고침(self, _no_sleep):
+        client, _ = _client(PLAIN_HEADERS)
+        rule = _our_rule()
+        rule["booleanRule"]["format"]["textFormat"] = {"foregroundColor": dict(GREEN),
+                                                       "foregroundColorStyle": {"themeColor": "ACCENT1"}}
+        _LiveSheet(client, [rule])
+        out = client.ensure_substitute_columns(TAB, [{"_row": 2}], formula_mode=False)
+        assert out["formats_fixed"] == 1
