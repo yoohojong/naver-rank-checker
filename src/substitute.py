@@ -245,14 +245,11 @@ def scan(html: str, index: Optional[OurLinkIndex], tab: str, keyword: str, own_l
     finally:
         index.scan_seconds += time.perf_counter() - t0
         index.scan_calls += 1
-    out = []
-    seen = set()
+    out: list[dict] = []
+    pos_by_key: dict = {}
     for h in hits:
         k = index.key(h.url)
-        if k in seen:  # 같은 글이 두 구좌에 뜨면 위쪽(먼저 찾은) 한 번만
-            continue
-        seen.add(k)
-        out.append({
+        item = {
             "url": h.url,
             "area": h.area,
             "rank": h.integrated_rank,
@@ -260,8 +257,27 @@ def scan(html: str, index: Optional[OurLinkIndex], tab: str, keyword: str, own_l
             "block": h.block_name,
             "source": source_of(h.url),
             "rank_from_dom_cards": h.rank_from_dom_cards,
-        })
+        }
+        # 같은 글이 두 구좌에 뜨면 한 줄만 남긴다(기록 형식 그대로). 남기는 것 = 순위가 가장 좋은 쪽
+        # (같으면 위쪽) · 자리는 처음 찾은 자리. 2026-11-01 GPT 1차 지적 B: 위 구좌 2위 · 아래 구좌 1위인
+        # 같은 글을 위쪽만 남겨 1위를 놓쳤다.
+        if k in pos_by_key:
+            i = pos_by_key[k]
+            if _rank_num(item) < _rank_num(out[i]):
+                out[i] = item
+            continue
+        pos_by_key[k] = len(out)
+        out.append(item)
     return out
+
+
+def _rank_num(h: dict) -> float:
+    """견주기용 순위 숫자(작을수록 좋음). 순위를 못 읽으면 맨 뒤."""
+    try:
+        r = int(_hit_rank(h) or 0)
+    except (TypeError, ValueError):
+        return float("inf")
+    return float(r) if r > 0 else float("inf")
 
 
 def format_cell(hits: list[dict]) -> str:
@@ -315,16 +331,22 @@ def cell_text(sub_row: dict) -> str:
 
 def prepare_sheet_columns(client, data: dict, *, formula_mode: bool) -> dict:
     """회차 앞: 탭마다 '대체 노출' 칸(수식 모드면 숨김 raw 칸도)과 1위 초록 글자 규칙을 없을 때만 만든다.
-    스위치 끔 = 아무것도 안 함."""
-    out = {"enabled": substitute_enabled(), "tabs": 0, "headers_added": 0, "formats_added": 0, "errors": {}}
+    스위치 끔 = 아무것도 안 함.
+
+    2026-11-01 GPT 1차 지적 A: 이번 회차에 처리 못 하는 줄(검색 실패 · 키워드 빈 줄)은 apply_cells 가
+    닿지 않아 옛 형식 값('확인 못 함 …' · '인기글 2위 …')이 남는다 → 탭마다 '대체노출 1위'로 시작하지 않는
+    값을 회차 앞에 한 번에 비운다(stale_cleared = 비운 칸 수). 지적 C·D: 같은 초록 규칙이 여럿이면 하나만
+    (formats_removed), 범위·색이 다르면 고침(formats_fixed)."""
+    keys = ("headers_added", "formats_added", "formats_fixed", "formats_removed", "stale_cleared")
+    out = {"enabled": substitute_enabled(), "tabs": 0, **{k: 0 for k in keys}, "errors": {}}
     if not out["enabled"]:
         return out
     for tab_name, rows in (data or {}).items():
         try:
             res = client.ensure_substitute_columns(tab_name, rows, formula_mode=formula_mode)
             out["tabs"] += 1
-            out["headers_added"] += int(res.get("headers_added", 0) or 0)
-            out["formats_added"] += int(res.get("formats_added", 0) or 0)  # 1위 초록 글자 규칙(11-01)
+            for k in keys:
+                out[k] += int(res.get(k, 0) or 0)
         except Exception as e:  # 칸 못 만듦 = 그 탭은 쓰기 때 칸이 없어 건너뜀(판정·회차는 계속)
             out["errors"][tab_name] = f"{type(e).__name__}: {e}"[:200]
     return out

@@ -555,6 +555,7 @@ class SheetsClient:
         - 수식 모드: 숨김 'raw_대체노출' 도 덧붙여 숨기고, 보이는 '대체 노출' 은 K/L/M/O 와 같은 수식
           (입력 키가 바뀌면 빈칸). 수식 아닌 길: 보이는 칸 하나만 — write_results 가 값을 바로 쓴다.
         - 사장님 입력 칸은 읽기만 한다(D-023).
+        - 2026-11-01: 값 칸의 옛 형식 값 비우기(stale_cleared) · 1위 초록 글자 규칙 하나로 맞추기(formats_*).
         """
         ws = self.spreadsheet.worksheet(tab_name)
         headers = ws.row_values(1)
@@ -591,6 +592,15 @@ class SheetsClient:
             headers = expanded
             mapping = map_headers_to_columns(headers)
 
+        # 2026-11-01 GPT 1차 지적 A: 이번 회차에 처리 못 하는 줄에 남은 옛 형식 값을 회차 앞에 비운다.
+        # 값 칸 = 수식 모드면 숨김 raw(보이는 칸은 수식이라 손대지 않음), 아니면 보이는 칸. 이번에 새로 만든 칸은 빈칸.
+        value_header = HEADER_RAW_SUBSTITUTE if formula_mode else HEADER_SUBSTITUTE
+        stale_cleared = 0
+        if value_header not in missing:
+            stale_cleared = self._clear_stale_substitute_values(
+                ws, tab_name, rows, mapping[value_header], value_header,
+            )
+
         formula_rows = 0
         if formula_mode:
             max_row = max([int(row.get("_row") or 0) for row in (rows or [])] + [1])
@@ -608,7 +618,7 @@ class SheetsClient:
                     ctx=f"{tab_name} (substitute visible formula)",
                 )
                 formula_rows = max_row - 1
-        formats_added = self._ensure_substitute_rank1_format(ws, tab_name, mapping[HEADER_SUBSTITUTE])
+        format_stats = self._ensure_substitute_rank1_format(ws, tab_name, mapping[HEADER_SUBSTITUTE])
         if formula_mode:
             idx = mapping[HEADER_RAW_SUBSTITUTE]
             _sheets_api_retry(
@@ -621,7 +631,42 @@ class SheetsClient:
                 }]}),
                 ctx=f"{tab_name} (substitute hide raw)",
             )
-        return {"headers_added": len(missing), "formula_rows": formula_rows, "formats_added": formats_added}
+        return {"headers_added": len(missing), "formula_rows": formula_rows,
+                "stale_cleared": stale_cleared, **format_stats}
+
+    def _clear_stale_substitute_values(self, ws, tab_name: str, rows: list[dict], col_idx: int,
+                                       value_header: str) -> int:
+        """'대체 노출' 값 칸에서 '대체노출 1위' 로 시작하지 않는 비지 않은 값을 batch 한 번으로 빈칸으로 만든다.
+
+        읽는 값 = 회차 앞에 읽은 시트 그대로(rows = load_all_data_tabs 결과 · 시트를 다시 읽지 않음).
+        그 칸 하나만 쓴다 — K/L/M/O · 검사 기준값 · 사장님 입력 칸은 손대지 않는다.
+        실패해도 회차는 계속(돌려주는 값 0). 돌려주는 값 = 비운 칸 수.
+        """
+        from src.substitute import RANK1_CELL_PREFIX  # 지연 import — substitute 가 시트 모듈을 몰라도 되게
+
+        stale_rows = []
+        for row in rows or []:
+            try:
+                row_num = int(row.get("_row") or 0)
+            except (TypeError, ValueError):
+                continue
+            value = str(row.get(value_header) or "").strip()
+            if row_num >= 2 and value and not value.startswith(RANK1_CELL_PREFIX):
+                stale_rows.append(row_num)
+        if not stale_rows:
+            return 0
+        col_letter = _column_letter(col_idx + 1)
+        cells = [{"range": f"{col_letter}{r}", "values": [[""]]} for r in sorted(set(stale_rows))]
+        try:
+            _sheets_api_retry(
+                lambda: ws.batch_update(cells, value_input_option="RAW"),
+                ctx=f"{tab_name} (substitute clear stale)",
+            )
+        except Exception as e:  # noqa: BLE001 — 못 비움 = 옛 값이 남을 뿐, 회차는 계속
+            print(f"  [대체노출] {tab_name}: 옛 형식 값 {len(cells)}칸 못 비움 = {type(e).__name__}: {e}"[:200])
+            return 0
+        print(f"  [대체노출] {tab_name}: 옛 형식 값 {len(cells)}칸 비움({value_header})")
+        return len(cells)
 
     def _conditional_formats_by_sheet(self) -> Optional[dict]:
         """{sheetId: [조건부 서식 규칙…]} — 회차에 한 번만 읽는다(탭마다 읽지 않음). 못 읽으면 None."""
@@ -648,47 +693,47 @@ class SheetsClient:
         self._cf_by_sheet = out
         return out
 
-    def _ensure_substitute_rank1_format(self, ws, tab_name: str, col_idx: int) -> int:
-        """'대체 노출' 칸(2행부터 끝까지)에 '대체노출 1위' 로 시작 → 초록 글자 규칙을 없을 때만 하나 건다.
+    def _ensure_substitute_rank1_format(self, ws, tab_name: str, col_idx: int) -> dict:
+        """'대체 노출' 칸(2행부터 끝까지)에 '대체노출 1위' 로 시작 → 초록 글자 규칙을 딱 하나로 맞춘다.
 
-        같은 규칙 = 같은 조건(TEXT_STARTS_WITH '대체노출 1위') + 같은 칸(startColumnIndex~endColumnIndex).
-        이미 있으면 안 더함 = 회차마다 돌아도 1개. 목록을 못 읽으면 더하지 않는다. 실패해도 회차는 계속.
-        돌려주는 값 = 더한 규칙 수(0/1).
+        우리 규칙 = 같은 조건(TEXT_STARTS_WITH '대체노출 1위') + 같은 칸(startColumnIndex~endColumnIndex).
+        - 없으면 하나 더함(formats_added).
+        - 여럿이면 맨 앞 하나만 남기고 지움(formats_removed) — 지적 C. 다른 규칙은 손대지 않는다.
+        - 남긴 하나의 범위(2행~끝 · 한 칸)나 글자색(#188038)이 다르면 고침(formats_fixed) — 지적 D.
+        목록을 못 읽으면 아무것도 안 함. 요청이 실패하면(서버엔 들어갔을 수 있음 — 지적 C) 담아 둔 목록을 버리고
+        다시 읽어 판단한 뒤에만 다시 보낸다(같은 요청을 그대로 다시 보내지 않음). 실패해도 회차는 계속.
         """
-        from src.substitute import RANK1_CELL_PREFIX  # 지연 import — substitute 가 시트 모듈을 몰라도 되게
-
-        by_sheet = self._conditional_formats_by_sheet()
-        if by_sheet is None:
-            return 0
-        rules = by_sheet.setdefault(ws.id, [])
-        for rule in rules:
-            cond = ((rule or {}).get("booleanRule") or {}).get("condition") or {}
-            values = [v.get("userEnteredValue") for v in cond.get("values") or []]
-            if cond.get("type") != "TEXT_STARTS_WITH" or values != [RANK1_CELL_PREFIX]:
-                continue
-            for rg in rule.get("ranges") or []:
-                if rg.get("startColumnIndex") == col_idx and rg.get("endColumnIndex") == col_idx + 1:
-                    return 0
-        new_rule = {
-            "ranges": [{"sheetId": ws.id, "startRowIndex": 1,
-                        "startColumnIndex": col_idx, "endColumnIndex": col_idx + 1}],
-            "booleanRule": {
-                "condition": {"type": "TEXT_STARTS_WITH", "values": [{"userEnteredValue": RANK1_CELL_PREFIX}]},
-                "format": {"textFormat": {"foregroundColor": COLOR_SUBSTITUTE_RANK1_TEXT}},
-            },
-        }
-        try:
-            _sheets_api_retry(
-                lambda: self.spreadsheet.batch_update(
-                    {"requests": [{"addConditionalFormatRule": {"rule": new_rule, "index": 0}}]}
-                ),
-                ctx=f"{tab_name} (substitute rank1 green)",
-            )
-        except Exception as e:  # noqa: BLE001 — 색만 못 입힘 = 글자는 그대로 적힌다
-            print(f"  [대체노출] {tab_name}: 초록 글자 규칙 못 걸음 = {type(e).__name__}: {e}"[:200])
-            return 0
-        rules.append(new_rule)
-        return 1
+        stats = {"formats_added": 0, "formats_fixed": 0, "formats_removed": 0}
+        for attempt in range(SHEETS_RETRY_MAX_ATTEMPTS):
+            by_sheet = self._conditional_formats_by_sheet()
+            if by_sheet is None:
+                return stats
+            rules = by_sheet.setdefault(ws.id, [])
+            requests, new_rules, change = _plan_rank1_format(ws.id, rules, col_idx)
+            if not requests:
+                return stats
+            try:
+                self.spreadsheet.batch_update({"requests": requests})
+            except Exception as e:  # noqa: BLE001 — 색만 못 입힘 = 글자는 그대로 적힌다
+                self._cf_by_sheet = None  # 서버엔 들어갔을 수 있다 → 다음 판단은 다시 읽은 목록으로
+                status = None
+                if isinstance(e, gspread.exceptions.APIError):
+                    try:
+                        status = e.response.status_code
+                    except Exception:  # noqa: BLE001
+                        status = None
+                if status in SHEETS_RETRY_STATUS_CODES and attempt < SHEETS_RETRY_MAX_ATTEMPTS - 1:
+                    wait = SHEETS_RETRY_BASE_SEC * (2 ** attempt)
+                    print(f"  [대체노출] {tab_name}: 초록 글자 규칙 요청 HTTP {status} — {wait}s 뒤 목록을 다시 읽고 판단")
+                    time.sleep(wait)
+                    continue
+                print(f"  [대체노출] {tab_name}: 초록 글자 규칙 못 맞춤 = {type(e).__name__}: {e}"[:200])
+                return stats
+            by_sheet[ws.id] = new_rules
+            for k, v in change.items():
+                stats[k] += v
+            return stats
+        return stats
 
     def write_stale_formula_results(
         self,
@@ -1363,6 +1408,73 @@ def rank_result_to_columns(
     cols[HEADER_M] = str(cafe_slot_rank) if cafe_slot_rank is not None else ""
     cols[HEADER_JISIKIN] = "O" if in_jisikin else ""
     return cols
+
+
+def _rank1_rule_target(sheet_id: int, col_idx: int) -> dict:
+    """'대체 노출' 칸 1위 초록 글자 규칙의 맞는 모양(2행~끝 · 한 칸 · #188038)."""
+    from src.substitute import RANK1_CELL_PREFIX  # 지연 import — substitute 가 시트 모듈을 몰라도 되게
+
+    return {
+        "ranges": [{"sheetId": sheet_id, "startRowIndex": 1,
+                    "startColumnIndex": col_idx, "endColumnIndex": col_idx + 1}],
+        "booleanRule": {
+            "condition": {"type": "TEXT_STARTS_WITH", "values": [{"userEnteredValue": RANK1_CELL_PREFIX}]},
+            "format": {"textFormat": {"foregroundColor": dict(COLOR_SUBSTITUTE_RANK1_TEXT)}},
+        },
+    }
+
+
+def _is_rank1_rule(rule: dict, col_idx: int) -> bool:
+    """우리가 거는 규칙인가 = 같은 조건 + 그 칸을 덮는 범위가 있음."""
+    from src.substitute import RANK1_CELL_PREFIX
+
+    cond = ((rule or {}).get("booleanRule") or {}).get("condition") or {}
+    values = [(v or {}).get("userEnteredValue") for v in cond.get("values") or []]
+    if cond.get("type") != "TEXT_STARTS_WITH" or values != [RANK1_CELL_PREFIX]:
+        return False
+    return any(
+        (rg or {}).get("startColumnIndex", 0) == col_idx and (rg or {}).get("endColumnIndex") == col_idx + 1
+        for rg in (rule.get("ranges") or [])
+    )
+
+
+def _rank1_rule_is_exact(rule: dict, sheet_id: int, col_idx: int) -> bool:
+    """범위(2행~끝 · 그 칸 하나)와 글자색(#188038)까지 맞나. API 는 0 값 칸을 빼고 돌려줄 수 있어 기본값 0 으로 읽는다."""
+    ranges = rule.get("ranges") or []
+    if len(ranges) != 1:
+        return False
+    rg = ranges[0] or {}
+    if (rg.get("sheetId", 0) != sheet_id or rg.get("startRowIndex", 0) != 1 or "endRowIndex" in rg
+            or rg.get("startColumnIndex", 0) != col_idx or rg.get("endColumnIndex") != col_idx + 1):
+        return False
+    text_format = (((rule.get("booleanRule") or {}).get("format") or {}).get("textFormat") or {})
+    color = text_format.get("foregroundColor")
+    if color is None:
+        color = ((text_format.get("foregroundColorStyle") or {}).get("rgbColor"))
+    if not isinstance(color, dict):
+        return False
+    return all(abs(float(color.get(c, 0) or 0) - COLOR_SUBSTITUTE_RANK1_TEXT[c]) < 0.003
+               for c in ("red", "green", "blue"))
+
+
+def _plan_rank1_format(sheet_id: int, rules: list, col_idx: int) -> tuple[list, list, dict]:
+    """지금 규칙 목록 → (보낼 요청, 요청 뒤 목록, 바뀐 수). 할 일이 없으면 요청 []."""
+    target = _rank1_rule_target(sheet_id, col_idx)
+    ours = [i for i, r in enumerate(rules) if _is_rank1_rule(r, col_idx)]
+    change = {"formats_added": 0, "formats_fixed": 0, "formats_removed": 0}
+    if not ours:
+        change["formats_added"] = 1
+        return ([{"addConditionalFormatRule": {"rule": target, "index": 0}}], [target] + list(rules), change)
+    keep, extra = ours[0], ours[1:]
+    # 지우기는 뒤에서부터(앞 번호가 밀리지 않게) · 남길 하나(keep)는 extra 보다 앞이라 번호 그대로
+    requests: list = [{"deleteConditionalFormatRule": {"sheetId": sheet_id, "index": i}} for i in reversed(extra)]
+    change["formats_removed"] = len(extra)
+    new_rules = [r for i, r in enumerate(rules) if i not in set(extra)]
+    if not _rank1_rule_is_exact(rules[keep], sheet_id, col_idx):
+        requests.append({"updateConditionalFormatRule": {"sheetId": sheet_id, "index": keep, "rule": target}})
+        new_rules[keep] = target
+        change["formats_fixed"] = 1
+    return requests, new_rules, change
 
 
 def map_headers_to_columns(

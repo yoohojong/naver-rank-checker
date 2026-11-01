@@ -183,7 +183,8 @@ class TestSubstituteFormulaMode:
     def test_수식모드_칸만들기_보이는칸은_수식_raw는_숨김(self):
         client, ws = _client(FORMULA_HEADERS)
         out = client.ensure_substitute_columns(TAB, [{"_row": 2}, {"_row": 3}], formula_mode=True)
-        assert out == {"headers_added": 2, "formula_rows": 2, "formats_added": 0}  # 서식 목록 못 읽음(MagicMock) = 안 더함
+        assert out == {"headers_added": 2, "formula_rows": 2, "stale_cleared": 0,
+                       "formats_added": 0, "formats_fixed": 0, "formats_removed": 0}  # 서식 목록 못 읽음(MagicMock) = 안 더함
         w = _written(ws)
         assert w["W1"] == HEADER_SUBSTITUTE and w["X1"] == HEADER_RAW_SUBSTITUTE
         # 보이는 칸 수식 = 입력 키가 같을 때만 raw 값 (K/L/M/O 와 같은 규칙)
@@ -329,3 +330,205 @@ class TestSubstituteRank1Format:
         client.ensure_substitute_columns.return_value = {"headers_added": 0, "formula_rows": 0, "formats_added": 1}
         out = sub.prepare_sheet_columns(client, {TAB: [{"_row": 2}], "탭2": [{"_row": 2}]}, formula_mode=False)
         assert out["formats_added"] == 2
+
+
+# ── 2026-11-01 GPT 1차 검토 지적 A~D ─────────────────────────────────────
+# A. 이번 회차에 처리하지 못한 줄(검색 실패 · 키워드 빈 줄)에 옛 형식 값이 남는다
+#    → 회차 앞에 '대체 노출' 값 칸에서 '대체노출 1위' 로 시작하지 않는 값을 한 번에 비운다.
+# B. 같은 글이 위 구좌 2위 · 아래 구좌 1위면 scan 이 위쪽만 남겨 1위를 놓친다.
+# C. 규칙 추가가 서버엔 들어갔는데 503 → 다시 보내 규칙 2개. 같은 규칙이 여럿이면 하나만 남긴다.
+# D. 같은 조건 · 같은 칸이지만 범위가 일부 행뿐이거나 색이 다른 규칙도 '있다'로 쳤다 → 맞게 고친다.
+
+from src.parser import OurPostHit  # noqa: E402
+
+PREFIX = sub.RANK1_CELL_PREFIX
+GREEN = {"red": 24 / 255, "green": 128 / 255, "blue": 56 / 255}
+
+
+def _plain_rows(values: dict, header=HEADER_SUBSTITUTE, last=6):
+    """{행: '대체 노출' 값} → 시트 읽기 결과(load_all_data_tabs 모양). 6행 = 키워드 빈 줄."""
+    return [{"_row": r, "_tab": TAB, "키워드": "kw" if r != 6 else "", header: values.get(r, "")}
+            for r in range(2, last + 1)]
+
+
+class TestStaleSubstituteClear:
+    """지적 A."""
+
+    def test_보통모드_옛_형식_값만_한번에_비움_1위는_그대로(self):
+        rows = _plain_rows({
+            2: "확인 못 함 (ValueError: x)",
+            3: f"인기글 2위 {URL_B}",
+            4: f"{PREFIX} {URL_A}",
+            6: "확인 못 함 (APIError: 429) — 찾은 것: 인기글 1위 x",
+        })
+        client, ws = _client(PLAIN_HEADERS)
+        out = client.ensure_substitute_columns(TAB, rows, formula_mode=False)
+        assert out["stale_cleared"] == 3
+        assert ws.batch_update.call_count == 1  # 한 번에
+        assert _written(ws) == {"G2": "", "G3": "", "G6": ""}  # G 칸만 · 1위(G4) 와 빈칸(G5)은 안 건드림
+
+    def test_수식모드는_숨김_raw칸만_비우고_보이는_수식칸은_안_건드림(self):
+        headers = FORMULA_HEADERS + [HEADER_SUBSTITUTE, HEADER_RAW_SUBSTITUTE]  # W = 보이는, X = raw
+        rows = [
+            {"_row": 2, "_tab": TAB, HEADER_SUBSTITUTE: "확인 못 함 (x)", HEADER_RAW_SUBSTITUTE: "확인 못 함 (x)"},
+            {"_row": 3, "_tab": TAB, HEADER_SUBSTITUTE: f"{PREFIX} {URL_A}",
+             HEADER_RAW_SUBSTITUTE: f"{PREFIX} {URL_A}"},
+            {"_row": 4, "_tab": TAB, HEADER_SUBSTITUTE: "", HEADER_RAW_SUBSTITUTE: f"스마트블록 3위 {URL_B}"},
+        ]
+        client, ws = _client(headers)
+        out = client.ensure_substitute_columns(TAB, rows, formula_mode=True)
+        assert out["stale_cleared"] == 2
+        clear_calls = [c for c in ws.batch_update.call_args_list
+                       if all(item["range"].startswith("X") for item in c.args[0])]
+        assert len(clear_calls) == 1
+        assert {i["range"]: i["values"][0][0] for i in clear_calls[0].args[0]} == {"X2": "", "X4": ""}
+        w = _written(ws)
+        assert w["W2:W4"].startswith("=IF(")  # 보이는 칸은 수식 그대로
+
+    def test_비우기_실패해도_회차는_계속(self):
+        rows = _plain_rows({2: "확인 못 함 (x)"})
+        client, ws = _client(PLAIN_HEADERS)
+        _with_live_rules(client)
+        ws.batch_update.side_effect = RuntimeError("500")
+        out = client.ensure_substitute_columns(TAB, rows, formula_mode=False)
+        assert out["stale_cleared"] == 0
+        assert out["formats_added"] == 1  # 서식은 그대로 진행
+
+    def test_칸을_이번에_새로_만들었으면_비울_것_없음(self):
+        headers = ["키워드", "링크", "노출영역"]
+        client, ws = _client(headers)
+        out = client.ensure_substitute_columns(TAB, [{"_row": 2, "키워드": "kw"}], formula_mode=False)
+        assert out["stale_cleared"] == 0
+        assert _written(ws) == {"Q1": HEADER_SUBSTITUTE}
+
+    def test_prepare_sheet_columns_가_비운_수를_모음(self):
+        client = MagicMock()
+        client.ensure_substitute_columns.return_value = {"headers_added": 0, "formula_rows": 0,
+                                                         "formats_added": 0, "stale_cleared": 4}
+        out = sub.prepare_sheet_columns(client, {TAB: [{"_row": 2}], "탭2": [{"_row": 2}]}, formula_mode=False)
+        assert out["stale_cleared"] == 8
+
+
+class TestScanSamePostBestRank:
+    """지적 B."""
+
+    def _scan(self, monkeypatch, found):
+        idx = sub.build_index({"다른탭": [{"링크": URL_A}, {"링크": URL_B}]})
+        monkeypatch.setattr(sub, "find_all_our_posts",
+                            lambda html, is_ours: [h for h in found if is_ours(h.url)])
+        return sub.scan("<html/>", idx, TAB, "kw", own_link=OWN)
+
+    def test_위_구좌_2위_아래_구좌_1위인_같은_글이면_1위(self, monkeypatch):
+        hits = self._scan(monkeypatch, [
+            OurPostHit(area="스마트블록", integrated_rank=4, cafe_slot_rank=2, url=URL_A, block_name="b"),
+            OurPostHit(area="인기글", integrated_rank=7, cafe_slot_rank=1, url=URL_A),
+        ])
+        assert sub.rank1_cell(hits) == f"{PREFIX} {URL_A}"
+        assert len(hits) == 1  # 기록 형식 그대로: 같은 글은 한 줄
+        assert hits[0]["area"] == "인기글" and hits[0]["cafe_rank"] == 1
+
+    def test_같은_글_위가_더_좋으면_위쪽_그대로_순서도_그대로(self, monkeypatch):
+        hits = self._scan(monkeypatch, [
+            OurPostHit(area="AB", integrated_rank=1, cafe_slot_rank=1, url=URL_A),
+            OurPostHit(area="스마트블록", integrated_rank=5, cafe_slot_rank=3, url=URL_B, block_name="b"),
+            OurPostHit(area="인기글", integrated_rank=6, cafe_slot_rank=2, url=URL_A),
+        ])
+        assert [(h["url"], h["area"], h["cafe_rank"]) for h in hits] == [
+            (URL_A, "AB", 1), (URL_B, "스마트블록", 3)]
+
+
+def _our_rule(col=6, *, start_row=1, end_row=None, color=None, sheet_id=777):
+    rg = {"sheetId": sheet_id, "startRowIndex": start_row, "startColumnIndex": col, "endColumnIndex": col + 1}
+    if end_row is not None:
+        rg["endRowIndex"] = end_row
+    return {"ranges": [rg],
+            "booleanRule": {"condition": {"type": "TEXT_STARTS_WITH", "values": [{"userEnteredValue": PREFIX}]},
+                            "format": {"textFormat": {"foregroundColor": dict(color or GREEN)}}}}
+
+
+class _LiveSheet:
+    """조건부 서식 규칙을 실제 시트처럼 들고 add/update/delete 요청을 적용한다."""
+
+    def __init__(self, client, rules, fail_after_apply=0):
+        self.rules = list(rules)
+        self.fail_after_apply = fail_after_apply  # 서버엔 들어갔는데 503 응답을 몇 번 돌려줄지
+        client.spreadsheet.fetch_sheet_metadata.side_effect = self.fetch
+        client.spreadsheet.batch_update.side_effect = self.batch
+
+    def fetch(self, params=None):
+        return {"sheets": [{"properties": {"sheetId": 777},
+                            "conditionalFormats": [json.loads(json.dumps(r)) for r in self.rules]}]}
+
+    def batch(self, body):
+        import gspread
+        for req in body["requests"]:
+            if "addConditionalFormatRule" in req:
+                a = req["addConditionalFormatRule"]
+                self.rules.insert(a.get("index", 0), a["rule"])
+            elif "updateConditionalFormatRule" in req:
+                u = req["updateConditionalFormatRule"]
+                assert u["sheetId"] == 777
+                self.rules[u["index"]] = u["rule"]
+            elif "deleteConditionalFormatRule" in req:
+                d = req["deleteConditionalFormatRule"]
+                assert d["sheetId"] == 777
+                del self.rules[d["index"]]
+        if self.fail_after_apply:
+            self.fail_after_apply -= 1
+            resp = MagicMock()
+            resp.status_code = 503
+            resp.json.return_value = {"error": {"code": 503, "message": "unavailable", "status": "UNAVAILABLE"}}
+            raise gspread.exceptions.APIError(resp)
+        return {}
+
+    def ours(self, col=6):
+        return [r for r in self.rules
+                if r["booleanRule"]["condition"].get("values") == [{"userEnteredValue": PREFIX}]
+                and r["ranges"][0]["startColumnIndex"] == col]
+
+
+@pytest.fixture
+def _no_sleep(monkeypatch):
+    monkeypatch.setattr("src.sheets.time.sleep", lambda s: None)
+
+
+class TestRank1FormatRetryAndDedup:
+    """지적 C · D."""
+
+    def test_503_뒤_다시_보내도_규칙은_1개(self, _no_sleep):
+        client, _ = _client(PLAIN_HEADERS)
+        live = _LiveSheet(client, [], fail_after_apply=1)
+        client.ensure_substitute_columns(TAB, [{"_row": 2}], formula_mode=False)
+        assert len(live.ours()) == 1
+
+    def test_같은_규칙이_둘이면_하나만_남김_다른_규칙은_그대로(self, _no_sleep):
+        other = {"ranges": [{"sheetId": 777, "startRowIndex": 1, "startColumnIndex": 2, "endColumnIndex": 3}],
+                 "booleanRule": {"condition": {"type": "TEXT_CONTAINS", "values": [{"userEnteredValue": "인기글"}]},
+                                 "format": {"textFormat": {"bold": True}}}}
+        client, _ = _client(PLAIN_HEADERS)
+        live = _LiveSheet(client, [_our_rule(), other, _our_rule()])
+        out = client.ensure_substitute_columns(TAB, [{"_row": 2}], formula_mode=False)
+        assert len(live.ours()) == 1
+        assert other in live.rules and len(live.rules) == 2
+        assert out["formats_added"] == 0
+
+    def test_범위가_일부_행뿐이면_2행부터_끝까지로_고침(self, _no_sleep):
+        client, _ = _client(PLAIN_HEADERS)
+        live = _LiveSheet(client, [_our_rule(end_row=50)])
+        client.ensure_substitute_columns(TAB, [{"_row": 2}], formula_mode=False)
+        (rule,) = live.ours()
+        assert rule["ranges"] == [{"sheetId": 777, "startRowIndex": 1, "startColumnIndex": 6, "endColumnIndex": 7}]
+
+    def test_색이_다르면_초록으로_고침(self, _no_sleep):
+        client, _ = _client(PLAIN_HEADERS)
+        live = _LiveSheet(client, [_our_rule(color={"red": 1.0, "green": 0.0, "blue": 0.0})])
+        client.ensure_substitute_columns(TAB, [{"_row": 2}], formula_mode=False)
+        (rule,) = live.ours()
+        color = rule["booleanRule"]["format"]["textFormat"]["foregroundColor"]
+        assert "#%02X%02X%02X" % tuple(round(color[c] * 255) for c in ("red", "green", "blue")) == "#188038"
+
+    def test_맞는_규칙_하나면_아무_요청도_안_보냄(self, _no_sleep):
+        client, _ = _client(PLAIN_HEADERS)
+        _LiveSheet(client, [_our_rule()])
+        client.ensure_substitute_columns(TAB, [{"_row": 2}], formula_mode=False)
+        client.spreadsheet.batch_update.assert_not_called()
