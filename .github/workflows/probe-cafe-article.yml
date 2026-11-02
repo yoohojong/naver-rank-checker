@@ -1,0 +1,23 @@
+name: probe-cafe-article
+# 11-03 카페외부 레퍼런스 글 하나 본문 · 댓글 받기 — 읽기 전용, probe/ 가지에서만. main 에 합치지 않는다.
+on:
+  push:
+    branches: ['probe/cafe-article-1103']
+permissions:
+  contents: read
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v6.0.2
+      - uses: actions/setup-python@v6.2.0
+        with: {python-version: '3.13'}
+      - run: python -u scripts/probe_cafe_article.py
+        env:
+          CAFE: knife67
+          AID: '596761'
+          ART: 'ZXh0ZXJuYWwtc2VydmljZS1uYXZlci1zZWFyY2gtY2FmZS1wcg.eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJjYWZlVHlwZSI6IkNBRkVfVVJMIiwiY2FmZVVybCI6ImtuaWZlNjciLCJhcnRpY2xlSWQiOjU5Njc2MSwiaXNzdWVkQXQiOjE3OTM2NDA0OTIzMzV9.ePTb_8rHz-Sbcb9tOb9ZJ_ggNSstvlkur0XlufUB-QU'
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with: {name: probe-cafe-article, path: out/, retention-days: 7}
