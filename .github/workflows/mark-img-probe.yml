@@ -1,0 +1,26 @@
+name: mark-img-probe
+# 일회용: 경쟁 마킹글 사진 원본 크기 시험. 네이버 요청은 GitHub 서버에서만 · 로그인 안 함 · 비밀값 안 씀.
+on:
+  push:
+    branches: ['창/경쟁마킹수집']
+    paths: ['.github/workflows/mark-img-probe.yml']
+permissions:
+  contents: read
+jobs:
+  fetch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: tools
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.12'}
+      - run: pip install curl_cffi==0.15.0 pillow
+      - run: python tools/mark_img_probe.py
+        env:
+          PYTHONIOENCODING: utf-8
+          URLS: "https://blog.naver.com/dbwjd0613/224374920785 https://blog.naver.com/ehdehdrn126/224335176758"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with: {name: mark-img-probe, path: out/, retention-days: 14}
