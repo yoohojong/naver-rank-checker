@@ -1,0 +1,24 @@
+name: mark-hub-short
+# 일회용: 짧은 주소 도착지 보기. 네이버 요청은 GitHub 서버에서만 · 로그인 안 함 · 비밀값 안 씀.
+on:
+  push:
+    branches: ['창/경쟁마킹수집']
+    paths: ['tools/mark_hub_short.txt']
+permissions:
+  contents: read
+jobs:
+  fetch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: tools
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.12'}
+      - run: pip install curl_cffi==0.15.0
+      - run: python tools/mark_hub_short.py
+        env: {PYTHONIOENCODING: utf-8}
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with: {name: mark-hub-short, path: out/, retention-days: 14}
