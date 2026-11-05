@@ -2,9 +2,6 @@ name: need-datalab-web
 # 욕구 검색어의 달마다 검색 흐름 — 네이버 데이터랩 공개 화면(로그인 없음). 예약 없음 · 손으로 부를 때만.
 # 2026-10-26 노력 욕구 창 · 사장님 "깃헙 우회 루트 있다며". 받는 명령: gh run download <번호> -R yoohojong/naver-rank-checker -n need-datalab-web
 on:
-  push:
-    branches: [feat/need-datalab-monthly]
-    paths: [scripts/need_datalab_web.py, .github/workflows/need-datalab-web.yml]
   workflow_dispatch:
     inputs:
       keywords: {description: '쉼표로 가른 검색어', required: false, default: '지루성두피염,비염,곱슬머리,한포진'}
@@ -28,7 +25,7 @@ jobs:
           ANCHOR: ${{ github.event.inputs.anchor }}
           START: ${{ github.event.inputs.start }}
           END: ${{ github.event.inputs.end }}
-        run: python scripts/need_datalab_web.py
+        run: for a in 2 3 4 5 6 7 8 9 10 11; do AGE=$a python scripts/need_datalab_web.py || true; done
       - uses: actions/upload-artifact@v4
         if: always()
         with: {name: need-datalab-web, path: out/, retention-days: 14}
