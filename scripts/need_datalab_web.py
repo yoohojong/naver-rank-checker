@@ -6,6 +6,7 @@
 import json, os, re, sys, time
 from playwright.sync_api import sync_playwright
 
+AGE = os.environ.get("AGE") or ""
 ANCHOR = os.environ.get("ANCHOR") or "다이어트"
 START = (os.environ.get("START") or "2023-10-01").replace("-", "")
 END = (os.environ.get("END") or "2026-09-30").replace("-", "")
@@ -41,7 +42,7 @@ with sync_playwright() as pw:
         names = [ANCHOR] + chunk
         try:
             txt = p.evaluate(FETCH_JS, {"queryGroups": groups_str(names), "startDate": START, "endDate": END,
-                                        "timeUnit": "date", "gender": "", "age": "", "device": ""})
+                                        "timeUnit": "date", "gender": "", "age": AGE, "device": ""})
             if raw_first is None and i == 0:
                 open("out/qchash_first.txt", "w", encoding="utf-8").write(txt[:200000])
             m = re.search(r"N_[0-9a-f]{20,}", txt)
@@ -156,8 +157,8 @@ with sync_playwright() as pw:
                     pass
     b.close()
 
-json.dump({"기준": ANCHOR, "기간": [START, END], "검색어": result, "실패": failed, "원자료_첫묶음": raw_first},
-          open("out/need_datalab_web.json", "w", encoding="utf-8"), ensure_ascii=False, indent=1)
+json.dump({"연령코드": AGE, "기준": ANCHOR, "기간": [START, END], "검색어": result, "실패": failed, "원자료_첫묶음": raw_first},
+          open(f"out/need_datalab_web_age{AGE or 'all'}.json", "w", encoding="utf-8"), ensure_ascii=False, indent=1)
 print(f"받음 {len(result)} · 실패 {len(failed)}")
 if not result:
     sys.exit(1)
