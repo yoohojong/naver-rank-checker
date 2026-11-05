@@ -1,0 +1,24 @@
+name: mark-cafe-probe
+# 일회용: 경쟁 카페 공개 글 원문 · 사진 받기. 네이버 요청은 GitHub 서버에서만 · 로그인 안 함 · 비밀값 안 씀.
+on:
+  push:
+    branches: ['창/경쟁마킹수집']
+    paths: ['.github/workflows/mark-cafe-probe.yml']
+permissions:
+  contents: read
+jobs:
+  fetch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 150
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: tools
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.12'}
+      - run: pip install curl_cffi==0.15.0 pillow
+      - run: python tools/mark_cafe_probe.py
+        env: {PYTHONIOENCODING: utf-8}
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with: {name: mark-cafe-probe, path: out/, retention-days: 14, compression-level: 0}
