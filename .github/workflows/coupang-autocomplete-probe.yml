@@ -1,0 +1,29 @@
+name: coupang-autocomplete-probe
+# 쿠팡 자동완성 시험 — 읽기 전용, 손으로 부를 때만(cron 없음). 카드 t_cfc8c1ba 2026-11-06.
+on:
+  workflow_dispatch:
+    inputs:
+      keywords:
+        description: '쉼표로 가른 씨앗'
+        required: false
+        default: '지루성두피염,지루성두피염 샴푸,두피 각질,두피 가려움,비듬 샴푸'
+permissions:
+  contents: read
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v6.0.2
+      - uses: actions/setup-python@v6.2.0
+        with:
+          python-version: '3.13'
+      - run: pip install requests
+      - env:
+          KEYWORDS: ${{ github.event.inputs.keywords }}
+        run: python scripts/coupang_autocomplete_probe.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: coupang-autocomplete
+          path: out/*.json
+          if-no-files-found: ignore
