@@ -1,5 +1,5 @@
 name: coupang-autocomplete-probe
-# 쿠팡 자동완성 시험 — 읽기 전용, 손으로 부를 때만(cron 없음). 카드 t_cfc8c1ba 2026-11-06.
+# 쿠팡 검색결과 연관검색어 시험(t_06e2cfd5) — 읽기 전용, 손으로 부를 때만(cron 없음). 카드 t_cfc8c1ba 2026-11-06.
 on:
   push:
     branches: [probe/coupang-autocomplete-1106]
@@ -25,7 +25,7 @@ jobs:
       - run: pip install requests
       - env:
           KEYWORDS: ${{ github.event.inputs.keywords }}
-        run: python scripts/coupang_autocomplete_probe.py
+        run: python scripts/coupang_search_probe.py
       - uses: actions/upload-artifact@v4
         with:
           name: coupang-autocomplete
