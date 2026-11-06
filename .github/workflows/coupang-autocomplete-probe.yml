@@ -1,6 +1,10 @@
 name: coupang-autocomplete-probe
 # 쿠팡 자동완성 시험 — 읽기 전용, 손으로 부를 때만(cron 없음). 카드 t_cfc8c1ba 2026-11-06.
 on:
+  push:
+    branches: [probe/coupang-autocomplete-1106]
+    paths:
+      - .github/workflows/coupang-autocomplete-probe.yml
   workflow_dispatch:
     inputs:
       keywords:

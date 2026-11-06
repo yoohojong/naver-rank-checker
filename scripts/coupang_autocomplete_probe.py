@@ -2,7 +2,7 @@
 import json, os, random, sys, time, re, urllib.parse
 import requests
 sys.stdout.reconfigure(encoding="utf-8")
-seeds = [s.strip() for s in os.environ.get("KEYWORDS", "").split(",") if s.strip()]
+seeds = [s.strip() for s in (os.environ.get("KEYWORDS") or "지루성두피염,지루성두피염 샴푸,두피 각질,두피 가려움,비듬 샴푸").split(",") if s.strip()]
 UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36"
 H = {"User-Agent": UA, "Accept-Language": "ko-KR,ko;q=0.9", "Referer": "https://www.coupang.com/"}
 out = []
