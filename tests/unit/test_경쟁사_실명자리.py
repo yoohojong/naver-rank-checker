@@ -39,10 +39,10 @@ def _가짜(monkeypatch, 보낸):
     monkeypatch.setattr(C.shop_probe, "verified", lambda names, stat=None: (list(names), []))
 
 
-def _돌림(tmp_path, ms, 계정미는제품=None):
+def _돌림(tmp_path, ms):
     붙은, v, stat = C.extract_brands(ms, verdict_path=str(tmp_path / "v.json"), today="2026-11-07",
                                      reads_path=str(tmp_path / "r.json"))
-    out, 곁, 실 = C.실명만_남기기(ms, 붙은, 계정미는제품)
+    out, 곁, 실 = C.실명만_남기기(ms, 붙은)
     return out, v, {**stat, **실}, 곁
 
 
@@ -79,15 +79,72 @@ def test_흐름_없는_글은_경쟁사를_안_뽑는다(tmp_path, monkeypatch):
     assert sorted(m["표시"] for m in 곁) == ["라우쉬", "지성샴푸"]
 
 
-def test_쪽지로_끝나면_계정_다른글_실명_아니면_이름모름(tmp_path, monkeypatch):
+글2 = "https://cafe.naver.com/x/2?art=zzz"
+
+
+def test_쪽지로_끝나면_같은_계정_다른_글의_실명_댓글_원문이_있을_때만(tmp_path, monkeypatch):
     _가짜(monkeypatch, [])
-    ms = [_m(t, i, w) for i, (t, w, _) in enumerate(흐름[:3])]
-    out, *_ = _돌림(tmp_path, ms, 계정미는제품={"k1": ["다시꽃"]})
-    assert [(m["표시"], m["근거"]) for m in out] == [("다시꽃", "다른 글 실명")]
-    out, _, stat, _ = _돌림(tmp_path, ms, 계정미는제품={"k1": ["다시꽃", "라우쉬"]})
-    assert out == [] and stat["이름모름글수"] == 1 and stat["이름모름글"] == ["https://cafe.naver.com/x/1"]
-    out, _, stat, _ = _돌림(tmp_path, ms, 계정미는제품={"k1": ["뽀얀", "라우쉬"]})
-    assert out == [] and stat["이름모름글수"] == 0       # 우리 제품을 미는 계정 = 우리 계정
+    쪽지뿐 = [_m(t, i, w) for i, (t, w, _) in enumerate(흐름[:3])]
+    # ① 다른 글이 없으면 — 이전 표의 '미는 제품' 값 같은 것으로 채우지 않고 이름 모름
+    out, _, stat, _ = _돌림(tmp_path, 쪽지뿐)
+    assert out == [] and stat["이름모름글"] == ["https://cafe.naver.com/x/1"]
+    # ② 같은 계정의 다른 글(글2)에 실명 자리 댓글이 있으면 그 이름 + 그 글 주소·댓글 원문을 남긴다
+    다른글 = [_m(t, i, w, url=글2) for i, (t, w, _) in enumerate(흐름[:2] + 흐름[3:4])]
+    out, _, stat, _ = _돌림(tmp_path, 쪽지뿐 + 다른글)
+    골 = [m for m in out if m["글"] == 글]
+    assert [(m["표시"], m["근거"]) for m in 골] == [("다시꽃", "다른 글 실명")]
+    assert 골[0]["근거글"] == "https://cafe.naver.com/x/2" and "다.시꽃샴푸" in 골[0]["근거댓글"]
+    # ③ 다른 글 실명이 둘 이상이면 가릴 수 없다 → 이름 모름
+    글3 = "https://cafe.naver.com/x/3"
+    셋째 = [_m(t, i, w, url=글3) for i, (t, w, _) in enumerate(흐름[:2])] + [
+        _m("저는 쪽지 받고 삭제할게요 제품은 라우쉬예요", 2, url=글3)]
+    이름표["저는 쪽지 받고 삭제할게요 제품은 라우쉬예요"] = ["라우쉬"]
+    out, _, stat, _ = _돌림(tmp_path, 쪽지뿐 + 다른글 + 셋째)
+    assert not [m for m in out if m["글"] == 글] and 글 .split("?")[0] in stat["이름모름글"]
+
+
+def test_현재_글_안의_비교_이름과_깎음_이름은_다른_글_실명이_아니다(tmp_path, monkeypatch):
+    """F1 — 계정 글이 이 글 하나뿐이면 현재 글에서 읽힌 이름(비교·깎음)을 경쟁사로 복원하지 않는다."""
+    _가짜(monkeypatch, [])
+    ms = [_m(흐름[0][0], 0), _m("저는 라우쉬도 괜찮았어요", 1), _m(흐름[1][0], 2, True), _m(흐름[2][0], 3)]
+    out, _, stat, 곁 = _돌림(tmp_path, ms)
+    assert out == [] and stat["이름모름글수"] == 1
+    assert "라우쉬" in [m["표시"] for m in 곁]
+
+
+def test_다른_카페는_글번호가_같아도_우리_글이_아니다():
+    우리 = frozenset({"https://cafe.naver.com/yongchondown/180474"})
+    새 = "https://cafe.naver.com/ca-fe/cafes/999999/articles/180474"
+    assert not C.is_our_item(새, set(우리), set())                       # 카페 대응 미확인 → 제외 안 함
+    assert not C.is_our_item(새, set(우리), set(), {"yongchondown": "12345"})   # 다른 카페 번호 → 제외 안 함
+    assert C.is_our_item(새.replace("999999", "12345"), set(우리), set(), {"yongchondown": "12345"})
+    assert C.is_our_item("https://cafe.naver.com/yongchondown/180474?art=Q", set(우리), set())
+    assert not C.is_our_item("https://cafe.naver.com/other/180474", set(우리), set())
+    assert [m["댓글"] for m in C.우리글_빼기([_m("a", 0, url=새), _m("b", 0, url=새.replace("999999", "12345"))],
+                                             우리, {"yongchondown": "12345"})] == ["a"]
+
+
+def test_두_실행_진입이_같은_기준을_쓴다(tmp_path, monkeypatch):
+    """F4 — --from-sheet 와 --keywords 가 같은 함수(기준대로_고르기)를 거친다."""
+    import inspect
+    _가짜(monkeypatch, [])
+    ms = [_m(t, i, w) for i, (t, w, _) in enumerate(흐름)] + [
+        _m("우리 글 댓글 쪽지", 0, url="https://cafe.naver.com/yongchondown/180474?art=Q")]
+    out, v, stat, 곁 = C.기준대로_고르기(ms, frozenset({"https://cafe.naver.com/yongchondown/180474"}),
+                                       verdict_path=str(tmp_path / "v.json"), today="2026-11-07",
+                                       reads_path=str(tmp_path / "r.json"))
+    assert [(m["표시"], m["근거"]) for m in out] == [("다시꽃", "실명 자리")]
+    assert all("yongchondown" not in m["글"] for m in out + 곁)
+    assert "기준대로_고르기(" in inspect.getsource(C.run_from_sheet)
+    assert "기준대로_고르기(" in inspect.getsource(C.main)
+    assert "extract_brands(all_mentions" not in inspect.getsource(C.main)
+
+
+def test_새_시트_쓰기_증분은_들어_있지_않다():
+    """F5 — 이번 판에서 뺀 새 쓰기 길. 없어져야 한다."""
+    assert not hasattr(C, "_댓글후보탭_쓰기")
+    import inspect
+    assert "WRITE_COMMENT_CANDIDATES" not in inspect.getsource(C)
 
 
 def test_실명_자리_댓글은_빈_기억이면_한번만_다시_읽는다(tmp_path, monkeypatch):
