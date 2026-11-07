@@ -43,7 +43,8 @@ def merge(cached: dict, fresh: dict, *, today: str) -> dict:
         if out.get(key, {}).get("판정") == HUMAN:
             continue                        # 사람 판정이 위 — 덮지 않는다
         out[key] = {"제품": bool(v.get("제품")), "이름": str(v.get("이름") or ""),
-                    "판정": "LLM", "판정일": today}
+                    "판정": "종류" if v.get("판정") == "종류" else "LLM",
+                    "판정일": today}
     return out
 
 

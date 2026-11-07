@@ -100,10 +100,24 @@ NOT_A_BRAND = {
 }
 
 
+def 종류이름인가(name: str) -> bool:
+    """브랜드가 아니라 **종류 이름**인가 — '지성샴푸' · '약산성바디워시' · '남성바디워시' · '지성'.
+
+    ★2026-11-07 사장님(11-06) "경쟁사는 브랜드키워드가 정상이잖아?" — 종류 이름은 경쟁사가 아니라
+      키워드 후보 재료다. 손 목록(NOT_A_BRAND)에 하나씩 더하면 다음 종류 이름이 또 샌다
+      ('지성샴푸'가 그렇게 들어왔다). 규칙으로 가른다: 종류 꼬리(샴푸 · 바디워시 …)를 떼고 남는 말이
+      비었거나 일반 낱말(지성 · 남성 · 각질제거 …)이거나 증상 끝 글자(염 · 증 · 성 · 용)이면 종류다
+      (comment_brand.is_category_word 한 곳의 규칙을 그대로 쓴다)."""
+    from src.comment_brand import is_category_word
+    return bool(normalize_name(name)) and is_category_word(name)
+
+
 def is_real_brand(name: str) -> bool:
     """표에 넣을 만한 브랜드인가 — 일반 명칭·장소는 뺀다."""
     key = normalize_name(name)
     if len(key) < 2:
+        return False
+    if 종류이름인가(name):              # 2026-11-07 — 종류 이름은 경쟁사가 아니다(키워드 후보로)
         return False
     return key not in {normalize_name(x) for x in NOT_A_BRAND}
 
@@ -123,6 +137,8 @@ def 표에_남길_경쟁사인가(name: str) -> bool:
       이미 막는다. 여기서까지 걸면 옛 자료의 짧은 이름을 새로 지우는 셈이라 범위를 벗어난다."""
     key = normalize_name(name)
     if key in {normalize_name(x) for x in NOT_A_BRAND}:
+        return False
+    if 종류이름인가(name):              # 이어받는 옛 줄도 같은 잣대(2026-11-07)
         return False
     return not 우리제품인가(name)
 
@@ -293,12 +309,254 @@ class CommentFetcher:
 
 
 def is_our_item(url: str, our_links: set, our_slugs: set) -> bool:
-    """우리 글인지 — 시트 link 매치 또는 우리 카페 slug 매치. (사장님: "우리 글 말고 다른 글")"""
-    if is_known_url(url, our_links):
+    """우리 글인지 — 시트 link 매치 또는 우리 카페 slug 매치. (사장님: "우리 글 말고 다른 글")
+
+    ★2026-11-07 — 글 열쇠(카페 · 글 번호)로 맞댄다. ?art= 열쇠는 회차마다 달라 보지 않는다.
+      우리 링크가 1천 개를 넘어 주소를 하나씩 풀면 느려서, 링크 묶음의 열쇠를 한 번만 만든다."""
+    if our_links and _우리글_열쇠맞음(url, our_links):
         return True
     slug = cafe_slug_of(url)
     return bool(slug and slug in (our_slugs or set()))
 
+
+# ── 실명 자리 · 우리 글 · 곁 이름 (2026-11-07 사장님 기준 ①~③) ─────────────
+# 사장님 원문(11-06): "경쟁사는 브랜드키워드가 정상이잖아? … 경쟁글이 깍아내린 제품은 이제 시장 조사할 때
+#   나오는 대안들이락 보면 되는거잖아 … 오히려 키워드후보에 들어가야하는 녀석들임 … 결국 뽀얀샴푸가 경쟁사인거야."
+# 흐름 근거: cafe-external/댓글_메뉴얼_샴푸.md — 되물음 → 쪽지 → ㄴB(2차) 은밀함(삭제 예고) + 실명 딱 1곳.
+import functools as _functools
+import re as _re
+
+_카페글 = _re.compile(r"cafe\.naver\.com/(?:(?:ca-fe|f-e)/cafes/(\d+)/articles/(\d+)|([A-Za-z0-9_\-]+)/(\d+))")
+_은밀함 = _re.compile(r"(삭제|지울|지워|폭파|펑)\s*(할|하|게|예정|될|합|해|요|수)|댓글\s*(이|은|도)?\s*없을\s*수")
+_쪽지 = _re.compile(r"쪽지|메세지|메시지|디엠|\bDM\b")
+
+
+def _글열쇠(url):
+    """카페 글 주소 → ('옛:<카페>' 또는 '새:<카페번호>', 글번호). ?art= 열쇠는 보지 않는다."""
+    m = _카페글.search(str(url or ""))
+    if not m:
+        return None
+    if m.group(2):
+        return ("새:" + m.group(1), m.group(2))
+    return ("옛:" + m.group(3).lower(), m.group(4))
+
+
+@_functools.lru_cache(maxsize=8)
+def _우리글_열쇠들(links: frozenset) -> tuple:
+    전체, 옛번호, 새번호, 남은 = set(), set(), set(), set()
+    for u in links:
+        k = _글열쇠(u)
+        if not k:
+            남은.add(u)                     # naver.me 같은 짧은 주소 — 원래 맞대기로만 본다
+            continue
+        전체.add(k)
+        (새번호 if k[0].startswith("새:") else 옛번호).add(k[1])
+    return frozenset(전체), frozenset(옛번호), frozenset(새번호), frozenset(남은)
+
+
+def _우리글_열쇠맞음(url, our_links) -> bool:
+    """옛 주소끼리 · 새 주소끼리는 카페+글번호, 옛 ↔ 새는 글번호만(parser._urls_match 와 같은 잣대)."""
+    전체, 옛번호, 새번호, 남은 = _우리글_열쇠들(frozenset(our_links))
+    k = _글열쇠(url)
+    if k and (k in 전체 or k[1] in (옛번호 if k[0].startswith("새:") else 새번호)):
+        return True
+    return bool(남은) and is_known_url(str(url or ""), set(남은))
+
+
+def 우리_링크_모으기(탭값들) -> set:
+    """'… 카외' 탭 값들(머리줄 포함) → 우리 글 링크 집합 · 순수함수."""
+    out: set = set()
+    for values in 탭값들 or []:
+        if not values or "링크" not in values[0]:
+            continue
+        li = values[0].index("링크")
+        for r in values[1:]:
+            v = str(r[li]).strip() if li < len(r) else ""
+            if v.startswith("http"):
+                out.add(v)
+    return out
+
+
+def 우리글_빼기(mentions: list, our_links) -> list:
+    """우리 글(시트 링크와 같은 글)의 언급을 뺀다 — 우리 글 댓글은 경쟁사 재료가 아니다."""
+    if not our_links:
+        return list(mentions or [])
+    return [m for m in mentions or [] if not _우리글_열쇠맞음(m.get("글"), our_links)]
+
+
+def 실명자리(원문들: list, 글쓴이댓글: list | None = None) -> list:
+    """한 글의 댓글 원문(차례대로) → 실명 자리 위치들 · 순수함수.
+
+    ① 은밀함 문장(삭제 예고 · '댓글 없을 수도')이 든 댓글
+    ② 쪽지 댓글 바로 뒤의, 글쓴이가 아니고 쪽지 말이 없는 댓글"""
+    글쓴 = list(글쓴이댓글 or [])
+    자리 = []
+    for i, t in enumerate(원문들 or []):
+        t = str(t or "")
+        if _은밀함.search(t):
+            자리.append(i)
+        elif (i > 0 and _쪽지.search(str(원문들[i - 1] or "")) and not _쪽지.search(t)
+              and not (i < len(글쓴) and 글쓴[i])):
+            자리.append(i)
+    return 자리
+
+
+def _글묶음(mentions: list) -> dict:
+    """(키워드, 글 열쇠) → 그 글 댓글 언급 위치들(댓글 차례대로). 같은 글이 키워드마다 따로 들어온다."""
+    묶음: dict = {}
+    for idx, m in enumerate(mentions or []):
+        if (m.get("원천") or "댓글") != "댓글" or not str(m.get("댓글") or "").strip():
+            continue
+        글 = _글열쇠(m.get("글")) or str(m.get("글") or "").split("?")[0]
+        묶음.setdefault((str(m.get("키워드") or ""), 글), []).append(idx)
+    for idxs in 묶음.values():
+        idxs.sort(key=lambda i: mentions[i]["차례"] if isinstance(mentions[i].get("차례"), int) else i)
+    return 묶음
+
+
+def 실명_원문들(mentions: list) -> set:
+    """실명 자리 댓글의 원문들 — AI 에 보내기 전에(이름 없이) 정해진다."""
+    out: set = set()
+    for idxs in _글묶음(mentions).values():
+        원문 = [str(mentions[i]["댓글"]).strip() for i in idxs]
+        for p in 실명자리(원문, [bool(mentions[i].get("글쓴이댓글")) for i in idxs]):
+            out.add(원문[p])
+    return out
+
+
+def 실명_고르기(mentions: list, 이름들_of, 계정미는제품: dict | None = None) -> tuple:
+    """글마다 경쟁사 이름 **하나** · 순수함수 → ({언급 위치: (이름, 근거)}, {실명자리글, 이름모름글}).
+
+    · 실명 자리 댓글에서 읽힌 첫 이름 → 근거 '실명 자리' (기준 ①)
+    · 자리에서 이름을 못 읽었거나 쪽지로 끝난 글 → 그 글쓴이 계정이 미는 제품이 **딱 하나**면 그 이름
+      (근거 '다른 글 실명'). 우리 제품이 섞이면 우리 계정이라 뽑지 않는다. 그 밖은 '이름 모름' (기준 ②)
+    · 쪽지 · 삭제 예고 흐름이 없는 글은 경쟁사를 뽑지 않는다 (기준 ①)"""
+    고름: dict = {}
+    자리글: set = set()
+    이름모름: list = []
+    for (_kw, 글), idxs in _글묶음(mentions).items():
+        원문 = [str(mentions[i]["댓글"]).strip() for i in idxs]
+        자리 = 실명자리(원문, [bool(mentions[i].get("글쓴이댓글")) for i in idxs])
+        if not 자리 and not any(_쪽지.search(t) for t in 원문):
+            continue
+        if 자리:
+            자리글.add(글)
+        골 = None
+        for p in 자리:
+            names = list(이름들_of(원문[p]) or [])
+            if names:
+                골 = (names[0], "실명 자리", idxs[p])
+                break
+        if 골 is None:
+            키 = str(mentions[idxs[0]].get("글쓴이키") or "")
+            민 = [str(n) for n in (계정미는제품 or {}).get(키, []) if str(n or "").strip()]
+            if any(우리제품인가(n) for n in 민):
+                continue
+            if len(민) == 1:
+                골 = (민[0], "다른 글 실명", idxs[자리[0]] if 자리 else idxs[-1])
+            else:
+                이름모름.append(str(mentions[idxs[0]].get("글") or "").split("?")[0])
+                continue
+        고름[골[2]] = (골[0], 골[1])
+    return 고름, {"실명자리글": len(자리글), "이름모름글": 이름모름}
+
+
+def 계정_미는제품_읽기(path: str | None = None) -> dict:
+    """어제까지의 바이럴 계정 표 → {계정키: [미는 제품, …]}. 없거나 깨졌으면 {}(멈추지 않는다)."""
+    path = path or os.path.join(os.path.dirname(brand_verdicts.DEFAULT_PATH), "viral_accounts.json")
+    try:
+        with open(path, encoding="utf-8") as f:
+            data = json.load(f)
+    except (OSError, ValueError):
+        return {}
+    계정들 = data.get("계정") if isinstance(data, dict) else None
+    out: dict = {}
+    for a in 계정들 or []:
+        키, 민 = str((a or {}).get("계정키") or ""), (a or {}).get("미는제품") or []
+        if 키 and isinstance(민, list):
+            out[키] = [str(x.get("이름") if isinstance(x, dict) else x) for x in 민]
+    return out
+
+
+def 댓글_키워드후보(언급들: list, 이미가진: set, 이미후보: set, *, 오늘: str = "") -> list:
+    """곁 이름 · 깎인 대상 · 깎은 종류 → 키워드 후보 줄 · 순수함수(시트를 모른다).
+
+    기준 ③: 종류 이름 · 깎인 제품 · 설득용 브랜드는 경쟁사가 아니라 키워드 후보다.
+    이미 우리 키워드이거나 이미 후보에 있는 것은 뺀다(정규화로 맞댐). 우리 제품도 뺀다."""
+    out, 본 = [], set()
+    for m in 언급들 or []:
+        이름 = str((m or {}).get("표시") or "").strip()
+        종 = (m or {}).get("종류")
+        if not 이름 or 우리제품인가(이름):
+            continue
+        if 종 == "깎음":
+            경로 = "깎인 대상"
+        elif 종 == "깎은종류" or 종류이름인가(이름):
+            경로 = "경쟁 글 댓글 종류 이름"
+        elif 종 == "곁이름":
+            경로 = "경쟁 글 댓글 곁 이름"
+        else:
+            continue
+        제품군, k = str(m.get("제품군") or ""), _키워드정규화(이름)
+        if not k or k in (이미가진 or set()) or k in (이미후보 or set()) or (제품군, k) in 본:
+            continue
+        본.add((제품군, k))
+        out.append({"키워드": 이름, "제품군": 제품군, "발견경로": 경로,
+                    "대상카페": str(m.get("카페") or ""), "제안자": "자동(댓글)", "제안일": 오늘,
+                    "근거글": str(m.get("글") or "").split("?")[0]})
+    return out
+
+
+def 실명만_남기기(mentions: list, 이름붙은: list, 계정미는제품: dict | None = None) -> tuple:
+    """extract_brands 가 이름을 붙인 언급 → (경쟁사 언급 · 곁언급 · 셈) · 순수함수.
+
+    extract_brands 는 지금처럼 댓글마다 읽힌 이름을 다 붙인다(읽기 기억 · 판정 · 이름 묶기가 그걸 믿는다).
+    경쟁사로 셀 것은 여기서 고른다 — 글마다 실명 자리의 제품 하나(실명_고르기). 나머지 이름은 곁언급."""
+    이름표: dict = {}
+    for m in 이름붙은 or []:
+        if m.get("종류", "제품") != "제품":
+            continue
+        t = str(m.get("댓글") or "").strip()
+        n = str(m.get("표시") or "")
+        if n and n not in 이름표.setdefault(t, []):
+            이름표[t].append(n)
+    고름, st = 실명_고르기(mentions or [], lambda t: 이름표.get(t, []), 계정미는제품)
+    out, 곁 = [], []
+    for idx, m in enumerate(mentions or []):
+        t = str(m.get("댓글") or "").strip()
+        골 = 고름.get(idx)
+        if 골:
+            out.append({**m, "표시": 골[0], "키": 골[0], "종류": "제품", "근거": 골[1]})
+        for n in 이름표.get(t, []):
+            if not 골 or n != 골[0]:
+                곁.append({**m, "표시": n, "키": n, "종류": "곁이름"})
+    모름 = sorted({u for u in st["이름모름글"] if u})
+    return out, 곁, {"실명자리글": st["실명자리글"], "이름모름글": 모름, "이름모름글수": len(모름),
+                     "곁이름": len(곁)}
+
+
+def _댓글후보탭_쓰기(client, 후보줄: list) -> int:
+    """댓글에서 나온 키워드 후보를 '키워드후보' 탭에 더한다(줄 안 지움 · 이미 있는 것 뺌)."""
+    import gspread
+    이미 = set()
+    for ws in client.spreadsheet.worksheets():
+        if ws.title.strip().endswith("카외") or ws.title.strip() == "키워드후보":
+            v = ws.get_all_values()
+            if v and "키워드" in v[0]:
+                ki = v[0].index("키워드")
+                이미 |= {_키워드정규화(r[ki]) for r in v[1:] if ki < len(r)}
+    새것 = [x for x in 후보줄 if _키워드정규화(x["키워드"]) not in 이미]
+    if not 새것:
+        return 0
+    try:
+        ws = client.spreadsheet.worksheet("키워드후보")
+    except gspread.exceptions.WorksheetNotFound:
+        ws = client.spreadsheet.add_worksheet(title="키워드후보", rows=200, cols=len(키워드후보_머리줄))
+        ws.update("A1", [키워드후보_머리줄], value_input_option="RAW")
+    줄들 = [[x["키워드"], x["제품군"], "", "", "", "", x["발견경로"], x["대상카페"], x["제안자"],
+             x["제안일"], "", ""] for x in 새것]
+    ws.append_rows(줄들, value_input_option="RAW")
+    return len(새것)
 
 def tikitaka_texts(comments: list, *, window: int = 2) -> list:
     """묻는 댓글 바로 다음 window 개 — '두 번째 댓글 티키타카' 자리.
@@ -519,6 +777,7 @@ def extract_brands(mentions: list, *, verdict_path: str = brand_verdicts.DEFAULT
         today = datetime.now(timezone(timedelta(hours=9))).strftime("%Y-%m-%d")
 
     reads = comment_reads.load(reads_path)
+    실명원문 = 실명_원문들(mentions or [])   # 2026-11-07 — 실명 자리 댓글(이름 없이 정해짐)
     캐시뽑힘: dict = {}
     캐시깎음: dict = {}
     캐시종류: dict = {}                     # 2026-10-25 — 깎은 종류(약 · 병원 · 시술 · 제품 종류)
@@ -539,6 +798,10 @@ def extract_brands(mentions: list, *, verdict_path: str = brand_verdicts.DEFAULT
         if 종:
             캐시종류[i] = 종
         if comment_reads.needs_reread(기억):
+            다시읽을.append((i, t))
+        elif t in 실명원문 and not 기억["이름"] and not comment_reads.실명_읽음(reads, t):
+            # ★2026-11-07 — 실명 자리('몇시간 뒤에 삭제할게요 … 뽀.얀샴푸') 댓글을 AI 가 빈손으로 읽은
+            #   옛 기억. 새 규칙(9번)으로 **한 번만** 다시 읽는다 — '실명' 표시로 되풀이를 막는다.
             다시읽을.append((i, t))
         comment_reads.touch(reads, t, today)   # 오늘도 보였다 — 청소에서 살린다
 
@@ -570,7 +833,8 @@ def extract_brands(mentions: list, *, verdict_path: str = brand_verdicts.DEFAULT
             종힘[i] = 새종류[j]
         # 종류 칸이 안 온 자리는 None 으로 남긴다 — '봤는데 없음'([])과 섞지 않는다.
         comment_reads.put(reads, t, 새뽑힘.get(j) or [], today, 깎음=새깎음.get(j) or [],
-                          종류=새종류.get(j) if j in 새종류 else None)
+                          종류=새종류.get(j) if j in 새종류 else None,
+                          실명=t in 실명원문)
     for j, names in (새뽑힘 or {}).items():   # 읽은자리를 안 싣는 옛 모양 통계도 받는다
         if j not in 읽은자리:
             뽑힘[보낼[j][0]] = names
@@ -587,11 +851,17 @@ def extract_brands(mentions: list, *, verdict_path: str = brand_verdicts.DEFAULT
 
     # 한 번 확인한 이름은 다시 검색하지 않는다(파일에 쌓인다).
     cached = brand_verdicts.load(verdict_path)
-    새이름 = [n for n in 이름들 if n not in cached]
+    # ★2026-11-07 — 종류 이름은 쇼핑 검색에 보내지 않는다. 쇼핑 신호만으로 '지성샴푸'가 제품 True 가
+    #   됐다. 옛 True 줄도 지우지 않고 '종류'로 다시 판정한다(사장님 판정은 merge 가 지킨다).
+    종류들 = {n for n in 이름들 if 종류이름인가(n)}
+    새이름 = [n for n in 이름들 if n not in cached and n not in 종류들]
     통과, _ = shop_probe.verified(새이름, stat=stat)
 
     fresh = {n: {"제품": n in set(통과), "이름": n if n in set(통과) else ""}
              for n in 새이름}
+    for n in sorted(종류들):
+        if (cached.get(n) or {}).get("판정") != "종류":
+            fresh[n] = {"제품": False, "이름": "", "판정": "종류"}
     verdicts = brand_verdicts.merge(cached, fresh, today=today)
     if fresh:
         brand_verdicts.save(verdicts, verdict_path)
@@ -1725,7 +1995,9 @@ def scan_keyword(crawler: CommentFetcher, kw: str, *, our_links: set, our_slugs:
         for c in 댓글들:
             t = str((c or {}).get("content") or "").strip()
             if t:
-                mentions.append({"댓글": t[:300], **같이, "원천": "댓글"})
+                # 2026-11-07 — 댓글 차례와 글쓴이 댓글인가를 남긴다(실명 자리 흐름을 보는 재료 · 요청 0)
+                mentions.append({"댓글": t[:300], **같이, "원천": "댓글", "차례": 붙은,
+                                 "글쓴이댓글": bool((c or {}).get("isArticleWriter"))})
                 붙은 += 1
         if not 붙은:
             # ★2026-09-04 검수 지적 #1 — 댓글을 못 열거나 댓글이 없는 글은 언급이
@@ -2274,12 +2546,22 @@ def run_from_sheet(args) -> int:
         print(f"모아둔 댓글 재사용: {args.mentions_file} "
               f"({sum(len(v) for v in by_product.values())}건) — 다시 훑지 않습니다")
 
+    # ★2026-11-07 — 우리 글 링크를 아예 넘기지 않고 있었다(our_links=set()). 우리 카페 slug 만 봐서
+    #   맘카페에 올린 우리 글(yongchondown/180474)의 댓글이 경쟁사 재료로 들어갔다('지성샴푸').
+    #   '… 카외' 탭의 '링크' 칸이 우리 글이다(숨김 탭도 우리 글).
+    탭값: dict = {}
+    for ws in client.spreadsheet.worksheets():
+        if ws.title.endswith("카외"):
+            탭값[ws.title] = ws.get_all_values()
+    우리링크 = frozenset(우리_링크_모으기(탭값.values()))
+    print(f"우리 글 링크 {len(우리링크)}개 — 이 글들의 댓글은 경쟁사 재료에서 뺀다")
+
     for ws in ([] if by_product else client.spreadsheet.worksheets()):
         tab = ws.title
         if not tab.endswith("카외") or tab in hidden:
             continue                        # 숨김 탭(작업 안 하는 제품)은 제외
         product = tab.replace(" 카외", "").strip()
-        values = ws.get_all_values()
+        values = 탭값.get(tab) or ws.get_all_values()
         if not values or "키워드" not in values[0]:
             continue
         hdr = values[0]
@@ -2301,7 +2583,7 @@ def run_from_sheet(args) -> int:
         mentions: list[dict] = []
         for kw in keywords:
             try:
-                mentions.extend(scan_keyword(crawler, kw, our_links=set(),
+                mentions.extend(scan_keyword(crawler, kw, our_links=우리링크,
                                              our_slugs=set(CAFE_WHITELIST),
                                              fetcher=fetcher, top_posts=args.top_posts))
             except Exception as e:          # 키워드 하나 실패가 전체를 죽이지 않는다
@@ -2312,6 +2594,9 @@ def run_from_sheet(args) -> int:
         #   6일 연속, 29분 수집을 다 마친 직후). 이 시점에 셀 수 있는 것만 센다.
         print(f"[{product}] 댓글 {len(mentions)}건 "
               f"(글 {len({m['글'] for m in mentions})}개)")
+
+    # 모아둔 댓글을 다시 쓸 때도 우리 글은 뺀다(옛 파일은 우리 링크 없이 모았다).
+    by_product = {p: 우리글_빼기(ms, 우리링크) for p, ms in by_product.items()}
 
     if args.mentions_file and not os.path.exists(args.mentions_file):
         try:
@@ -2335,18 +2620,26 @@ def run_from_sheet(args) -> int:
              "검색확인": 0, "검색통과": 0, "검색막힘": 0, "탈": []}
     branded: dict = {}
     깎음언급: list = []          # 2026-10-24 — 깎으려고 꺼낸 대안 제품(경쟁사로 세지 않음)
+    계정미는제품 = 계정_미는제품_읽기()      # 기준 ② — 쪽지로 끝난 글은 그 계정의 다른 글 실명
+    곁언급: list = []            # 2026-11-07 — 실명 자리 밖 이름(키워드 후보 재료 · 경쟁사로 세지 않음)
     for product, mentions in by_product.items():
         ms2, v, stat = extract_brands(mentions, today=today, max_batches=남은예산,
                                       깎음언급=깎음언급)
+        # ★2026-11-07 사장님 기준 ① — 경쟁사 = 실명 공개 자리의 제품 하나(글마다). 나머지 이름은 곁언급으로.
+        ms2, 곁, 실명stat = 실명만_남기기(mentions, ms2, 계정미는제품)
+        곁언급.extend({**x, "제품군": product} for x in 곁)
+        stat.update(실명stat)
         if 남은예산 is not None:
             남은예산 = max(0, 남은예산 - int(stat.get("예산사용", 0) or 0))
         branded[product] = ms2
         verdicts.update(v)
         for k in ("댓글", "묶음", "못읽은묶음", "뽑은이름", "캐시읽음",
                   "검색확인", "검색통과", "검색막힘", "다시읽기대상", "다시읽음", "깎음언급",
-                  "종류언급", "종류칸없음"):
+                  "종류언급", "종류칸없음", "실명자리글", "이름모름글수"):
             jstat[k] = jstat.get(k, 0) + int(stat.get(k, 0) or 0)
         jstat["탈"] = sorted(set(jstat["탈"]) | set(stat.get("탈", [])))
+    print(f"곁 이름(키워드 후보 재료) {len(곁언급)}건 · 실명 자리 글 {jstat.get('실명자리글', 0)}개 · "
+          f"이름 모름 글 {jstat.get('이름모름글수', 0)}개")
     all_mentions = [m for ms in branded.values() for m in ms]
 
     # 같은 브랜드가 여러 표기로 흩어져 있으면 정식 이름 하나로 묶는다(호출 1회).
@@ -2538,6 +2831,17 @@ def run_from_sheet(args) -> int:
         #   모공각화증·햇빛 알레르기 치료·홍조·병원 등 — 게시판 이름·조사 조각만 판정기가
         #   버리고, 병원·후기 같은 진짜 검색어는 남긴다(사장님 2026-09-06 교정 "병원은
         #   키워드 후보가 맞지"). 안전장치: LLM 열쇠 없으면 빈 결과. 끄개: WRITE_TITLE_CANDIDATES=0.
+        # ★2026-11-07 사장님 기준 ③ — 종류 이름 · 깎인 대상 · 곁 이름은 키워드 후보 재료다.
+        #   시트에 쓰는 길은 **기본 꺼짐**(WRITE_COMMENT_CANDIDATES=1 일 때만). 검토 · 승인 뒤 켠다.
+        try:
+            후보줄 = 댓글_키워드후보(곁언급 + 깎음언급, set(), set(), 오늘=today)
+            print(f"키워드후보(댓글): 보낼 후보 {len(후보줄)}줄 — "
+                  + ("시트에 씀" if os.environ.get("WRITE_COMMENT_CANDIDATES") == "1" else "꺼짐(세기만)"))
+            if os.environ.get("WRITE_COMMENT_CANDIDATES") == "1" and 후보줄:
+                _댓글후보탭_쓰기(client, 후보줄)
+        except Exception as e:      # 후보 쓰기 실패가 경쟁사 탭을 죽이지 않는다 — 대신 크게 남긴다
+            print(f"키워드후보(댓글) 실패: {type(e).__name__}: {e}")
+            jstat.setdefault("탈", []).append(f"댓글후보:{type(e).__name__}")
         if os.environ.get("WRITE_TITLE_CANDIDATES") == "0":
             print("키워드후보: 제목 경로가 꺼져 있습니다(WRITE_TITLE_CANDIDATES=0)")
         else:

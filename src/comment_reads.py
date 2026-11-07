@@ -106,13 +106,20 @@ def get_종류(reads: dict, text) -> list | None:
     return list(종) if isinstance(종, list) else None
 
 
-def put(reads: dict, text, names, today: str, 깎음=None, 종류=None) -> None:
+def put(reads: dict, text, names, today: str, 깎음=None, 종류=None, 실명=False) -> None:
     """종류가 None 이면 '종류' 칸을 안 봤다는 뜻이라 키를 만들지 않는다([] 은 '봤는데 없음')."""
     e = {"이름": [str(n) for n in (names or [])],
          "깎음": [str(n) for n in (깎음 or [])], "날": str(today)}
     if isinstance(종류, list):
         e["종류"] = [str(n) for n in 종류]
+    if 실명:
+        e["실명"] = True                # 2026-11-07 — 실명 자리로 읽었다(다시 읽기를 되풀이하지 않는다)
     reads[key_of(text)] = e
+
+
+def 실명_읽음(reads: dict, text) -> bool:
+    """실명 자리 규칙으로 읽은 적 있나."""
+    return bool(((reads or {}).get(key_of(text)) or {}).get("실명"))
 
 
 def touch(reads: dict, text, today: str) -> None:
