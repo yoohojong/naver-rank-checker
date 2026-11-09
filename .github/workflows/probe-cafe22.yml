@@ -1,0 +1,40 @@
+name: probe-cafe22
+# 일회용: 22기 카페 글이 로그인 없이 읽히는지 응답 코드만 본다. 로그인 안 함 · 비밀값 안 씀 · 글 내용 안 남김.
+on:
+  push:
+    branches: ['probe/cafe22-1109']
+permissions:
+  contents: read
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.12'}
+      - run: pip install curl_cffi==0.15.0
+      - shell: python
+        run: |
+          import json, time
+          from curl_cffi import requests
+          urls = {
+            "article": "https://apis.naver.com/cafe-web/cafe-articleapi/v2.1/cafes/31718008/articles/247?useCafeId=true",
+            "comments": "https://apis.naver.com/cafe-web/cafe-articleapi/v2/cafes/31718008/articles/247/comments/pages/1?requestFrom=A&orderBy=asc",
+            "board": "https://apis.naver.com/cafe-web/cafe2/ArticleListV2dot1.json?search.clubid=31718008&search.menuid=6&search.page=1&search.perPage=5",
+            "web": "https://cafe.naver.com/mtartup22/247",
+          }
+          h = {"Referer": "https://cafe.naver.com/mtartup22"}
+          for k, u in urls.items():
+              r = requests.get(u, headers=h, impersonate="chrome", timeout=30, allow_redirects=False)
+              code = msg = keys = None
+              try:
+                  j = r.json(); res = j.get("result") or j.get("message") or {}
+                  if isinstance(res, dict):
+                      keys = list(res.keys())[:8]
+                      err = res.get("error") or {}
+                      code = res.get("errorCode") or res.get("code") or err.get("code")
+                      msg = res.get("reason") or res.get("msg") or err.get("msg")
+              except Exception:
+                  pass
+              print(json.dumps({"what": k, "status": r.status_code, "len": len(r.content), "code": code, "msg": msg, "keys": keys, "redirect": r.headers.get("location", "")[:60]}, ensure_ascii=False))
+              time.sleep(5)
