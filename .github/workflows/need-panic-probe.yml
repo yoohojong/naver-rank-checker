@@ -1,9 +1,9 @@
-name: need-gum-probe
-# 11-16 잇몸치아 욕구 창 — 네이버 자동완성 넓히기 + 데이터랩 성별(전체 · 여 · 남). 읽기 전용 · 이 가지에 올릴 때만 돈다(예약 없음).
+name: need-panic-probe
+# 11-16 공황 욕구 창 — 네이버 자동완성 넓히기 + 데이터랩 성별(전체 · 여 · 남). 읽기 전용 · 이 가지에 올릴 때만 돈다(예약 없음).
 on:
   push:
-    branches: [probe/need-gum-1116]
-    paths: [inputs/*.txt, scripts/naver_ac_expand.py, scripts/need_datalab_gender.py, .github/workflows/need-gum-probe.yml]
+    branches: [probe/need-panic-1116]
+    paths: [inputs/*.txt, scripts/naver_ac_expand.py, scripts/need_datalab_gender.py, .github/workflows/need-panic-probe.yml]
   workflow_dispatch:
 permissions:
   contents: read
@@ -15,7 +15,8 @@ jobs:
       - uses: actions/checkout@v6.0.2
       - uses: actions/setup-python@v6.2.0
         with: {python-version: '3.13'}
-      - run: python scripts/naver_ac_expand.py
+      - env: {CORE: '공황,불안,과호흡,두근,숨막,신경안정,항불안,안정제,인데놀,자낙스,알프람,리보트릴,렉사프로,청심원,자율신경,광장공포,정신과,정신건강'}
+        run: python scripts/naver_ac_expand.py
       - uses: actions/upload-artifact@v4
         if: always()
         with: {name: naver-ac, path: out/, retention-days: 14}
@@ -27,7 +28,7 @@ jobs:
       - uses: actions/setup-python@v6.2.0
         with: {python-version: '3.13'}
       - run: pip install playwright openpyxl && python -m playwright install --with-deps chromium
-      - env: {START: '2025-11-01', END: '2026-10-31', ANCHOR: '다이어트'}
+      - env: {START: '2025-11-01', END: '2026-10-31', ANCHOR: '공황장애'}
         run: |
           export KEYWORDS="$(cat inputs/gender_keywords.txt)"
           GENDER= python scripts/need_datalab_gender.py || true
