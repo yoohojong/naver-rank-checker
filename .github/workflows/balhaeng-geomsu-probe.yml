@@ -19,6 +19,9 @@ on:
       posts:
         description: 키워드마다 댓글 받을 카페 칸 글 수(우리 글 포함 · 앞에서부터)
         default: '6'
+      mode:
+        description: rank(키워드 순위) / cp(댓글 계정 길 · 카드 t_7d0ced83)
+        default: 'rank'
 
 concurrency:
   group: antitro-rank
@@ -58,6 +61,10 @@ jobs:
           NAVER_SLOWDOWN_BASE_SEC: '4.0'
           PYTHONIOENCODING: 'utf-8'
         run: |
+          if [ "${{ inputs.mode }}" = "cp" ]; then
+            ./.venv/bin/python -u -m scripts.antitro_comment_path               --items "${{ inputs.keywords }}"               --shard "${{ matrix.shard }}"               --shards "${{ inputs.shards }}"               --out out.jsonl
+            exit 0
+          fi
           ./.venv/bin/python -u -m scripts.antitro_rank \
             --keywords "${{ inputs.keywords }}" \
             --shard "${{ matrix.shard }}" \
@@ -69,7 +76,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: antitro-rank-${{ matrix.shard }}
+          name: antitro-${{ inputs.mode }}-${{ matrix.shard }}
           path: out.jsonl
           retention-days: 7
           if-no-files-found: ignore
