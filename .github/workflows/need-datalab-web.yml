@@ -25,7 +25,7 @@ jobs:
           ANCHOR: ${{ github.event.inputs.anchor }}
           START: ${{ github.event.inputs.start }}
           END: ${{ github.event.inputs.end }}
-        run: for a in 2 3 4 5 6 7 8 9 10 11; do AGE=$a python scripts/need_datalab_web.py || true; done
+        run: for g in m f; do GENDER=$g python scripts/need_datalab_web.py || true; done
       - uses: actions/upload-artifact@v4
         if: always()
         with: {name: need-datalab-web, path: out/, retention-days: 14}
