@@ -1,0 +1,32 @@
+name: need-gum-gender
+# 11-16 잇몸치아 욕구 창(지시 1116-0030) — 빈틈표 중 뺌을 빼고 여성 비율을 아직 안 잰 5,097개를 데이터랩 공개 화면 성별(전체 · 여 · 남)로 잰다.
+# 기준어 '다이어트'(앞 창 40개와 같은 기준) · 2025-11~2026-10. 읽기 전용 · 이 가지에 올릴 때만 돈다(예약 없음). 20갈래.
+on:
+  push:
+    branches: [probe/need-gum-gender-1116]
+    paths: [inputs/gum_gender_*.txt, .github/workflows/need-gum-gender.yml]
+  workflow_dispatch:
+concurrency: {group: need-gum-gender, cancel-in-progress: false}
+permissions:
+  contents: read
+jobs:
+  gender:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix: {shard: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19]}
+    steps:
+      - uses: actions/checkout@v6.0.2
+      - uses: actions/setup-python@v6.2.0
+        with: {python-version: '3.13'}
+      - run: pip install playwright openpyxl && python -m playwright install --with-deps chromium
+      - env: {START: '2025-11-01', END: '2026-10-31', ANCHOR: '다이어트'}
+        run: |
+          export KEYWORDS="$(cat inputs/gum_gender_${{ matrix.shard }}.txt)"
+          GENDER= python scripts/need_datalab_gender.py || true
+          GENDER=f python scripts/need_datalab_gender.py || true
+          GENDER=m python scripts/need_datalab_gender.py || true
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with: {name: 'gum-gender-${{ matrix.shard }}', path: out/, retention-days: 14}
