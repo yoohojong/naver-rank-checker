@@ -31,6 +31,12 @@ def ac(q):
 
 
 def main():
+    f = Path("probe_inputs/naver_ac.json")
+    if not os.environ.get("KEYWORDS") and f.exists():  # push 로 돌 때 — 입력 파일에서
+        cfg = json.loads(f.read_text(encoding="utf-8"))
+        os.environ["KEYWORDS"] = ",".join(cfg.get("keywords", []))
+        os.environ["BOUND"] = ",".join(cfg.get("bound", []))
+        os.environ["MAX_Q"] = str(cfg.get("max_q", 900))
     seeds = [s.strip() for s in os.environ.get("KEYWORDS", "").split(",") if s.strip()]
     bound = [s.strip().replace(" ", "") for s in os.environ.get("BOUND", "").split(",") if s.strip()] or [s.replace(" ", "") for s in seeds]
     max_q = int(os.environ.get("MAX_Q", "900") or 900)

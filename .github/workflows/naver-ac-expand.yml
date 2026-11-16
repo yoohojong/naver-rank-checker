@@ -1,6 +1,10 @@
 name: naver-ac-expand
 # 네이버 검색창 자동완성 늘려 치기 — 읽기 전용, 손으로 부를 때만(cron 없음). 지시 1116-0030 욕구 빈틈조사 2026-11-16.
 on:
+  push:
+    branches: [probe/naver-ac-1116]
+    paths:
+      - probe_inputs/naver_ac.json
   workflow_dispatch:
     inputs:
       keywords:
