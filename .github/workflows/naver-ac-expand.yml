@@ -1,0 +1,37 @@
+name: naver-ac-expand
+# 네이버 검색창 자동완성 늘려 치기 — 읽기 전용, 손으로 부를 때만(cron 없음). 지시 1116-0030 욕구 빈틈조사 2026-11-16.
+on:
+  workflow_dispatch:
+    inputs:
+      keywords:
+        description: '쉼표로 가른 씨앗'
+        required: true
+      bound:
+        description: '쉼표로 가른 경계 낱말(이 말이 든 결과만 다시 침)'
+        required: false
+        default: ''
+      max_q:
+        description: '부르기 상한'
+        required: false
+        default: '900'
+permissions:
+  contents: read
+jobs:
+  expand:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v6.0.2
+      - uses: actions/setup-python@v6.2.0
+        with:
+          python-version: '3.13'
+      - env:
+          KEYWORDS: ${{ github.event.inputs.keywords }}
+          BOUND: ${{ github.event.inputs.bound }}
+          MAX_Q: ${{ github.event.inputs.max_q }}
+        run: python scripts/naver_ac_expand.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: naver-ac-expand
+          path: out/naver_ac.json
+          if-no-files-found: ignore
