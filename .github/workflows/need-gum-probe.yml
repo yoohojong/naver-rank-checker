@@ -10,16 +10,21 @@ permissions:
 jobs:
   ac:
     runs-on: ubuntu-latest
-    timeout-minutes: 40
+    timeout-minutes: 55
+    strategy:
+      fail-fast: false
+      matrix: {shard: [0, 1, 2]}
     steps:
       - uses: actions/checkout@v6.0.2
       - uses: actions/setup-python@v6.2.0
         with: {python-version: '3.13'}
-      - run: python scripts/naver_ac_expand.py
+      - env: {SHARD: '${{ matrix.shard }}', NSHARD: '3', MAXQ: '1400', MINUTES: '45'}
+        run: python scripts/naver_ac_expand.py
       - uses: actions/upload-artifact@v4
         if: always()
-        with: {name: naver-ac, path: out/, retention-days: 14}
+        with: {name: 'naver-ac-${{ matrix.shard }}', path: out/, retention-days: 14}
   gender:
+    if: false
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
