@@ -1,20 +1,21 @@
-name: need-gender-ac
+# 2026-11-16 비염 욕구 창 사본(여성탈모 창 실행을 복사 · 여 · 남 · 전체 세 번 · 자동완성은 이 PC 에서 따로 함)
+name: need-gender-rhinitis
 # 욕구 키워드 두 가지 받기 — ① 네이버 검색창 자동완성 늘려 치기 ② 데이터랩 공개 화면 성별(f · m) 검색 흐름. 로그인 없음 · 읽기만.
 # 2026-11-16 여성탈모 욕구 창(지시 1116-0030). 사장님 11-16 09:42 "모발이식이랑 남녀 성비도 알 수 있잖아" · 09:43 "깃허브 단계 방법도 있고".
 # 기존 실행 파일은 고치지 않고 이 가지에 새 파일만 더함. 예약(cron) 없음 — 손으로 부를 때만.
 # 받는 명령: gh run download <번호> -R yoohojong/naver-rank-checker -n need-gender-ac
 on:
   push:
-    branches: [feat/need-gender-ac-1116]
+    branches: [probe/need-rhinitis-1116]
     paths: [data/need_ac_seeds.txt, data/need_gender_keywords.txt, scripts/naver_ac_expand.py, scripts/need_datalab_gender.py, .github/workflows/need-gender-ac.yml]
   workflow_dispatch:
     inputs:
-      what: {description: 'ac(자동완성) · gender(성별) · both', required: false, default: 'ac'}
-      anchor: {description: '성별 기준 검색어', required: false, default: '탈모'}
+      what: {description: 'ac(자동완성) · gender(성별) · both', required: false, default: 'gender'}
+      anchor: {description: '성별 기준 검색어', required: false, default: '비염'}
       start: {description: '시작일', required: false, default: '2025-11-01'}
       end: {description: '끝일', required: false, default: '2026-10-31'}
       max_calls: {description: '자동완성 부름 상한', required: false, default: '4000'}
-concurrency: {group: need-gender-ac, cancel-in-progress: false}
+concurrency: {group: need-gender-rhinitis, cancel-in-progress: false}
 permissions:
   contents: read
 jobs:
@@ -26,17 +27,20 @@ jobs:
       - uses: actions/setup-python@v6.2.0
         with: {python-version: '3.13'}
       - run: pip install requests playwright openpyxl
-      - if: (github.event.inputs.what || 'ac') != 'ac'
+      - if: (github.event.inputs.what || 'gender') != 'ac'
         run: python -m playwright install --with-deps chromium
-      - if: (github.event.inputs.what || 'ac') != 'gender'
+      - if: (github.event.inputs.what || 'gender') != 'gender'
         env: {SEEDS_FILE: data/need_ac_seeds.txt, MAX_CALLS: "${{ github.event.inputs.max_calls || '4000' }}"}
         run: python scripts/naver_ac_expand.py
-      - if: (github.event.inputs.what || 'ac') != 'ac'
-        env: {KW_FILE: data/need_gender_keywords.txt, GENDER: f, ANCHOR: "${{ github.event.inputs.anchor || '탈모' }}", START: "${{ github.event.inputs.start || '2025-11-01' }}", END: "${{ github.event.inputs.end || '2026-10-31' }}"}
+      - if: (github.event.inputs.what || 'gender') != 'ac'
+        env: {KW_FILE: data/need_gender_keywords.txt, GENDER: f, ANCHOR: "${{ github.event.inputs.anchor || '비염' }}", START: "${{ github.event.inputs.start || '2025-11-01' }}", END: "${{ github.event.inputs.end || '2026-10-31' }}"}
         run: python scripts/need_datalab_gender.py
-      - if: (github.event.inputs.what || 'ac') != 'ac'
-        env: {KW_FILE: data/need_gender_keywords.txt, GENDER: m, ANCHOR: "${{ github.event.inputs.anchor || '탈모' }}", START: "${{ github.event.inputs.start || '2025-11-01' }}", END: "${{ github.event.inputs.end || '2026-10-31' }}"}
+      - if: (github.event.inputs.what || 'gender') != 'ac'
+        env: {KW_FILE: data/need_gender_keywords.txt, GENDER: m, ANCHOR: "${{ github.event.inputs.anchor || '비염' }}", START: "${{ github.event.inputs.start || '2025-11-01' }}", END: "${{ github.event.inputs.end || '2026-10-31' }}"}
+        run: python scripts/need_datalab_gender.py
+      - if: (github.event.inputs.what || 'gender') != 'ac'
+        env: {KW_FILE: data/need_gender_keywords.txt, GENDER: "", ANCHOR: "${{ github.event.inputs.anchor || '비염' }}", START: "${{ github.event.inputs.start || '2025-11-01' }}", END: "${{ github.event.inputs.end || '2026-10-31' }}"}
         run: python scripts/need_datalab_gender.py
       - uses: actions/upload-artifact@v4
         if: always()
-        with: {name: need-gender-ac, path: out/, retention-days: 14}
+        with: {name: need-gender-rhinitis, path: out/, retention-days: 14}
