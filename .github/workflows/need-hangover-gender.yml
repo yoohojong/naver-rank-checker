@@ -1,12 +1,12 @@
-name: need-hairloss-gender
-# 11-16 여성탈모 욕구 일꾼(지시 1116-0030) — 빈틈표 1,017줄 중 여성 비율을 아직 안 잰 983개를 데이터랩 공개 화면 성별(전체 · 여 · 남)로 잰다.
+name: need-hangover-gender
+# 11-16 숙취 욕구 일꾼(지시 1116-0030) — 빈틈표 266줄 중 뺌 아닌 248개 여성 비율을 데이터랩 공개 화면 성별(전체 · 여 · 남)로 잰다.
 # 기준어 '다이어트' · 2025-11~2026-10. 읽기 전용 · 이 가지에 올릴 때만 돈다(예약 없음). 10갈래 동시.
 on:
   push:
-    branches: [probe/need-hairloss-gender-1116]
-    paths: [inputs/hairloss_gender_*.txt, .github/workflows/need-hairloss-gender.yml]
+    branches: [probe/need-hangover-gender-1116]
+    paths: [inputs/hangover_gender_*.txt, .github/workflows/need-hangover-gender.yml]
   workflow_dispatch:
-concurrency: {group: need-hairloss-gender, cancel-in-progress: false}
+concurrency: {group: need-hangover-gender, cancel-in-progress: false}
 permissions:
   contents: read
 jobs:
@@ -23,10 +23,10 @@ jobs:
       - run: pip install playwright openpyxl && python -m playwright install --with-deps chromium
       - env: {START: '2025-11-01', END: '2026-10-31', ANCHOR: '다이어트'}
         run: |
-          export KEYWORDS="$(cat inputs/hairloss_gender_${{ matrix.shard }}.txt)"
+          export KEYWORDS="$(cat inputs/hangover_gender_${{ matrix.shard }}.txt)"
           GENDER= python scripts/need_datalab_gender.py || true
           GENDER=f python scripts/need_datalab_gender.py || true
           GENDER=m python scripts/need_datalab_gender.py || true
       - uses: actions/upload-artifact@v4
         if: always()
-        with: {name: 'hairloss-gender-${{ matrix.shard }}', path: out/, retention-days: 14}
+        with: {name: 'hangover-gender-${{ matrix.shard }}', path: out/, retention-days: 14}
