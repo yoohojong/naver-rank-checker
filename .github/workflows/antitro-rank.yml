@@ -1,0 +1,75 @@
+name: 안티트로-후보-순위
+
+# 작업 가지 전용(카드 t_d1c2eb96 · t_c4b97272): 키워드 파일 → 통합검색 카페 칸 글 + 그 글 댓글 원문 → jsonl 산출물.
+# ⚠️ 읽기 전용 — 시트 · 기억 저장 · git push · 텔레그램 · 자가치유 · AI 판정 · 열쇠(secrets) 없음.
+# ⚠️ 일정(cron) 없음 — 수동 실행 전용.
+
+on:
+  workflow_dispatch:
+    inputs:
+      keywords:
+        description: 키워드 파일 경로(한 줄에 하나)
+        default: 'data/antitro_rank_kw.txt'
+      shards:
+        description: 몇 묶음으로 나누나
+        default: '6'
+      shard_list:
+        description: 돌릴 묶음 번호 JSON 목록
+        default: '[0,1,2,3,4,5]'
+      posts:
+        description: 키워드마다 댓글 받을 카페 칸 글 수(우리 글 포함 · 앞에서부터)
+        default: '6'
+
+concurrency:
+  group: antitro-rank
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  rank:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        shard: ${{ fromJSON(inputs.shard_list) }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6.0.2
+
+      - name: Setup Python 3.13
+        uses: actions/setup-python@v6.2.0
+        with:
+          python-version: '3.13'
+
+      - name: Setup venv + install deps
+        shell: bash
+        run: |
+          python -m venv .venv
+          ./.venv/bin/python -m pip install --upgrade pip
+          ./.venv/bin/python -m pip install -r requirements.txt
+
+      - name: 카페 칸 · 댓글 받기
+        shell: bash
+        env:
+          NAVER_SLOWDOWN_BASE_SEC: '4.0'
+          PYTHONIOENCODING: 'utf-8'
+        run: |
+          ./.venv/bin/python -u -m scripts.antitro_rank \
+            --keywords "${{ inputs.keywords }}" \
+            --shard "${{ matrix.shard }}" \
+            --shards "${{ inputs.shards }}" \
+            --posts "${{ inputs.posts }}" \
+            --out out.jsonl
+
+      - name: 산출물 보관
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: antitro-rank-${{ matrix.shard }}
+          path: out.jsonl
+          retention-days: 7
+          if-no-files-found: ignore
