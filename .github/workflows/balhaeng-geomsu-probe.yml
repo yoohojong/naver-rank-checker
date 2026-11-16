@@ -1,39 +1,44 @@
 name: 발행검수-probe
-# 발행 검수 자동화의 설계 갈림길 하나를 확정하는 실증 워크플로 (2026-07-23).
-#
-# 묻는 것: 서버에서 카페 글 본문·댓글을 로그인 없이 가져올 수 있는가?
-#   된다   → 크론이 시트 link 를 읽어 자동 검수 (직원 손 0)
-#   안 된다 → 직원 브라우저 확장이 도는 순간에만 수집 가능
-#
-# 사장님 PC·Claude 환경에서는 네이버 접속이 정책으로 막혀 있어 여기서만 답이 나온다.
-# ⚠️ 읽기 전용 — 시트도 카페도 아무것도 쓰지 않는다.
-# ⚠️ cron 없음. 사장님 승인 없이 자동으로 도는 일은 없다(수동 실행 전용).
+
+# (가지에서만 probe 자리를 빌림 — main 의 probe 는 그대로) 작업 가지 전용(카드 t_d1c2eb96 · t_c4b97272): 키워드 파일 → 통합검색 카페 칸 글 + 그 글 댓글 원문 → jsonl 산출물.
+# ⚠️ 읽기 전용 — 시트 · 기억 저장 · git push · 텔레그램 · 자가치유 · AI 판정 · 열쇠(secrets) 없음.
+# ⚠️ 일정(cron) 없음 — 수동 실행 전용.
 
 on:
   workflow_dispatch:
     inputs:
-      limit:
-        description: '찔러볼 카페 글 수'
-        required: false
-        default: '20'
+      keywords:
+        description: 키워드 파일 경로(한 줄에 하나)
+        default: 'data/antitro_rank_kw.txt'
+      shards:
+        description: 몇 묶음으로 나누나
+        default: '6'
+      shard_list:
+        description: 돌릴 묶음 번호 JSON 목록
+        default: '[0,1,2,3,4,5]'
+      posts:
+        description: 키워드마다 댓글 받을 카페 칸 글 수(우리 글 포함 · 앞에서부터)
+        default: '6'
 
 concurrency:
-  group: balhaeng-geomsu-probe
+  group: antitro-rank
   cancel-in-progress: false
 
 permissions:
   contents: read
 
 jobs:
-  probe:
+  rank:
     runs-on: ubuntu-latest
-    timeout-minutes: 45
-
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        shard: ${{ fromJSON(inputs.shard_list) }}
     steps:
       - name: Checkout
         uses: actions/checkout@v6.0.2
-        with:
-          token: ${{ github.token }}
 
       - name: Setup Python 3.13
         uses: actions/setup-python@v6.2.0
@@ -47,12 +52,24 @@ jobs:
           ./.venv/bin/python -m pip install --upgrade pip
           ./.venv/bin/python -m pip install -r requirements.txt
 
-      - name: Probe cafe article access
+      - name: 카페 칸 · 댓글 받기
         shell: bash
         env:
-          SPREADSHEET_ID: ${{ secrets.SPREADSHEET_ID }}
-          SERVICE_ACCOUNT_JSON: ${{ secrets.SERVICE_ACCOUNT_JSON }}
-          PROBE_LIMIT: ${{ github.event.inputs.limit }}
+          NAVER_SLOWDOWN_BASE_SEC: '4.0'
           PYTHONIOENCODING: 'utf-8'
         run: |
-          ./.venv/bin/python -u -m scripts.probe_cafe_article_access
+          ./.venv/bin/python -u -m scripts.antitro_rank \
+            --keywords "${{ inputs.keywords }}" \
+            --shard "${{ matrix.shard }}" \
+            --shards "${{ inputs.shards }}" \
+            --posts "${{ inputs.posts }}" \
+            --out out.jsonl
+
+      - name: 산출물 보관
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: antitro-rank-${{ matrix.shard }}
+          path: out.jsonl
+          retention-days: 7
+          if-no-files-found: ignore
