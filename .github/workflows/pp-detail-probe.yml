@@ -1,0 +1,41 @@
+name: pp-detail-probe
+# 피퓨 · 나보소 상세페이지 받기(지시 1117-1610) — 읽기 전용, 이 가지에 올릴 때만 돈다(cron 없음).
+on:
+  push:
+    branches: [probe/pipiu-naboso-detail-1117]
+    paths:
+      - .github/workflows/pp-detail-probe.yml
+      - scripts/pp_detail_probe.py
+      - scripts/pp_run.txt
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: pp-detail-probe
+  cancel-in-progress: false
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
+    steps:
+      - uses: actions/checkout@v6.0.2
+      - uses: actions/setup-python@v6.2.0
+        with:
+          python-version: '3.13'
+      - run: |
+          pip install requests playwright
+          python -m playwright install --with-deps chromium
+          sudo apt-get install -y xvfb >/dev/null
+      - env:
+          NCID: ${{ secrets.NAVER_OPENAPI_CLIENT_ID }}
+          NSEC: ${{ secrets.NAVER_OPENAPI_CLIENT_SECRET }}
+        run: |
+          set -a; [ -f scripts/pp_run.txt ] && . scripts/pp_run.txt; set +a
+          echo "MODE=$MODE"
+          xvfb-run -a python scripts/pp_detail_probe.py
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: pp-detail
+          path: out/
+          if-no-files-found: ignore
