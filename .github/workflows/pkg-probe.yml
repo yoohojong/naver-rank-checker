@@ -1,0 +1,35 @@
+name: pkg-probe
+# 피퓨 · 나보소 구매 후기 상자 · 라벨 사진 찾기(지시 1117-1610) — 읽기 전용, 이 가지에 올릴 때만 돈다(cron 없음).
+on:
+  push:
+    branches: [probe/pipiu-naboso-detail-1117]
+    paths:
+      - .github/workflows/pkg-probe.yml
+      - scripts/pkg_probe.py
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: pkg-probe
+  cancel-in-progress: false
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v6.0.2
+      - uses: actions/setup-python@v6.2.0
+        with:
+          python-version: '3.13'
+      - run: pip install requests pillow
+      - env:
+          NCID: ${{ secrets.NAVER_OPENAPI_CLIENT_ID }}
+          NSEC: ${{ secrets.NAVER_OPENAPI_CLIENT_SECRET }}
+          QUERIES: "피퓨 슬리퍼 후기|피퓨 힐링바운스|피퓨 족저근막 슬리퍼|피퓨 샌들|피퓨 클로그|피퓨 슬리퍼 언박싱|피퓨 슬리퍼 박스|나보소 뉴로볼 후기|나보소 스플레이|나보소 언박싱|나보소 발가락|naboso 나보소"
+        run: python scripts/pkg_probe.py
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: pkg-probe
+          path: out/
+          if-no-files-found: ignore
