@@ -1,0 +1,46 @@
+name: zj-review-lowstar
+# 족저근막염 대안 상품 1·2점 후기 받기(지시 1118-0231) — 읽기 전용, 예약(cron) 없음, master 에 합치지 않음.
+on:
+  push:
+    branches: [work/zj-review-lowstar-1118]
+    paths:
+      - scripts/zj_review_lowstar.py
+      - .github/workflows/zj-review-lowstar.yml
+      - scripts/zj_run.txt
+  workflow_dispatch:
+    inputs:
+      keywords:
+        description: '쉼표로 가른 검색어'
+        required: false
+        default: ''
+permissions:
+  contents: read
+concurrency:
+  group: zj-review-lowstar
+  cancel-in-progress: false
+jobs:
+  collect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v6.0.2
+      - uses: actions/setup-python@v6.2.0
+        with:
+          python-version: '3.13'
+      - run: |
+          pip install playwright==1.60.0
+          python -m playwright install --with-deps chromium
+      - env:
+          GOYU_NOTIFY_OFF: '1'
+          PYTHONIOENCODING: utf-8
+          INPUT_KW: ${{ github.event.inputs.keywords }}
+        run: |
+          set -a; [ -f scripts/zj_run.txt ] && . scripts/zj_run.txt; set +a
+          [ -n "$INPUT_KW" ] && export KEYWORDS="$INPUT_KW"
+          python scripts/zj_review_lowstar.py
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: zj-review
+          path: out/
+          if-no-files-found: ignore
