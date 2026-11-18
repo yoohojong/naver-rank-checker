@@ -7,6 +7,8 @@ on:
       - scripts/zj_review_lowstar.py
       - .github/workflows/zj-review-lowstar.yml
       - scripts/zj_run.txt
+      - scripts/zj_diag.py
+      - scripts/zj_diag_on.txt
   workflow_dispatch:
     inputs:
       keywords:
@@ -37,7 +39,7 @@ jobs:
         run: |
           set -a; [ -f scripts/zj_run.txt ] && . scripts/zj_run.txt; set +a
           [ -n "$INPUT_KW" ] && export KEYWORDS="$INPUT_KW"
-          python scripts/zj_review_lowstar.py
+          if [ -f scripts/zj_diag_on.txt ]; then python scripts/zj_diag.py; else python scripts/zj_review_lowstar.py; fi
       - uses: actions/upload-artifact@v4
         if: always()
         with:
