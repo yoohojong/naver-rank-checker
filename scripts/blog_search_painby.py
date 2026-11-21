@@ -1,7 +1,7 @@
 import json, os, re, time, urllib.parse, urllib.request, html
 ID=os.environ.get("NAVER_OPENAPI_CLIENT_ID",""); SEC=os.environ.get("NAVER_OPENAPI_CLIENT_SECRET","")
-KW=["페인바이 사용기","페인바이 언박싱","페인바이 구매","페인바이 vs","페인바이 족저근막염","페인바이 발바닥","페인바이 발목","페인바이 종아리","페인바이 리뷰","페인바이 EMS 무릎","페인바이 도전성 스프레이","디프티 페인바이 후기","페인바이 거북목","페인바이 부모님 선물","속근 저주파기 족저근막염","페인버리 바디이지 후기","페인버리 스마트스토어","painbury 후기","pain bury","페인바이 재구매"]
-REL=re.compile("페인바이|페인버리|painbury|difti|디프티")
+KW=["올위버","올위버깔창","올위버 깔창","올,위버","올위버 후기","올위버깔창 후기","올위버 뒤꿈치","올위버 포론","올위버 족저근막염","올위버 추천","뒤꿈치 전문 깔창","족저근막염 깔창 추천 올위버","allubermall","올위버몰"]
+REL=re.compile("올\W{0,3}위\W{0,3}버|allubermall")
 os.makedirs("out",exist_ok=True)
 res={}; log=[]
 for kind in ("blog","webkr"):
