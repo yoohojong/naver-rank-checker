@@ -48,7 +48,7 @@ json.dump({"log": log, "cands": {"%s/%s" % k: v for k, v in cands.items()}}, ope
 bl = {}
 for q in CFG["keywords"]:
     for sort in ("sim", "date"):
-        for p in range(3):
+        for p in range(10):
             url = "https://openapi.naver.com/v1/search/blog.json?" + urllib.parse.urlencode({"query": q, "display": 100, "start": 1 + 100 * p, "sort": sort})
             c, b = http(url, {"X-Naver-Client-Id": ID, "X-Naver-Client-Secret": SEC}); time.sleep(0.15)
             try: its = json.loads(b).get("items", []) if c == 200 else []
