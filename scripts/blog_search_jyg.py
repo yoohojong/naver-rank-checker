@@ -1,6 +1,6 @@
 import json, os, re, time, urllib.parse, urllib.request, html
 ID=os.environ.get("NAVER_OPENAPI_CLIENT_ID",""); SEC=os.environ.get("NAVER_OPENAPI_CLIENT_SECRET","")
-KW=["족염기","족,염기","족염기 후기","족염기 효과","염적원","염적원 족염기","족부앤","pickbodylab","족부 염증 족염기","족저근막염 족염기","족저근막염 원적외선 족염기"]
+KW=["족염기 추천","족염기 내돈내산","족염기 가격","족염기 사용법","족염기 부작용","족염기 단점","족저근막염 족염기 후기","족염기 사용후기","염적원 후기","족부앤 족염기 후기"]
 REL=re.compile(r"족\W{0,3}염\W{0,3}기|염적원|족부앤|pickbodylab")
 os.makedirs("out",exist_ok=True)
 res={}; log=[]
