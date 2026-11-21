@@ -1,7 +1,7 @@
-name: cafe-body-fetch-wonsan-s0
+name: cafe-body-fetch-wonsan-r5
 on:
   push:
-    branches: [feat/cafe-marking-wonsan-s0-1121]
+    branches: [feat/cafe-marking-wonsan-r5-1122]
     paths:
       - data/cafe_body_fetch_jj.json
       - .github/workflows/cafe-body-fetch-jj.yml
@@ -21,4 +21,4 @@ jobs:
         run: python -u scripts/cafe_body_fetch_jj.py
       - if: always()
         uses: actions/upload-artifact@v4
-        with: {name: cafe-body-fetch-wonsan-s0, path: out/, retention-days: 14}
+        with: {name: cafe-body-fetch-wonsan-r5, path: out/, retention-days: 14}
