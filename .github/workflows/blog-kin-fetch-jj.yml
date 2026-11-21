@@ -1,0 +1,26 @@
+name: blog-kin-fetch-jj
+# 2026-11-21 족저근막염 키워드 9장 보강 - 블로그 · 지식인 글 본문 읽기 전용. feat/ 가지에서만 · main 에 합치지 않는다.
+on:
+  push:
+    branches: [feat/blog-kin-fetch-1121]
+    paths:
+      - scripts/blog_kin_fetch_jj.py
+      - data/blog_kin_fetch_jj.json
+      - .github/workflows/blog-kin-fetch-jj.yml
+permissions:
+  contents: read
+jobs:
+  fetch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 150
+    steps:
+      - uses: actions/checkout@v6.0.2
+      - uses: actions/setup-python@v6.2.0
+        with: {python-version: '3.13'}
+      - env:
+          NAVER_OPENAPI_CLIENT_ID: ${{ secrets.NAVER_OPENAPI_CLIENT_ID }}
+          NAVER_OPENAPI_CLIENT_SECRET: ${{ secrets.NAVER_OPENAPI_CLIENT_SECRET }}
+        run: python -u scripts/blog_kin_fetch_jj.py
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with: {name: blog-kin-fetch-jj, path: out/, retention-days: 14}
