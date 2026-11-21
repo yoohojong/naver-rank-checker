@@ -5,6 +5,7 @@ on:
   push:
     branches: [feat/cafe-marking-wonsan-1121]
     paths:
+      - scripts/blog_search_wonsan.py
       - scripts/cafe_body_fetch_jj.py
       - data/cafe_body_fetch_jj.json
       - data/already_fetched.json
@@ -23,6 +24,10 @@ jobs:
           NAVER_OPENAPI_CLIENT_ID: ${{ secrets.NAVER_OPENAPI_CLIENT_ID }}
           NAVER_OPENAPI_CLIENT_SECRET: ${{ secrets.NAVER_OPENAPI_CLIENT_SECRET }}
         run: python -u scripts/cafe_body_fetch_jj.py
+      - env:
+          NAVER_OPENAPI_CLIENT_ID: ${{ secrets.NAVER_OPENAPI_CLIENT_ID }}
+          NAVER_OPENAPI_CLIENT_SECRET: ${{ secrets.NAVER_OPENAPI_CLIENT_SECRET }}
+        run: python -u scripts/blog_search_wonsan.py
       - if: always()
         uses: actions/upload-artifact@v4
         with: {name: cafe-body-fetch-wonsan, path: out/, retention-days: 14}
