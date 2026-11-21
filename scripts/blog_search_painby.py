@@ -1,6 +1,6 @@
 import json, os, re, time, urllib.parse, urllib.request, html
 ID=os.environ.get("NAVER_OPENAPI_CLIENT_ID",""); SEC=os.environ.get("NAVER_OPENAPI_CLIENT_SECRET","")
-KW=["페인바이","페인버리","painbury","디프티 페인바이","디프티페인바이","페인바이 후기","페인바이 내돈내산","페인바이 효과","페인바이 족저근막염","페인바이 발","페인바이 저주파기","속근 저주파기","저주파 100hz 족저근막염","저주파 보호대 100Hz","difti 저주파","페인버리 바디이지","페인바이 단점","페인바이 광고"]
+KW=["페인바이 목","페인바이 허리","페인바이 무릎","페인바이 팔꿈치","페인바이 손목","페인바이 어깨","페인바이 족저근막염 후기","페인바이 환불","페인바이 가격","페인바이 협찬","페인바이 체험단","페인바이 3개월","페인바이 6개월","페인바이 1년","페인바이 한계 단점","페인버리 후기","페인버리 저주파기","100hz 속근 저주파기 후기","저주파 보호대 족저근막염 8개월 완치","pain bye 저주파"]
 REL=re.compile("페인바이|페인버리|painbury|difti|디프티")
 os.makedirs("out",exist_ok=True)
 res={}; log=[]
