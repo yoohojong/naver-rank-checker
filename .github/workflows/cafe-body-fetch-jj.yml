@@ -6,6 +6,7 @@ on:
     branches: [feat/cafe-marking-1121]
     paths:
       - scripts/cafe_body_fetch_jj.py
+      - scripts/blog_search_jyg.py
       - data/cafe_body_fetch_jj.json
       - data/already_fetched.json
       - .github/workflows/cafe-body-fetch-jj.yml
@@ -19,6 +20,10 @@ jobs:
       - uses: actions/checkout@v6.0.2
       - uses: actions/setup-python@v6.2.0
         with: {python-version: '3.13'}
+      - env:
+          NAVER_OPENAPI_CLIENT_ID: ${{ secrets.NAVER_OPENAPI_CLIENT_ID }}
+          NAVER_OPENAPI_CLIENT_SECRET: ${{ secrets.NAVER_OPENAPI_CLIENT_SECRET }}
+        run: python -u scripts/blog_search_jyg.py
       - env:
           NAVER_OPENAPI_CLIENT_ID: ${{ secrets.NAVER_OPENAPI_CLIENT_ID }}
           NAVER_OPENAPI_CLIENT_SECRET: ${{ secrets.NAVER_OPENAPI_CLIENT_SECRET }}
