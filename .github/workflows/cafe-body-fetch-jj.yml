@@ -3,10 +3,11 @@ name: cafe-body-fetch-jj
 # 다시 돌리려면 data/cafe_body_fetch_jj.json 을 고쳐 push. 결과: gh run download <번호> -R yoohojong/naver-rank-checker -n cafe-body-fetch-jj
 on:
   push:
-    branches: [feat/cafe-body-fetch-1118]
+    branches: [feat/cafe-marking-1121]
     paths:
       - scripts/cafe_body_fetch_jj.py
       - data/cafe_body_fetch_jj.json
+      - data/already_fetched.json
       - .github/workflows/cafe-body-fetch-jj.yml
 permissions:
   contents: read
