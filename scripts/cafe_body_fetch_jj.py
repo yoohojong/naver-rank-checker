@@ -44,7 +44,7 @@ for q in CFG["keywords"]:
             if len(items) < 100: break
 json.dump({"log": log, "cands": {"%s/%s" % k: v for k, v in cands.items()}}, open("out/search.json", "w", encoding="utf-8"), ensure_ascii=False, indent=1)
 ALREADY = set(json.load(open("data/already_fetched.json", encoding="utf-8")))
-todo = [k for k, v in cands.items() if v["rel"] and "%s/%s" % k not in ALREADY][: CFG["max_fetch"]]
+todo = [k for k, v in cands.items() if (v["rel"] and (not CFG.get("cafes_only") or k[0] in CFG["cafes_only"])) and "%s/%s" % k not in ALREADY][: CFG["max_fetch"]]
 print("이미 받은 것과 겹침", sum(1 for k, v in cands.items() if "%s/%s" % k in ALREADY))
 print("후보", len(cands), "받을 글", len(todo), flush=True)
 gate_cache, index, t0 = {}, [], time.time()
