@@ -84,3 +84,32 @@ for i, (cafe, aid) in enumerate(todo):
     if i % 25 == 0: print(i, rec.get("article_status"), rec.get("ok"), cafe, aid, flush=True)
 json.dump(index, open("out/index.json", "w", encoding="utf-8"), ensure_ascii=False, indent=1)
 print("끝", len(index), "성공", sum(1 for r in index if r.get("ok")))
+
+# ---- 2회차 더함 (t_e9610256): 블로그 공식 검색 + 모바일 본문 받기 (읽기 전용) ----
+if CFG.get("blog_keywords"):
+    BREL = re.compile(CFG["blog_relevance"]); bh = {}; blog_log = []
+    for q in CFG["blog_keywords"]:
+        for sort, pages in (("sim", 3), ("date", 2)):
+            for p in range(pages):
+                url = "https://openapi.naver.com/v1/search/blog.json?" + urllib.parse.urlencode({"query": q, "display": 100, "start": 1 + 100 * p, "sort": sort})
+                c, b = http(url, {"X-Naver-Client-Id": ID, "X-Naver-Client-Secret": SEC})
+                try: items = json.loads(b).get("items", []) if c == 200 else []
+                except Exception: items = []
+                blog_log.append([q, sort, p, c, len(items)]); time.sleep(0.15)
+                for it in items:
+                    t, d = clean(it.get("title")), clean(it.get("description"))
+                    if BREL.search(t + " " + d):
+                        e = bh.setdefault(it["link"], {"title": t, "desc": d, "date": it.get("postdate", ""), "who": it.get("bloggername", ""), "q": []}); e["q"].append(q)
+                if len(items) < 100: break
+    os.makedirs("out/blog", exist_ok=True)
+    stat = []
+    for link, v in bh.items():
+        m = re.search(r"blog\.naver\.com/([^/?]+)/(\d+)", link) or re.search(r"blogId=([^&]+)&logNo=(\d+)", link)
+        if not m: stat.append([link, "주소 못 읽음", 0]); continue
+        bid, no = m.groups()
+        u = "https://m.blog.naver.com/PostView.naver?blogId=%s&logNo=%s" % (bid, no)
+        c, b = http(u, {"User-Agent": UA}, 25)
+        open("out/blog/%s_%s.html" % (bid, no), "w", encoding="utf-8").write(b)
+        stat.append([link, c, len(b)]); time.sleep(0.5)
+    json.dump({"log": blog_log, "hits": bh, "stat": stat}, open("out/blog_hits.json", "w", encoding="utf-8"), ensure_ascii=False, indent=1)
+    print("블로그 후보", len(bh), "호출", len(blog_log), "200 아님", sum(1 for l in blog_log if l[3] != 200), flush=True)
