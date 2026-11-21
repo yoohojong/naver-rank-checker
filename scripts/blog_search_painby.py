@@ -1,6 +1,6 @@
 import json, os, re, time, urllib.parse, urllib.request, html
 ID=os.environ.get("NAVER_OPENAPI_CLIENT_ID",""); SEC=os.environ.get("NAVER_OPENAPI_CLIENT_SECRET","")
-KW=["올위버","올위버깔창","올위버 깔창","올,위버","올위버 후기","올위버깔창 후기","올위버 뒤꿈치","올위버 포론","올위버 족저근막염","올위버 추천","뒤꿈치 전문 깔창","족저근막염 깔창 추천 올위버","allubermall","올위버몰"]
+KW=["올위버 깔창 후기","올위버 쿠션깔창","올위버 기능성깔창","올위버 아치","올위버 군화","올위버 운동화 깔창","올위버 내돈내산","올위버 사용기","올위버 평발","올 위버 깔창","올,위버 깔창","Alluber 깔창","올위버 신발","올위버 구매","올위버 비교","올위버깔창 효과","올위버 인솔","올위버 아킬레스","올위버 솔직후기","올위버 장단점","올위버 단점"]
 REL=re.compile("올\W{0,3}위\W{0,3}버|allubermall")
 os.makedirs("out",exist_ok=True)
 res={}; log=[]
