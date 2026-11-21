@@ -1,14 +1,9 @@
 name: cafe-body-fetch-wonsan-s1
-# 2026-11-18 족저근막염 잽 3단계 보강 - 카페 글 본문 · 댓글 읽기 전용. feat/ 가지에서만 · main 에 합치지 않는다.
-# 다시 돌리려면 data/cafe_body_fetch_jj.json 을 고쳐 push. 결과: gh run download <번호> -R yoohojong/naver-rank-checker -n cafe-body-fetch-jj
 on:
   push:
     branches: [feat/cafe-marking-wonsan-s1-1121]
     paths:
-      - scripts/blog_search_wonsan.py
-      - scripts/cafe_body_fetch_jj.py
       - data/cafe_body_fetch_jj.json
-      - data/already_fetched.json
       - .github/workflows/cafe-body-fetch-jj.yml
 permissions:
   contents: read
@@ -20,6 +15,10 @@ jobs:
       - uses: actions/checkout@v6.0.2
       - uses: actions/setup-python@v6.2.0
         with: {python-version: '3.13'}
+      - env:
+          NAVER_OPENAPI_CLIENT_ID: ${{ secrets.NAVER_OPENAPI_CLIENT_ID }}
+          NAVER_OPENAPI_CLIENT_SECRET: ${{ secrets.NAVER_OPENAPI_CLIENT_SECRET }}
+        run: python -u scripts/cafe_body_fetch_jj.py
       - if: always()
         uses: actions/upload-artifact@v4
         with: {name: cafe-body-fetch-wonsan-s1, path: out/, retention-days: 14}
