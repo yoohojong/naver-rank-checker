@@ -1,3 +1,4 @@
+# 5회차 재검색 (t_e13c5d92) - 검색어는 4회차와 같음
 import json, os, re, time, urllib.parse, urllib.request, html
 ID=os.environ.get("NAVER_OPENAPI_CLIENT_ID",""); SEC=os.environ.get("NAVER_OPENAPI_CLIENT_SECRET","")
 KW=["페인바이 사용기","페인바이 언박싱","페인바이 구매","페인바이 vs","페인바이 족저근막염","페인바이 발바닥","페인바이 발목","페인바이 종아리","페인바이 리뷰","페인바이 EMS 무릎","페인바이 도전성 스프레이","디프티 페인바이 후기","페인바이 거북목","페인바이 부모님 선물","속근 저주파기 족저근막염","페인버리 바디이지 후기","페인버리 스마트스토어","painbury 후기","pain bury","페인바이 재구매"]
