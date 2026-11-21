@@ -43,6 +43,21 @@ for q in CFG["keywords"]:
                 if REL.search(title + " " + desc): d["rel"] = True
             if len(items) < 100: break
 json.dump({"log": log, "cands": {"%s/%s" % k: v for k, v in cands.items()}}, open("out/search.json", "w", encoding="utf-8"), ensure_ascii=False, indent=1)
+
+# 2회차 추가: 블로그 검색(공식 API blog.json) 후보 목록만 저장
+bl = {}
+for q in CFG["keywords"]:
+    for sort in ("sim", "date"):
+        for p in range(3):
+            url = "https://openapi.naver.com/v1/search/blog.json?" + urllib.parse.urlencode({"query": q, "display": 100, "start": 1 + 100 * p, "sort": sort})
+            c, b = http(url, {"X-Naver-Client-Id": ID, "X-Naver-Client-Secret": SEC}); time.sleep(0.15)
+            try: its = json.loads(b).get("items", []) if c == 200 else []
+            except Exception: its = []
+            for it in its:
+                d = bl.setdefault(it.get("link", ""), {"title": clean(it.get("title")), "desc": clean(it.get("description")), "date": it.get("postdate"), "blogger": it.get("bloggername"), "q": []}); d["q"].append(q)
+            if len(its) < 100: break
+json.dump(bl, open("out/blog_search.json", "w", encoding="utf-8"), ensure_ascii=False, indent=1)
+print("블로그 후보", len(bl), flush=True)
 ALREADY = set(json.load(open("data/already_fetched.json", encoding="utf-8")))
 todo = [k for k, v in cands.items() if (v["rel"] and (not CFG.get("cafes_only") or k[0] in CFG["cafes_only"])) and "%s/%s" % k not in ALREADY][: CFG["max_fetch"]]
 print("이미 받은 것과 겹침", sum(1 for k, v in cands.items() if "%s/%s" % k in ALREADY))
