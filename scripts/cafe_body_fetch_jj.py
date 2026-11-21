@@ -89,7 +89,7 @@ print("끝", len(index), "성공", sum(1 for r in index if r.get("ok")))
 if CFG.get("blog_keywords"):
     BREL = re.compile(CFG["blog_relevance"]); bh = {}; blog_log = []
     for q in CFG["blog_keywords"]:
-        for sort, pages in (("sim", 3), ("date", 2)):
+        for sort, pages in (("sim", CFG.get("blog_pages_sim", 3)), ("date", CFG.get("blog_pages_date", 2))):
             for p in range(pages):
                 url = "https://openapi.naver.com/v1/search/blog.json?" + urllib.parse.urlencode({"query": q, "display": 100, "start": 1 + 100 * p, "sort": sort})
                 c, b = http(url, {"X-Naver-Client-Id": ID, "X-Naver-Client-Secret": SEC})
@@ -103,7 +103,9 @@ if CFG.get("blog_keywords"):
                 if len(items) < 100: break
     os.makedirs("out/blog", exist_ok=True)
     stat = []
+    SKIP = set(json.load(open("data/blog_skip.json", encoding="utf-8"))) if os.path.exists("data/blog_skip.json") else set()
     for link, v in bh.items():
+        if link in SKIP: stat.append([link, "이미 받음 건너뜀", 0]); continue
         m = re.search(r"blog\.naver\.com/([^/?]+)/(\d+)", link) or re.search(r"blogId=([^&]+)&logNo=(\d+)", link)
         if not m: stat.append([link, "주소 못 읽음", 0]); continue
         bid, no = m.groups()
