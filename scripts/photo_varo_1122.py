@@ -10,20 +10,22 @@ def go(bn):
         except Exception as e: st=getattr(e,"code",0) or str(e)[:40];time.sleep(1)
     m=re.search(r'<div class="se-main-container">(.*)',h,re.S) or re.search(r'id="postViewArea"(.*)',h,re.S)
     body=m.group(1) if m else ""
-    imgs=[];prev=""
+    imgs=[];prev="";raws=[]
     for p in re.split(r'(<img\b[^>]*>)',body):
         if p.startswith("<img"):
-            s=re.search(r'(?:data-lazy-src|data-src|src)="([^"]+)"',p)
+            at=dict(re.findall(r'([\w-]+)="([^"]*)"',p))
+            if len(raws)<6 and "blur" in p: raws.append(p[:700])
+            s=at.get("data-lazy-src") or at.get("data-src") or at.get("src")
             if not s: continue
-            s=html.unescape(s.group(1))
+            s=html.unescape(s)
             if re.search(r'sticker|ssl.pstatic.net/static|storep|bstatic.naver|profile|blogpfthumb|\.gif|ader\.naver',s): continue
             imgs.append([s,prev[-120:]])
         else:
             t=re.sub(r'\s+',' ',html.unescape(re.sub(r'<[^>]+>',' ',re.sub(r'<(script|style)[^>]*>.*?</\1>','',p,flags=re.S)))).replace("\u200b","").strip()
             if t: prev=t
     time.sleep(0.3)
-    return {"blog":b,"no":n,"status":st,"len":len(h),"has_body":bool(m),"imgs":imgs}
+    return {"blog":b,"no":n,"status":st,"len":len(h),"has_body":bool(m),"imgs":imgs,"raws":raws}
 with cf.ThreadPoolExecutor(4) as ex: res=list(ex.map(go,json.load(open("data/photo_varo_1122.json"))))
 print(len(res),sum(1 for r in res if r["has_body"]),sum(len(r["imgs"]) for r in res))
 json.dump(res,open("out/photo_varo_1122.json","w",encoding="utf-8"),ensure_ascii=False)
-# r2
+# r3
