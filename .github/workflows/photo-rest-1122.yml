@@ -1,0 +1,20 @@
+name: photo-rest-1122
+# 2026-11-22 마킹글 못 받은 사진 15장 + 카페 글 1편 사진 받기(공개 사진만). feat/ 가지에서만.
+on:
+  push:
+    branches: [feat/photo-rest-1122]
+    paths: [scripts/photo_rest_1122.py, data/photo_rest_1122.json, .github/workflows/photo-rest-1122.yml]
+permissions:
+  contents: read
+jobs:
+  fetch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v6.0.2
+      - uses: actions/setup-python@v6.2.0
+        with: {python-version: '3.13'}
+      - run: python -u scripts/photo_rest_1122.py
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with: {name: photo-rest-1122, path: out/, retention-days: 14}
