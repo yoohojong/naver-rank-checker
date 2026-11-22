@@ -1,0 +1,20 @@
+name: photo-varo-1122
+# 2026-11-22 바로스텝 블로그 531편 본문 사진 주소 읽기 전용. feat/ 가지에서만.
+on:
+  push:
+    branches: [feat/cafe-photo-varo-1122]
+    paths: [scripts/photo_varo_1122.py, data/photo_varo_1122.json, .github/workflows/photo-varo-1122.yml]
+permissions:
+  contents: read
+jobs:
+  fetch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v6.0.2
+      - uses: actions/setup-python@v6.2.0
+        with: {python-version: '3.13'}
+      - run: python -u scripts/photo_varo_1122.py
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with: {name: photo-varo-1122, path: out/, retention-days: 14}
