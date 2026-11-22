@@ -8,13 +8,14 @@ for b,n in json.load(open("data/photo_blog_1122.json")):
     except Exception as e: st=getattr(e,"code",0) or str(e)[:40]
     m=re.search(r'<div class="se-main-container">(.*)',h,re.S) or re.search(r'id="postViewArea"(.*)',h,re.S)
     body=m.group(1) if m else ""
+    if 'se-oglink' in body: body=body.split('se-module-oglink')[0]
     imgs=[];prev=""
     for p in re.split(r'(<img\b[^>]*>)',body):
         if p.startswith("<img"):
-            s=re.search(r'(?:data-lazy-src|data-src|src)="([^"]+)"',p)
+            s=re.search(r'data-lazy-src="([^"]+)"',p) or re.search(r'src="([^"]+)"',p)
             if not s: continue
             s=html.unescape(s.group(1))
-            if re.search(r'sticker|static\.|storep|profile|blogpfthumb|\.gif|ader\.naver',s): continue
+            if re.search(r'sticker|static\.|storep|blogpfthumb|dthumb-phinf|ader\.naver|se-oglink',s): continue
             imgs.append([s,prev[-120:]])
         else:
             t=re.sub(r'\s+',' ',html.unescape(re.sub(r'<[^>]+>',' ',re.sub(r'<(script|style)[^>]*>.*?</\1>','',p,flags=re.S)))).replace("\u200b","").strip()
