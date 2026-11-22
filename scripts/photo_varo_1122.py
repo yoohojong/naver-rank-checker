@@ -16,7 +16,7 @@ def go(bn):
             s=re.search(r'(?:data-lazy-src|data-src|src)="([^"]+)"',p)
             if not s: continue
             s=html.unescape(s.group(1))
-            if re.search(r'sticker|static\.|storep|profile|blogpfthumb|\.gif|ader\.naver',s): continue
+            if re.search(r'sticker|ssl.pstatic.net/static|storep|bstatic.naver|profile|blogpfthumb|\.gif|ader\.naver',s): continue
             imgs.append([s,prev[-120:]])
         else:
             t=re.sub(r'\s+',' ',html.unescape(re.sub(r'<[^>]+>',' ',re.sub(r'<(script|style)[^>]*>.*?</\1>','',p,flags=re.S)))).replace("\u200b","").strip()
@@ -26,3 +26,4 @@ def go(bn):
 with cf.ThreadPoolExecutor(4) as ex: res=list(ex.map(go,json.load(open("data/photo_varo_1122.json"))))
 print(len(res),sum(1 for r in res if r["has_body"]),sum(len(r["imgs"]) for r in res))
 json.dump(res,open("out/photo_varo_1122.json","w",encoding="utf-8"),ensure_ascii=False)
+# r2
