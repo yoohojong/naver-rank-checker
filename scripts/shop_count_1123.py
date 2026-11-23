@@ -14,18 +14,10 @@ def call(q, sort="sim"):
         return getattr(e, "code", 0), {"error": str(e)[:200], "body": body}
 os.makedirs("out", exist_ok=True)
 probe = {}
-for kind in ("shop", "blog", "kin"):
-    url = "https://openapi.naver.com/v1/search/%s.json?query=%s&display=1" % (kind, urllib.parse.quote("깔창"))
+for nm, url in (("shop.json", "https://openapi.naver.com/v1/search/shop.json?query=%s&display=1"), ("shop.xml", "https://openapi.naver.com/v1/search/shop.xml?query=%s&display=1"), ("shop", "https://openapi.naver.com/v1/search/shop?query=%s&display=1"), ("shopping.json", "https://openapi.naver.com/v1/search/shopping.json?query=%s&display=1"), ("encyc.json", "https://openapi.naver.com/v1/search/encyc.json?query=%s&display=1"), ("news.json", "https://openapi.naver.com/v1/search/news.json?query=%s&display=1")):
     try:
-        with urllib.request.urlopen(urllib.request.Request(url, headers={"X-Naver-Client-Id": ID, "X-Naver-Client-Secret": SEC}), timeout=25) as r: probe[kind] = [r.status, r.read().decode()[:150]]
-    except Exception as e: probe[kind] = [getattr(e, "code", 0), e.read().decode()[:300] if hasattr(e, "read") else str(e)]
-UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0 Safari/537.36"
-for nm, url in (("shopping_api", "https://search.shopping.naver.com/api/search/all?sort=rel&pagingIndex=1&pagingSize=40&viewType=list&productSet=total&query=" + urllib.parse.quote("족저근막염 깔창")),
-                ("shopping_html", "https://search.shopping.naver.com/search/all?query=" + urllib.parse.quote("족저근막염 깔창"))):
-    try:
-        with urllib.request.urlopen(urllib.request.Request(url, headers={"User-Agent": UA, "Accept": "application/json, text/html"}), timeout=25) as r:
-            b = r.read().decode("utf-8", "replace"); probe[nm] = [r.status, len(b), b[:200]]
-    except Exception as e: probe[nm] = [getattr(e, "code", 0), e.read().decode("utf-8", "replace")[:200] if hasattr(e, "read") else str(e)]
+        with urllib.request.urlopen(urllib.request.Request(url % urllib.parse.quote("깔창"), headers={"X-Naver-Client-Id": ID, "X-Naver-Client-Secret": SEC}), timeout=25) as r: probe[nm] = [r.status, r.read().decode()[:120]]
+    except Exception as e: probe[nm] = [getattr(e, "code", 0), e.read().decode()[:160] if hasattr(e, "read") else str(e)]
 print("probe", probe, flush=True)
 json.dump(probe, open("out/probe.json", "w", encoding="utf-8"), ensure_ascii=False)
 res = []
