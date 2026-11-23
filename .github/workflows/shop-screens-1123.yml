@@ -1,0 +1,21 @@
+name: shop-screens-1123
+# 2026-11-23 스마트스토어 손님 화면 8개 받기(읽기만). feat/ 가지에서만.
+on:
+  push:
+    branches: [feat/shop-screens-1123]
+    paths: [scripts/shop_screens_1123.py, .github/workflows/shop-screens-1123.yml]
+permissions:
+  contents: read
+jobs:
+  fetch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.13'}
+      - run: pip install playwright==1.48.0 && python -m playwright install --with-deps chromium
+      - run: python -u scripts/shop_screens_1123.py
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with: {name: shop-screens-1123, path: out/, retention-days: 14}
