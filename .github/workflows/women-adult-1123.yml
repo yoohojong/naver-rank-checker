@@ -1,0 +1,26 @@
+name: women-adult-1123
+# 2026-11-23 족저근막염 - 지식인 본문(A) · 회원 카페 310편 본문(B) 동시 받기. 읽기 전용. feat/ 가지에서만.
+on:
+  push:
+    branches: [feat/women-adult-1123]
+    paths:
+      - scripts/women_adult_1123.py
+      - data/women_adult_1123.json
+      - .github/workflows/women-adult-1123.yml
+permissions:
+  contents: read
+jobs:
+  fetch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v6.0.2
+      - uses: actions/setup-python@v6.2.0
+        with: {python-version: '3.13'}
+      - env:
+          NAVER_OPENAPI_CLIENT_ID: ${{ secrets.NAVER_OPENAPI_CLIENT_ID }}
+          NAVER_OPENAPI_CLIENT_SECRET: ${{ secrets.NAVER_OPENAPI_CLIENT_SECRET }}
+        run: python -u scripts/women_adult_1123.py
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with: {name: women-adult-1123, path: out/, retention-days: 14}
