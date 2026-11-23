@@ -19,6 +19,13 @@ for kind in ("shop", "blog", "kin"):
     try:
         with urllib.request.urlopen(urllib.request.Request(url, headers={"X-Naver-Client-Id": ID, "X-Naver-Client-Secret": SEC}), timeout=25) as r: probe[kind] = [r.status, r.read().decode()[:150]]
     except Exception as e: probe[kind] = [getattr(e, "code", 0), e.read().decode()[:300] if hasattr(e, "read") else str(e)]
+UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0 Safari/537.36"
+for nm, url in (("shopping_api", "https://search.shopping.naver.com/api/search/all?sort=rel&pagingIndex=1&pagingSize=40&viewType=list&productSet=total&query=" + urllib.parse.quote("족저근막염 깔창")),
+                ("shopping_html", "https://search.shopping.naver.com/search/all?query=" + urllib.parse.quote("족저근막염 깔창"))):
+    try:
+        with urllib.request.urlopen(urllib.request.Request(url, headers={"User-Agent": UA, "Accept": "application/json, text/html"}), timeout=25) as r:
+            b = r.read().decode("utf-8", "replace"); probe[nm] = [r.status, len(b), b[:200]]
+    except Exception as e: probe[nm] = [getattr(e, "code", 0), e.read().decode("utf-8", "replace")[:200] if hasattr(e, "read") else str(e)]
 print("probe", probe, flush=True)
 json.dump(probe, open("out/probe.json", "w", encoding="utf-8"), ensure_ascii=False)
 res = []
