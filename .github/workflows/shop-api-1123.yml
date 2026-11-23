@@ -1,0 +1,23 @@
+name: shop-api-1123
+# 2026-11-23 쇼핑 검색 API 로 상품명 · 판매처 받기(읽기만). feat/ 가지에서만.
+on:
+  push:
+    branches: [feat/shop-api-1123]
+    paths: [scripts/shop_api_1123.py, .github/workflows/shop-api-1123.yml]
+permissions:
+  contents: read
+jobs:
+  fetch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.13'}
+      - env:
+          NAVER_OPENAPI_CLIENT_ID: ${{ secrets.NAVER_OPENAPI_CLIENT_ID }}
+          NAVER_OPENAPI_CLIENT_SECRET: ${{ secrets.NAVER_OPENAPI_CLIENT_SECRET }}
+        run: python -u scripts/shop_api_1123.py
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with: {name: shop-api-1123, path: out/, retention-days: 14}
