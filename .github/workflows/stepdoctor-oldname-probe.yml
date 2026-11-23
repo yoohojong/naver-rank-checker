@@ -1,0 +1,27 @@
+name: stepdoctor-oldname-probe
+# 2026-11-23 t_7417763e: 손 실행 전용. 네이버 검색 결과(API + 화면 글)를 받아 옛 이름 자리를 찾는다. 읽기만 한다.
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v6.0.2
+      - uses: actions/setup-python@v6.2.0
+        with:
+          python-version: '3.13'
+      - run: pip install curl_cffi
+      - env:
+          NAVER_OPENAPI_CLIENT_ID: ${{ secrets.NAVER_OPENAPI_CLIENT_ID }}
+          NAVER_OPENAPI_CLIENT_SECRET: ${{ secrets.NAVER_OPENAPI_CLIENT_SECRET }}
+          PYTHONIOENCODING: utf-8
+        run: python scripts/stepdoctor_oldname_probe.py
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: probe-out
+          path: out/
+          retention-days: 7
