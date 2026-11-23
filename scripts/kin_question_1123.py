@@ -25,11 +25,12 @@ else:
     for n, i in enumerate(mine):
         c, b = http(pc(i)); rec = {"dir": i["dir"], "doc": i["doc"], "d1": i["d1"], "title": i["title"], "status": c, "len": len(b)}
         if c == 200:
-            e = b.find('class="answerArea'); e2 = b.find("endContentsText")
-            cut = e if e > 0 else (e2 if e2 > 0 else 60000)
-            s = b.find('<div class="questionArea'); s = s if s > 0 else max(0, cut - 40000)
-            body = b[s:cut + 200]; body = re.sub(r"<script.*?</script>", "", body, flags=re.S); body = re.sub(r"<style.*?</style>", "", body, flags=re.S)
-            rec.update({"qstart": s, "qend": cut, "saved": len(body)}); open("out/q/%s_%s.html" % (i["dir"], i["doc"]), "w", encoding="utf-8").write(body)
+            q = b.find("questionDetail")
+            if q < 0: q = b.find("endContentsText")
+            rec["qpos"] = q
+            body = b[max(0, q - 2500): q + 9000] if q >= 0 else b[:12000]
+            body = re.sub(r"<script.*?</script>", "", body, flags=re.S)
+            rec["saved"] = len(body); open("out/q/%s_%s.html" % (i["dir"], i["doc"]), "w", encoding="utf-8").write(body)
         index.append(rec); time.sleep(0.9)
         if n % 25 == 0: print(n, c, len(b), flush=True)
     print("끝", len(index), "200:", sum(1 for r in index if r["status"] == 200))
