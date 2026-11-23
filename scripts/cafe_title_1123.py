@@ -23,7 +23,7 @@ for i, it in enumerate(items):
     rec["search_status"] = c; rec["html_len"] = len(b)
     open("out/html/%s_%s.html" % (cafe, aid), "w", encoding="utf-8").write(b[:400000])
     time.sleep(random.uniform(5, 7.5))
-    if c in (403, 429) or "captcha" in b.lower() or "보안문자" in b or "자동입력 방지" in b:
+    if c in (403, 429) or "보안문자" in b or "자동입력 방지" in b or ("<title>" in b and "captcha" in b.split("</title>")[0].lower()):
         rec["result"] = "못 받음"; rec["reason"] = "막힘"; rec["detail"] = "검색 %s / 캡차·차단 문구" % c; index.append(rec); stop = "막힘에서 멈춤 %s %s" % (cafe, aid); break
     if c != 200: rec["result"] = "못 받음"; rec["reason"] = "막힘"; rec["detail"] = "검색 %s" % c; index.append(rec); stop = "검색 %s 에서 멈춤" % c; break
     links = re.findall(r"https?://cafe\.naver\.com/([A-Za-z0-9_\-]+)/(\d+)([^\"'\s<>]*)", html.unescape(b))
