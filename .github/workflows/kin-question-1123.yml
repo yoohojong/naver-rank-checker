@@ -1,0 +1,25 @@
+name: kin-question-1123
+# 2026-11-23 족저근막염 - 지식인 질문 본문 받기(카드 t_39be783b). 읽기 전용. feat/ 가지에서만.
+on:
+  push:
+    branches: [feat/kin-question-1123]
+    paths:
+      - scripts/kin_question_1123.py
+      - data/kin_q_list_1123.json
+      - .github/workflows/kin-question-1123.yml
+permissions:
+  contents: read
+jobs:
+  probe:
+    if: ${{ vars.KINQ_MODE == 'probe' || true }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v6.0.2
+      - uses: actions/setup-python@v6.2.0
+        with: {python-version: '3.13'}
+      - env: {MODE: probe, N: '6'}
+        run: python -u scripts/kin_question_1123.py
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with: {name: 'kinq-probe', path: out/, retention-days: 14}
