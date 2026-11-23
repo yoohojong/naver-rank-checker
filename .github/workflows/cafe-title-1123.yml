@@ -1,0 +1,30 @@
+name: cafe-title-1123
+# 2026-11-23 족저근막염 - 회원 카페 298편 제목 검색 길. 읽기 전용. feat/ 가지에서만.
+on:
+  push:
+    branches: [feat/cafe-kin-fetch-1123]
+    paths:
+      - scripts/cafe_title_1123.py
+      - data/cafe_title298.json
+      - .github/workflows/cafe-title-1123.yml
+permissions:
+  contents: read
+jobs:
+  fetch:
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0]
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v6.0.2
+      - uses: actions/setup-python@v6.2.0
+        with: {python-version: '3.13'}
+      - env:
+          SHARD: ${{ matrix.shard }}
+          NSHARD: 1
+        run: python -u scripts/cafe_title_1123.py
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with: {name: 'cafe-title-${{ matrix.shard }}', path: out/, retention-days: 14}
