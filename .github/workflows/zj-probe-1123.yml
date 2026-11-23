@@ -1,0 +1,32 @@
+name: zj-probe-1123
+# 쇼핑 낮은 별점 길 찾기 시험(t_0f26d1d6) — 읽기 전용 · 예약 없음 · master 에 합치지 않음.
+on:
+  push:
+    branches: [probe/lowstar-brand-1123]
+    paths:
+      - scripts/zj_probe_1123.py
+      - .github/workflows/zj-probe-1123.yml
+permissions:
+  contents: read
+jobs:
+  probe:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v6.0.2
+      - uses: actions/setup-python@v6.2.0
+        with:
+          python-version: '3.13'
+      - run: |
+          pip install playwright==1.60.0
+          python -m playwright install --with-deps chromium
+      - env:
+          GOYU_NOTIFY_OFF: '1'
+          PYTHONIOENCODING: utf-8
+        run: python scripts/zj_probe_1123.py
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: zj-probe-1123
+          path: out/
+          if-no-files-found: ignore
