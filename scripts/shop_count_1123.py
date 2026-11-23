@@ -10,8 +10,17 @@ def call(q, sort="sim"):
     try:
         with urllib.request.urlopen(req, timeout=25) as r: return r.status, json.loads(r.read().decode("utf-8"))
     except Exception as e:
-        return getattr(e, "code", 0), {"error": str(e)[:200]}
+        body = e.read().decode("utf-8", "replace")[:300] if hasattr(e, "read") else ""
+        return getattr(e, "code", 0), {"error": str(e)[:200], "body": body}
 os.makedirs("out", exist_ok=True)
+probe = {}
+for kind in ("shop", "blog", "kin"):
+    url = "https://openapi.naver.com/v1/search/%s.json?query=%s&display=1" % (kind, urllib.parse.quote("깔창"))
+    try:
+        with urllib.request.urlopen(urllib.request.Request(url, headers={"X-Naver-Client-Id": ID, "X-Naver-Client-Secret": SEC}), timeout=25) as r: probe[kind] = [r.status, r.read().decode()[:150]]
+    except Exception as e: probe[kind] = [getattr(e, "code", 0), e.read().decode()[:300] if hasattr(e, "read") else str(e)]
+print("probe", probe, flush=True)
+json.dump(probe, open("out/probe.json", "w", encoding="utf-8"), ensure_ascii=False)
 res = []
 for q in json.load(open("data/shop_count_1123.json", encoding="utf-8"))["queries"]:
     c, j = call(q)
