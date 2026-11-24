@@ -305,11 +305,14 @@ def _process_row(
 
         # 빈 link 행 + 매치 X = "미노출 (시점~)"
         health.record(parser_confidence=0.0, success=True, block_type=None)
+        # 2026-11-25 사장님 "지식인탭도 측정해줘야하고": 지식인탭 = 검색 화면에 지식iN 묶음이 뜨는가
+        #   (_parse_jisikin — 우리 글 링크와 무관). 우리 글이 아직 없는 키워드(새 탭 족저근막염 760줄)도
+        #   같은 화면을 이미 받았으니 그 값을 적는다. 전에는 빈칸으로 덮어 760줄이 늘 비었다.
         cols = {
             HEADER_AREA: compute_new_K_with_stamp(prev_K_full, "미노출", today_stamp),
             HEADER_L: "",
             HEADER_M: "",
-            HEADER_JISIKIN: "",
+            HEADER_JISIKIN: "O" if result.in_jisikin else "",
         }
         _attach_substitute(cols, html, our_index, row, keyword, own_link="")
         _add_type_preview(

@@ -24,6 +24,9 @@ from __future__ import annotations
 import os
 from datetime import datetime, timedelta, timezone
 
+# 보관함 보류 탭 — 재료 수집 · 적재를 하지 않는다(순위 재기는 그대로). 2026-11-25.
+BOGWANHAM_HOLD_TABS = frozenset({"족저근막염 카외"})
+
 # 스테이징 탭 이름(수집 전용 — 사장님 입력 탭 '카외' 와 분리).
 STAGING_TAB_JISIKIN = "수집결과_지식인"
 STAGING_TAB_REVIEW = "수집결과_리뷰"
@@ -122,7 +125,9 @@ def run_collection(
     """
     day = today or _today_kst()
     if tab_filter is None:
-        tab_filter = lambda name: "카외" in name  # noqa: E731
+        # 2026-11-25 보관함 보류 탭은 재료 수집에서 뺀다(사장님 "보관함은 디벨롭해야해서 잠시 보류로~").
+        #   Apps Script 쪽 BOGWANHAM_HOLD_TABS 와 같은 목록 — 풀 때 두 곳 다 지운다.
+        tab_filter = lambda name: "카외" in name and name not in BOGWANHAM_HOLD_TABS  # noqa: E731
 
     naver_on = bool(naver_client_id and naver_client_secret)
     apify_on = bool(apify_token)
