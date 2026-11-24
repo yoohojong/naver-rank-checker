@@ -1,0 +1,26 @@
+name: guest-screens-1125
+# 2026-11-25 지시 1124-0120: 로그인 안 한 손님 눈으로 스마트스토어·자사몰 화면 21개 받기. 이 가지 push 에만 돈다. 읽기만 한다.
+on:
+  push:
+    branches: ['vault/1125-0120-guest-screens']
+permissions:
+  contents: read
+jobs:
+  fetch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v6.0.2
+      - uses: actions/setup-python@v6.2.0
+        with:
+          python-version: '3.13'
+      - run: pip install playwright==1.48.0 && python -m playwright install --with-deps chromium
+      - env:
+          PYTHONIOENCODING: utf-8
+        run: python -u scripts/guest_screens_1125.py
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: guest-screens-1125
+          path: out/
+          retention-days: 14
