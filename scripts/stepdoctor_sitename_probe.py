@@ -1,8 +1,8 @@
 # -*- coding: utf-8 -*-
 """지시 1124-0120: 네이버 웹문서 결과의 사이트 이름 '카테키산 유산균' 자리 찾기. 읽기만."""
 import os, json, re, time, urllib.parse, urllib.request
-API_QS = ["site:yeopropillow.com", "스텝닥터", "카테키산 유산균", "yeopropillow.com", "yeopropillow"]
-PAGE_QS = ["스텝닥터", "카테키산 유산균", "yeopropillow.com", "site:yeopropillow.com"]
+API_QS = ["site:yeopropillow.com", "yeopropillow.com 카테키산", "yeopropillow.com 여리손", "yeopropillow.com 뷰티움랩", "yeopropillow.com 건강보법"]
+PAGE_QS = []
 OLD = ["옆으로베개", "건강보법", "카테키산"]
 H = {"X-Naver-Client-Id": os.environ["NAVER_OPENAPI_CLIENT_ID"], "X-Naver-Client-Secret": os.environ["NAVER_OPENAPI_CLIENT_SECRET"]}
 os.makedirs("out/html", exist_ok=True)
@@ -12,7 +12,7 @@ def api(path, q, **kw):
         return json.loads(urllib.request.urlopen(urllib.request.Request(u, headers=H), timeout=20).read().decode("utf-8"))
     except Exception as e:
         return {"error": repr(e)}
-res = {q: api("webkr.json", q, display=10, start=1) for q in API_QS}
+res = {q: api("webkr.json", q, display=100, start=1) for q in API_QS}
 json.dump(res, open("out/api_webkr.json", "w", encoding="utf-8"), ensure_ascii=False, indent=1)
 for q, d in res.items():
     print("API", q, d.get("total"), [(i.get("title"), i.get("link")) for i in d.get("items", [])][:10], d.get("error"))
