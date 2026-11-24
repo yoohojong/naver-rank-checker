@@ -1,15 +1,14 @@
-name: stepdoctor-oldname-probe
-# 2026-11-23 t_7417763e: 손 실행 전용. 네이버 검색 결과(API + 화면 글)를 받아 옛 이름 자리를 찾는다. 읽기만 한다.
+name: stepdoctor-sitename-probe
+# 2026-11-25 지시 1124-0120: 네이버 웹문서 사이트 이름 '카테키산 유산균' 자리 찾기. 이 가지 push 에만 돈다. 읽기만 한다.
 on:
   push:
-    branches: ['vault/t_7417763e-oldname-probe']
-  workflow_dispatch:
+    branches: ['vault/1124-0120-sitename-probe']
 permissions:
   contents: read
 jobs:
   probe:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v6.0.2
       - uses: actions/setup-python@v6.2.0
@@ -20,10 +19,10 @@ jobs:
           NAVER_OPENAPI_CLIENT_ID: ${{ secrets.NAVER_OPENAPI_CLIENT_ID }}
           NAVER_OPENAPI_CLIENT_SECRET: ${{ secrets.NAVER_OPENAPI_CLIENT_SECRET }}
           PYTHONIOENCODING: utf-8
-        run: python scripts/stepdoctor_oldname_probe.py
+        run: python scripts/stepdoctor_sitename_probe.py
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: probe-out
+          name: sitename-out
           path: out/
           retention-days: 7
