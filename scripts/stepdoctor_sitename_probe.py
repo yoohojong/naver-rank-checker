@@ -2,7 +2,7 @@
 """지시 1124-0120: 네이버 웹문서 결과의 사이트 이름 '카테키산 유산균' 자리 찾기. 읽기만."""
 import os, json, re, time, urllib.parse, urllib.request
 API_QS = ["site:yeopropillow.com", "yeopropillow.com 카테키산", "yeopropillow.com 여리손", "yeopropillow.com 뷰티움랩", "yeopropillow.com 건강보법"]
-PAGE_QS = []
+PAGE_QS = ["스텝닥터", "site:yeopropillow.com", "카테키산 유산균", "yeopropillow.com"]
 OLD = ["옆으로베개", "건강보법", "카테키산"]
 H = {"X-Naver-Client-Id": os.environ["NAVER_OPENAPI_CLIENT_ID"], "X-Naver-Client-Secret": os.environ["NAVER_OPENAPI_CLIENT_SECRET"]}
 os.makedirs("out/html", exist_ok=True)
